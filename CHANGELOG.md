@@ -54,6 +54,13 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   page shows a live, auto-refreshing log view.
 
 ### Fixed
+- Single-article posts are now released (#28). When an article subject has no
+  yEnc segment counter, the scanner records `total_parts = 0`; the assembler
+  treated such binaries as incomplete forever, so single-article files (small
+  files, NZBs, images, single-file obfuscated posts) never became releases and
+  were eventually aged out and deleted. A binary with no declared total and at
+  least one collected part is now treated as a complete single-file binary.
+  (On a live instance this was the majority of "incomplete" binaries.)
 - PAR2 filename recovery now works (#21). The PAR2 packet type field was read at
   the wrong byte offset (40 instead of the spec's 48), so File Description
   packets were never recognised and post-processing recovered no names or NFOs

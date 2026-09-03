@@ -113,8 +113,17 @@ func (a *Assembler) Assemble(ctx context.Context) (Result, error) {
 }
 
 // IsComplete reports whether a binary with the given collected/declared part
-// counts is complete. A binary is complete only when its declared total is
-// known (>0) and all parts have been collected.
+// counts is complete.
+//
+// When the declared total is known (>0), the binary is complete once all parts
+// have been collected. When the declared total is unknown (0), the post carried
+// no yEnc segment counter, which reliably indicates a single-article file; such
+// a binary is complete as soon as its one article has been collected. Without
+// this, single-article posts would never be released and would eventually be
+// aged out and deleted.
 func IsComplete(collected, declaredTotal int) bool {
-	return declaredTotal > 0 && collected >= declaredTotal
+	if declaredTotal > 0 {
+		return collected >= declaredTotal
+	}
+	return collected >= 1
 }

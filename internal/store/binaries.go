@@ -143,19 +143,23 @@ WHERE group_id = $1 AND norm_subject = $2 AND poster = $3 AND binary_id IS NULL 
 	// any existing binary (parts arriving across multiple scans), keep the
 	// larger declared total, and recompute completeness.
 	const upsert = `
+-- Completeness: when the declared total is known (>0) the binary is complete
+-- once all parts arrive; when the total is unknown (0) the post carried no
+-- segment counter, i.e. a single-article file, which is complete with its one
+-- part. collected is always >= 1 here (we skip empty groupings).
 INSERT INTO binaries
     (group_id, norm_subject, poster, total_parts, collected_parts, total_bytes, posted_at, complete)
 VALUES ($1, $2, $3, $4::int, $5::int, $6::bigint, $7,
-        ($5::int >= $4::int AND $4::int > 0))
+        ($4::int = 0 OR $5::int >= $4::int))
 ON CONFLICT (group_id, norm_subject, poster) DO UPDATE SET
     collected_parts = binaries.collected_parts + EXCLUDED.collected_parts,
     total_parts     = GREATEST(binaries.total_parts, EXCLUDED.total_parts),
     total_bytes     = binaries.total_bytes + EXCLUDED.total_bytes,
     posted_at       = LEAST(binaries.posted_at, EXCLUDED.posted_at),
     complete        = (
-        (binaries.collected_parts + EXCLUDED.collected_parts)
+        GREATEST(binaries.total_parts, EXCLUDED.total_parts) = 0
+        OR (binaries.collected_parts + EXCLUDED.collected_parts)
             >= GREATEST(binaries.total_parts, EXCLUDED.total_parts)
-        AND GREATEST(binaries.total_parts, EXCLUDED.total_parts) > 0
     ),
     updated_at      = now()
 RETURNING id`
