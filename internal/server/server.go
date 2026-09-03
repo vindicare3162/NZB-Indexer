@@ -141,7 +141,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 
 	srv := &http.Server{
 		Addr:         cfg.Server.ListenAddr,
-		Handler:      mux,
+		Handler:      accessLog(logger, mux),
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}

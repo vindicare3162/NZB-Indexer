@@ -12,10 +12,45 @@ import (
 // ctxKey is the private type for context values set by this package.
 type ctxKey int
 
-const principalKey ctxKey = iota
+const (
+	principalKey ctxKey = iota
+	holderKey
+)
 
-// WithPrincipal returns a copy of ctx carrying the given principal.
+// principalHolder is a mutable cell an outer middleware (e.g. an access logger)
+// can install so it can observe the principal that downstream auth middleware
+// attaches on a child context. Because WithPrincipal derives a new context, the
+// value it sets is not visible to a parent handler; the holder bridges that gap
+// without exposing auth internals.
+type principalHolder struct {
+	p     Principal
+	isSet bool
+}
+
+// WithPrincipalHolder returns a copy of ctx carrying an empty holder plus the
+// holder itself. An outer middleware installs this before calling the handler,
+// then reads the holder after the handler returns to learn who was authenticated.
+func WithPrincipalHolder(ctx context.Context) (context.Context, *principalHolder) {
+	h := &principalHolder{}
+	return context.WithValue(ctx, holderKey, h), h
+}
+
+// Principal returns the captured principal and whether one was set.
+func (h *principalHolder) Principal() (Principal, bool) {
+	if h == nil {
+		return Principal{}, false
+	}
+	return h.p, h.isSet
+}
+
+// WithPrincipal returns a copy of ctx carrying the given principal. When an
+// upstream holder is present it is also populated, so an outer middleware can
+// observe the authenticated identity.
 func WithPrincipal(ctx context.Context, p Principal) context.Context {
+	if h, ok := ctx.Value(holderKey).(*principalHolder); ok {
+		h.p = p
+		h.isSet = true
+	}
 	return context.WithValue(ctx, principalKey, p)
 }
 
