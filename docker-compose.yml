@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: goindex
+      POSTGRES_PASSWORD: ${GOINDEX_DB_PASSWORD:-changeme}
+      POSTGRES_DB: goindex
+    volumes:
+      - goindex-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U goindex -d goindex"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  goindex:
+    build:
+      context: .
+      args:
+        VERSION: ${GOINDEX_VERSION:-docker}
+    image: goindex:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${GOINDEX_PORT:-8080}:8080"
+    environment:
+      # Database
+      GOINDEX_DB_HOST: db
+      GOINDEX_DB_PORT: "5432"
+      GOINDEX_DB_USER: goindex
+      GOINDEX_DB_PASSWORD: ${GOINDEX_DB_PASSWORD:-changeme}
+      GOINDEX_DB_NAME: goindex
+      GOINDEX_DB_SSL_MODE: disable
+      # Server
+      GOINDEX_SERVER_LISTEN_ADDR: ":8080"
+      GOINDEX_SERVER_BASE_URL: ${GOINDEX_BASE_URL:-http://localhost:8080}
+      # Auth (CHANGE the JWT secret for any real deployment)
+      GOINDEX_AUTH_JWT_SECRET: ${GOINDEX_JWT_SECRET:-change-me-to-a-long-random-string}
+      # NNTP provider (fill these in)
+      GOINDEX_NNTP_HOST: ${GOINDEX_NNTP_HOST:-news.example.com}
+      GOINDEX_NNTP_PORT: ${GOINDEX_NNTP_PORT:-563}
+      GOINDEX_NNTP_TLS: ${GOINDEX_NNTP_TLS:-true}
+      GOINDEX_NNTP_USERNAME: ${GOINDEX_NNTP_USERNAME:-}
+      GOINDEX_NNTP_PASSWORD: ${GOINDEX_NNTP_PASSWORD:-}
+      GOINDEX_NNTP_MAX_CONNS: ${GOINDEX_NNTP_MAX_CONNS:-20}
+      # Scanning
+      GOINDEX_SCAN_GROUPS: ${GOINDEX_SCAN_GROUPS:-}
+      GOINDEX_SCAN_INTERVAL: ${GOINDEX_SCAN_INTERVAL:-15m}
+      GOINDEX_LOG_LEVEL: ${GOINDEX_LOG_LEVEL:-info}
+    restart: unless-stopped
+
+volumes:
+  goindex-db:

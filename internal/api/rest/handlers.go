@@ -1,0 +1,204 @@
+package rest
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+
+	"github.com/vindicare/goindex/internal/auth"
+	"github.com/vindicare/goindex/internal/store"
+)
+
+func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+type loginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type loginResponse struct {
+	Token    string `json:"token"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
+}
+
+func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req loginRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	token, p, err := a.authn.Login(r.Context(), req.Username, req.Password)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	writeJSON(w, http.StatusOK, loginResponse{Token: token, Username: p.Username, Role: p.Role})
+}
+
+func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_id":  p.UserID,
+		"username": p.Username,
+		"role":     p.Role,
+		"is_admin": p.IsAdmin(),
+	})
+}
+
+func (a *API) handleCategories(w http.ResponseWriter, r *http.Request) {
+	cats, err := a.store.ListCategories(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load categories")
+		return
+	}
+	writeJSON(w, http.StatusOK, cats)
+}
+
+type searchResponse struct {
+	Total    int             `json:"total"`
+	Limit    int             `json:"limit"`
+	Offset   int             `json:"offset"`
+	Releases []store.Release `json:"releases"`
+}
+
+func (a *API) handleSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit := parseIntDefault(q.Get("limit"), 50)
+	if limit > 200 {
+		limit = 200
+	}
+	offset := parseIntDefault(q.Get("offset"), 0)
+
+	var cats []int
+	if c := q.Get("cat"); c != "" {
+		if n, err := strconv.Atoi(c); err == nil {
+			cats = []int{n}
+		}
+	}
+
+	releases, total, err := a.store.SearchReleases(r.Context(), store.SearchFilter{
+		Query:      q.Get("q"),
+		Categories: cats,
+		Limit:      limit,
+		Offset:     offset,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "search failed")
+		return
+	}
+	if releases == nil {
+		releases = []store.Release{}
+	}
+	writeJSON(w, http.StatusOK, searchResponse{
+		Total: total, Limit: limit, Offset: offset, Releases: releases,
+	})
+}
+
+func (a *API) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {
+	guid := r.PathValue("guid")
+	rel, err := a.store.GetReleaseByGUID(r.Context(), guid)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "release not found")
+		return
+	}
+	files, err := a.store.GetReleaseFiles(r.Context(), rel.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load release files")
+		return
+	}
+	if files == nil {
+		files = []store.ReleaseFile{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"release": rel,
+		"files":   files,
+	})
+}
+
+func (a *API) handleDownload(w http.ResponseWriter, r *http.Request) {
+	guid := r.PathValue("guid")
+	data, filename, err := a.nzb.ForGUID(r.Context(), guid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "release not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to generate NZB")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-nzb")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// --- self-service API keys ---
+
+func (a *API) handleListMyKeys(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	keys, err := a.store.ListAPIKeys(r.Context(), p.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list keys")
+		return
+	}
+	if keys == nil {
+		keys = []store.APIKey{}
+	}
+	writeJSON(w, http.StatusOK, keys)
+}
+
+type createKeyRequest struct {
+	Label string `json:"label"`
+}
+
+func (a *API) handleCreateMyKey(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var req createKeyRequest
+	_ = decodeJSON(r, &req) // label optional; ignore decode errors on empty body
+
+	key, err := auth.GenerateAPIKey()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate key")
+		return
+	}
+	label := req.Label
+	if label == "" {
+		label = "default"
+	}
+	created, err := a.store.CreateAPIKey(r.Context(), p.UserID, key, label)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create key")
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+func (a *API) handleDeleteMyKey(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid key id")
+		return
+	}
+	if err := a.store.DeleteAPIKey(r.Context(), p.UserID, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "key not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to delete key")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// parseIntDefault parses s or returns def.
+func parseIntDefault(s string, def int) int {
+	if n, err := strconv.Atoi(s); err == nil {
+		return n
+	}
+	return def
+}

@@ -1,0 +1,55 @@
+# goindex example configuration.
+#
+# Every value here can also be supplied via a GOINDEX_-prefixed environment
+# variable (env vars take precedence over this file). Copy to config.yaml and
+# edit, or configure entirely through the environment.
+
+log_level: info
+
+server:
+  listen_addr: ":8080"
+  # Externally reachable base URL, used to build absolute NZB links in
+  # Newznab responses. Set this to how Sonarr/Radarr reach the indexer.
+  base_url: "http://localhost:8080"
+  read_timeout: 30s
+  write_timeout: 60s
+
+database:
+  # Either set dsn directly, or the discrete fields below.
+  # dsn: "postgres://goindex:secret@localhost:5432/goindex?sslmode=disable"
+  host: localhost
+  port: 5432
+  user: goindex
+  password: "changeme"
+  name: goindex
+  ssl_mode: disable
+  max_conns: 10
+
+nntp:
+  host: news.example.com
+  port: 563
+  tls: true
+  username: "your-usenet-username"
+  password: "your-usenet-password"
+  # Keep at or below your provider's connection limit.
+  max_conns: 20
+  connect_timeout: 30s
+
+scan:
+  groups:
+    - alt.binaries.example
+  # Articles per XOVER request.
+  batch_size: 10000
+  # How often forward scans run.
+  interval: 15m
+  # Backfill depth. 0 disables date-based backfill.
+  backfill_days: 0
+  # Cap articles walked backwards per backfill pass. 0 = unlimited.
+  backfill_max_articles: 0
+
+auth:
+  # Required in production; signs SPA session tokens.
+  jwt_secret: "change-me-to-a-long-random-string"
+  session_ttl: 24h
+  default_rate_limit: 100
+  rate_limit_window: 1h

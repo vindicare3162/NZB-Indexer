@@ -1,0 +1,15 @@
+# Build artifacts and local files that should not enter the build context.
+goindex
+goindex.exe
+*.exe
+*.out
+
+web/node_modules/
+web/dist/assets/
+
+.git/
+.gitignore
+*.md
+config.local.yaml
+*.local.yaml
+.env

@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<!--
+  Unraid Community Applications template for goindex.
+
+  goindex needs a PostgreSQL database. Either point it at an existing Postgres
+  container/host via the DB_* variables, or run one alongside it. Set the NNTP
+  provider credentials and a long random JWT secret before starting.
+
+  After first start, create an admin user by opening the container console and
+  running:  goindex user add -username admin -password <pw> -admin -apikey
+-->
+<Container version="2">
+  <Name>goindex</Name>
+  <Repository>goindex:latest</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support/>
+  <Project/>
+  <Overview>Self-hosted NZB indexer. Scans Usenet newsgroup headers, builds searchable releases, and serves a Newznab-compatible API for Sonarr/Radarr/Prowlarr plus a web UI. Requires a PostgreSQL database and a Usenet provider account.</Overview>
+  <Category>Downloaders: MediaApp:Other</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <Icon/>
+  <ExtraParams/>
+  <PostArgs>serve</PostArgs>
+  <DonateText/>
+  <DonateLink/>
+
+  <Config Name="WebUI Port" Target="8080" Default="8080" Mode="tcp" Description="Web UI and API port" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+
+  <Config Name="Base URL" Target="GOINDEX_SERVER_BASE_URL" Default="http://localhost:8080" Description="Externally reachable base URL (used for NZB download links)" Type="Variable" Display="always" Required="true" Mask="false">http://localhost:8080</Config>
+
+  <Config Name="JWT Secret" Target="GOINDEX_AUTH_JWT_SECRET" Default="" Description="Long random string used to sign login sessions. REQUIRED." Type="Variable" Display="always" Required="true" Mask="true"/>
+
+  <Config Name="DB Host" Target="GOINDEX_DB_HOST" Default="" Description="PostgreSQL host" Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="DB Port" Target="GOINDEX_DB_PORT" Default="5432" Description="PostgreSQL port" Type="Variable" Display="advanced" Required="false" Mask="false">5432</Config>
+  <Config Name="DB User" Target="GOINDEX_DB_USER" Default="goindex" Description="PostgreSQL user" Type="Variable" Display="advanced" Required="false" Mask="false">goindex</Config>
+  <Config Name="DB Password" Target="GOINDEX_DB_PASSWORD" Default="" Description="PostgreSQL password" Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="DB Name" Target="GOINDEX_DB_NAME" Default="goindex" Description="PostgreSQL database name" Type="Variable" Display="advanced" Required="false" Mask="false">goindex</Config>
+
+  <Config Name="NNTP Host" Target="GOINDEX_NNTP_HOST" Default="" Description="Usenet provider hostname" Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="NNTP Port" Target="GOINDEX_NNTP_PORT" Default="563" Description="Usenet provider port (563 TLS, 119 plaintext)" Type="Variable" Display="always" Required="false" Mask="false">563</Config>
+  <Config Name="NNTP TLS" Target="GOINDEX_NNTP_TLS" Default="true" Description="Use TLS for the NNTP connection" Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+  <Config Name="NNTP Username" Target="GOINDEX_NNTP_USERNAME" Default="" Description="Usenet provider username" Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="NNTP Password" Target="GOINDEX_NNTP_PASSWORD" Default="" Description="Usenet provider password" Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="NNTP Max Connections" Target="GOINDEX_NNTP_MAX_CONNS" Default="20" Description="Max NNTP connections (keep at or below your provider limit)" Type="Variable" Display="advanced" Required="false" Mask="false">20</Config>
+
+  <Config Name="Scan Groups" Target="GOINDEX_SCAN_GROUPS" Default="" Description="Comma-separated newsgroups to index (can also be managed in the web UI)" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Scan Interval" Target="GOINDEX_SCAN_INTERVAL" Default="15m" Description="How often to scan for new posts (e.g. 15m, 1h)" Type="Variable" Display="advanced" Required="false" Mask="false">15m</Config>
+  <Config Name="Log Level" Target="GOINDEX_LOG_LEVEL" Default="info" Description="debug | info | warn | error" Type="Variable" Display="advanced" Required="false" Mask="false">info</Config>
+</Container>

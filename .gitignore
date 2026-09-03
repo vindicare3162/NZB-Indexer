@@ -1,0 +1,22 @@
+# Binaries
+/goindex
+/goindex.exe
+*.exe
+*.out
+
+# Local config with secrets
+config.local.yaml
+*.local.yaml
+.env
+
+# Frontend build artifacts.
+/web/node_modules/
+# Built SPA assets are produced by `npm run build` and not committed. A
+# placeholder web/dist/index.html + .gitkeep are committed so `go build` can
+# always satisfy the go:embed directive; production/Docker builds overwrite
+# dist/ with the real bundle.
+/web/dist/assets/
+
+# Editor/OS
+.DS_Store
+.idea/

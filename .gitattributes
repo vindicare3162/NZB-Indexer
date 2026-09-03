@@ -1,0 +1,11 @@
+# Normalize line endings to LF for all text files so the repo is consistent
+# across platforms (Go tooling, shell scripts, and Docker all expect LF).
+* text=auto eol=lf
+
+# Explicitly treat known binary/asset types as binary.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
