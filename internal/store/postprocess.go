@@ -101,6 +101,20 @@ ORDER BY r.id, p.part_number, p.article_number`, ids)
 	return out, segRows.Err()
 }
 
+// RequeueFailedReleases moves every 'failed' release back into the
+// post-processing queue by resetting it to 'pending' and clearing its attempt
+// counter, so the next pass reprocesses it. It returns the number of releases
+// reset. Intended for an operator "retry failed" action after a temporary
+// provider problem is resolved.
+func (s *Store) RequeueFailedReleases(ctx context.Context) (int64, error) {
+	ct, err := s.pool.Exec(ctx,
+		`UPDATE releases SET pp_status = 'pending', pp_attempts = 0, updated_at = now() WHERE pp_status = 'failed'`)
+	if err != nil {
+		return 0, fmt.Errorf("requeue failed releases: %w", err)
+	}
+	return ct.RowsAffected(), nil
+}
+
 // SetReleasePPStatus updates a release's post-processing status.
 func (s *Store) SetReleasePPStatus(ctx context.Context, id int64, status string) error {
 	_, err := s.pool.Exec(ctx,

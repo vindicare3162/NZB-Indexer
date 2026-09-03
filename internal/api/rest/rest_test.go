@@ -22,12 +22,13 @@ type mockStore struct {
 	total      int
 	lastFilter store.SearchFilter
 	files      []store.ReleaseFile
-	cats      []store.Category
-	groups    []store.Group
-	users     []store.User
-	keys      []store.APIKey
-	servers2  []store.Server
-	userCount int64
+	cats           []store.Category
+	groups         []store.Group
+	users          []store.User
+	keys           []store.APIKey
+	servers2       []store.Server
+	userCount      int64
+	requeuedFailed bool
 
 	createdGroup  string
 	deletedGroup  int64
@@ -60,6 +61,10 @@ func (m *mockStore) GetReleaseFiles(context.Context, int64) ([]store.ReleaseFile
 	return m.files, nil
 }
 func (m *mockStore) ListCategories(context.Context) ([]store.Category, error) { return m.cats, nil }
+func (m *mockStore) RequeueFailedReleases(context.Context) (int64, error) {
+	m.requeuedFailed = true
+	return 7, nil
+}
 func (m *mockStore) PipelineStatistics(context.Context) (store.PipelineStats, error) {
 	return store.PipelineStats{
 		PartsTotal: 1000, PartsUnassigned: 200,
@@ -474,6 +479,27 @@ func TestAdminTriggersAndStatus(t *testing.T) {
 	}
 	if env.jobs.postProcessed != 1 {
 		t.Errorf("postProcessed = %d, want 1", env.jobs.postProcessed)
+	}
+
+	rec = do(t, env, http.MethodPost, "/api/v1/admin/postprocess/retry-failed", env.adminTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry-failed status = %d", rec.Code)
+	}
+	if !env.store.requeuedFailed {
+		t.Error("RequeueFailedReleases was not called")
+	}
+	// Requeuing should also kick a post-process pass.
+	if env.jobs.postProcessed != 2 {
+		t.Errorf("postProcessed = %d, want 2 (retry-failed should trigger a pass)", env.jobs.postProcessed)
+	}
+	var rf struct {
+		Requeued int64 `json:"requeued"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rf); err != nil {
+		t.Fatalf("decode retry-failed: %v", err)
+	}
+	if rf.Requeued != 7 {
+		t.Errorf("requeued = %d, want 7", rf.Requeued)
 	}
 
 	rec = do(t, env, http.MethodGet, "/api/v1/admin/status", env.adminTok, nil)
