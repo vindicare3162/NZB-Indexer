@@ -7,6 +7,11 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- First-run setup flow (#2). On a fresh instance the web UI presents a setup
+  screen to create the initial admin account, backed by public
+  `GET /api/v1/setup/status` and `POST /api/v1/setup` endpoints. Setup only
+  works while no users exist (guarding against privilege escalation); the CLI
+  `user add` still works.
 - Per-group backfill targets configurable from the admin UI (#5). Each group can
   set a day cutoff and/or a per-pass article cap that overrides the global
   backfill defaults; the groups table shows the target and backfill progress.

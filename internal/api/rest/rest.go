@@ -37,6 +37,7 @@ type Store interface {
 	DeleteServer(ctx context.Context, id int64) error
 
 	// Users & API keys (admin / self)
+	CountUsers(ctx context.Context) (int64, error)
 	ListUsers(ctx context.Context) ([]store.User, error)
 	CreateUser(ctx context.Context, in store.CreateUserInput) (store.User, error)
 	DeleteUser(ctx context.Context, id int64) error
@@ -130,6 +131,8 @@ func (a *API) Routes() http.Handler {
 	// Public.
 	mux.HandleFunc("POST /api/v1/login", a.handleLogin)
 	mux.HandleFunc("GET /api/v1/health", a.handleHealth)
+	mux.HandleFunc("GET /api/v1/setup/status", a.handleSetupStatus)
+	mux.HandleFunc("POST /api/v1/setup", a.handleSetup)
 
 	// Session-protected (any authenticated user).
 	sess := a.session.RequireSession

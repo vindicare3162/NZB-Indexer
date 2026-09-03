@@ -39,6 +39,57 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, loginResponse{Token: token, Username: p.Username, Role: p.Role})
 }
 
+// handleSetupStatus reports whether first-run setup is required (no users yet).
+func (a *API) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
+	n, err := a.store.CountUsers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check setup status")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"setup_required": n == 0})
+}
+
+// handleSetup creates the first admin account. It is only permitted when no
+// users exist, preventing any privilege-escalation once the app is set up.
+func (a *API) handleSetup(w http.ResponseWriter, r *http.Request) {
+	n, err := a.store.CountUsers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check setup status")
+		return
+	}
+	if n > 0 {
+		// Setup already completed; refuse to create another account here.
+		writeError(w, http.StatusConflict, "setup has already been completed")
+		return
+	}
+
+	var req loginRequest // reuse {username, password}
+	if err := decodeJSON(r, &req); err != nil || req.Username == "" {
+		writeError(w, http.StatusBadRequest, "username and password are required")
+		return
+	}
+	hash, err := auth.HashPassword(req.Password)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, err := a.store.CreateUser(r.Context(), store.CreateUserInput{
+		Username: req.Username, PasswordHash: hash, Role: store.RoleAdmin,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create admin user")
+		return
+	}
+
+	// Issue a session token so the UI can proceed straight into the app.
+	token, p, err := a.authn.Login(r.Context(), req.Username, req.Password)
+	if err != nil {
+		// The account exists even if token issuance failed; the user can log in.
+		writeJSON(w, http.StatusCreated, map[string]string{"username": req.Username, "role": store.RoleAdmin})
+		return
+	}
+	writeJSON(w, http.StatusCreated, loginResponse{Token: token, Username: p.Username, Role: p.Role})
+}
+
 func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
