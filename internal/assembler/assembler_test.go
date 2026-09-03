@@ -15,11 +15,12 @@ func TestIsComplete(t *testing.T) {
 		collected, total int
 		want             bool
 	}{
-		{0, 0, false},  // nothing known
-		{5, 0, false},  // total unknown -> never complete
-		{4, 5, false},  // missing one
-		{5, 5, true},   // exact
-		{6, 5, true},   // more than declared (duplicates) still complete
+		{0, 0, false}, // nothing collected -> not complete
+		{1, 0, true},  // one part, no declared total -> single-article file, complete
+		{5, 0, true},  // parts present, no declared total -> complete
+		{4, 5, false}, // missing one
+		{5, 5, true},  // exact
+		{6, 5, true},  // more than declared (duplicates) still complete
 	}
 	for _, c := range cases {
 		if got := IsComplete(c.collected, c.total); got != c.want {
@@ -255,8 +256,9 @@ func TestAssembleGroupsAndCompletion(t *testing.T) {
 	seedParts(t, st, g.ID, "Complete.Release.mkv", "poster1", 1000, []int{3, 1, 5, 2, 4}, 5)
 	// Incomplete binary: 2 of 4 parts.
 	seedParts(t, st, g.ID, "Incomplete.Release.mkv", "poster2", 2000, []int{1, 3}, 4)
-	// Unknown-total binary: parts present but total_parts = 0 -> never complete.
-	seedParts(t, st, g.ID, "Unknown.Total.file", "poster3", 3000, []int{0, 0}, 0)
+	// Single-article file: one part, no declared total (no yEnc counter) -> a
+	// complete single-file binary (issue #28).
+	seedParts(t, st, g.ID, "Single.Article.File", "poster3", 3000, []int{1}, 0)
 
 	a := New(st, nil, Options{BatchLimit: 100})
 	res, err := a.Assemble(ctx)
@@ -267,23 +269,34 @@ func TestAssembleGroupsAndCompletion(t *testing.T) {
 		t.Errorf("BinariesTouched = %d, want 3", res.BinariesTouched)
 	}
 
-	// Complete binaries should be exactly the one full 5/5 set.
+	// Complete binaries: the full 5/5 set and the single-article file.
 	complete, err := st.ListCompleteUnreleasedBinaries(ctx, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(complete) != 1 {
-		t.Fatalf("complete binaries = %d, want 1", len(complete))
+	if len(complete) != 2 {
+		t.Fatalf("complete binaries = %d, want 2 (5/5 set + single-article)", len(complete))
 	}
-	b := complete[0]
-	if b.NormSubject != "Complete.Release.mkv" {
-		t.Errorf("complete binary = %q, want Complete.Release.mkv", b.NormSubject)
+	byName := map[string]store.Binary{}
+	for _, b := range complete {
+		byName[b.NormSubject] = b
 	}
-	if b.CollectedParts != 5 || b.TotalParts != 5 {
-		t.Errorf("complete binary parts = %d/%d, want 5/5", b.CollectedParts, b.TotalParts)
+	full, ok := byName["Complete.Release.mkv"]
+	if !ok {
+		t.Fatal("expected Complete.Release.mkv to be complete")
 	}
-	if b.TotalBytes != 5000 {
-		t.Errorf("total bytes = %d, want 5000", b.TotalBytes)
+	if full.CollectedParts != 5 || full.TotalParts != 5 {
+		t.Errorf("full binary parts = %d/%d, want 5/5", full.CollectedParts, full.TotalParts)
+	}
+	single, ok := byName["Single.Article.File"]
+	if !ok {
+		t.Fatal("expected Single.Article.File (total_parts=0, 1 part) to be complete")
+	}
+	if single.CollectedParts != 1 || single.TotalParts != 0 {
+		t.Errorf("single-article binary = %d/%d, want 1/0", single.CollectedParts, single.TotalParts)
+	}
+	if byName["Incomplete.Release.mkv"].Complete {
+		t.Error("Incomplete.Release.mkv (2/4) must not be complete")
 	}
 
 	// All parts should now be linked to a binary (none left unassigned).
