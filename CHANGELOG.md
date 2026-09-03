@@ -7,6 +7,15 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Collection grouping for multi-file posts (#18). Multi-file Usenet posts of the
+  form `[n/total] "name.partNN.rar"` (rar sets plus their PAR2) are now indexed
+  as a single release containing every file's segments, instead of one bogus
+  release per file. The scanner parses the `[n/total]` file counter and derives
+  a stable collection key from the shared base name; the assembler folds the
+  whole collection into one binary and judges completeness by files present.
+  Single-file posts are unaffected. This also unblocks obfuscated-name recovery
+  (#1): because the PAR2 now lands in the same release as the rar volumes,
+  post-processing can read the real filenames from it.
 - Real-name recovery for obfuscated releases (#1). When a release name looks
   obfuscated (random hex/base64 with no real words), post-processing now probes
   candidate segments and identifies PAR2 files by their packet magic rather than

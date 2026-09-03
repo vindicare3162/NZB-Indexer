@@ -61,6 +61,10 @@ type Binary struct {
 	Released       bool
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// CollectionKey is non-empty when this binary represents a multi-file
+	// collection; CollectionFiles is the number of files in it.
+	CollectionKey   string
+	CollectionFiles int
 }
 
 // Release is a searchable, categorized, human-named item.

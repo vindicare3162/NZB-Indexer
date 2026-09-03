@@ -67,9 +67,16 @@ func (b *Builder) Build(ctx context.Context) (Result, error) {
 	for _, bin := range bins {
 		res.Processed++
 
-		name := CleanName(bin.NormSubject)
+		// For a collection binary the norm_subject is the collection key
+		// ("base/count"); name it from the collection base. Post-processing may
+		// later replace this with a real name recovered from the PAR2.
+		subject := bin.NormSubject
+		if bin.CollectionKey != "" {
+			subject = collectionBaseName(bin.CollectionKey)
+		}
+		name := CleanName(subject)
 		if name == "" {
-			name = bin.NormSubject
+			name = subject
 		}
 		cat := Categorize(name)
 		hash := ReleaseHash(name, bin.TotalBytes, bin.GroupID)
@@ -77,7 +84,7 @@ func (b *Builder) Build(ctx context.Context) (Result, error) {
 		in := store.ReleaseInput{
 			GUID:            uuid.NewString(),
 			Name:            name,
-			OriginalSubject: bin.NormSubject,
+			OriginalSubject: subject,
 			SearchName:      SearchName(name),
 			CategoryID:      &cat,
 			GroupID:         &bin.GroupID,
