@@ -40,8 +40,19 @@ scan:
     - alt.binaries.example
   # Articles per XOVER request.
   batch_size: 10000
-  # How often forward scans run.
+  # How often forward scans run (env: GOINDEX_SCAN_INTERVAL).
   interval: 15m
+  # How often the assemble loop runs (env: GOINDEX_SCAN_DOWNSTREAM_INTERVAL).
+  downstream_interval: 5m
+  # How often the release-build loop runs (env: GOINDEX_SCAN_BUILD_INTERVAL).
+  build_interval: 2m
+  # How often post-processing (PAR2 name/NFO recovery) runs
+  # (env: GOINDEX_SCAN_POSTPROCESS_INTERVAL).
+  postprocess_interval: 5m
+  # Cap articles ingested per forward-scan pass per group so a firehose group
+  # yields; the watermark resumes next pass. 0 = unlimited.
+  # (env: GOINDEX_SCAN_FORWARD_MAX_ARTICLES).
+  forward_max_articles: 1000000
   # Backfill depth. 0 disables date-based backfill.
   backfill_days: 0
   # Cap articles walked backwards per backfill pass. 0 = unlimited.

@@ -7,6 +7,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- The full pipeline schedule is now configurable via environment variables
+  (#52). In addition to `GOINDEX_SCAN_INTERVAL`, the assemble, release-build and
+  post-processing cadences and the forward-scan cap are settable without a YAML
+  file: `GOINDEX_SCAN_DOWNSTREAM_INTERVAL`, `GOINDEX_SCAN_BUILD_INTERVAL`,
+  `GOINDEX_SCAN_POSTPROCESS_INTERVAL`, `GOINDEX_SCAN_FORWARD_MAX_ARTICLES`.
+  `config.example.yaml` documents the corresponding YAML keys.
 - Obfuscated releases are excluded from search by default (#54). Releases whose
   name is still random hex/base64 (post-processing couldn't recover a real name)
   are flagged `obfuscated` at build time and cleared when a real name is

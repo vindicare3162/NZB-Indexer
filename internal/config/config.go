@@ -233,6 +233,10 @@ func applyEnv(cfg *Config) {
 	envStrSlice("GOINDEX_SCAN_GROUPS", &cfg.Scan.Groups)
 	envInt("GOINDEX_SCAN_BATCH_SIZE", &cfg.Scan.BatchSize)
 	envDur("GOINDEX_SCAN_INTERVAL", &cfg.Scan.Interval)
+	envDur("GOINDEX_SCAN_DOWNSTREAM_INTERVAL", &cfg.Scan.DownstreamInterval)
+	envDur("GOINDEX_SCAN_BUILD_INTERVAL", &cfg.Scan.BuildInterval)
+	envDur("GOINDEX_SCAN_POSTPROCESS_INTERVAL", &cfg.Scan.PostProcessInterval)
+	envInt("GOINDEX_SCAN_FORWARD_MAX_ARTICLES", &cfg.Scan.ForwardMaxArticles)
 	envInt("GOINDEX_SCAN_BACKFILL_DAYS", &cfg.Scan.BackfillDays)
 	envInt("GOINDEX_SCAN_BACKFILL_MAX_ARTICLES", &cfg.Scan.BackfillMaxArticles)
 
