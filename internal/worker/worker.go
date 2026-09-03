@@ -532,6 +532,15 @@ func (w *Worker) Status() any {
 	return m
 }
 
+// MetricsSnapshot returns a typed copy of the current pipeline metrics, for
+// callers (e.g. the Prometheus exporter) that need the concrete fields rather
+// than the JSON-serialisable any from Status().
+func (w *Worker) MetricsSnapshot() Metrics {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.metrics
+}
+
 // --- metrics helpers ---
 
 func (w *Worker) setStage(stage string) {
