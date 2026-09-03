@@ -88,6 +88,18 @@ func TestCaps(t *testing.T) {
 	if c.Searching.TVSearch.Available != "yes" {
 		t.Error("tv-search should be available")
 	}
+	// Advertised params must match what the handler actually resolves: TV keeps
+	// season/ep; unsupported external ids (rid/tvdbid/imdbid) are not advertised.
+	tv := c.Searching.TVSearch.SupportedParams
+	if !strings.Contains(tv, "season") || !strings.Contains(tv, "ep") {
+		t.Errorf("tv-search params missing season/ep: %q", tv)
+	}
+	if strings.Contains(tv, "rid") || strings.Contains(tv, "tvdbid") {
+		t.Errorf("tv-search should not advertise unsupported ids: %q", tv)
+	}
+	if strings.Contains(c.Searching.MovieSearch.SupportedParams, "imdbid") {
+		t.Errorf("movie-search should not advertise imdbid: %q", c.Searching.MovieSearch.SupportedParams)
+	}
 	// Movies parent with an HD subcat.
 	var moviesFound bool
 	for _, cat := range c.Categories.Category {

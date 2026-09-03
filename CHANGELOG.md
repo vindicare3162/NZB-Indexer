@@ -76,6 +76,11 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   page shows a live, auto-refreshing log view.
 
 ### Fixed
+- Newznab caps no longer advertise unsupported id search params (#55). As a
+  header-only indexer, goindex can't resolve `rid`/`tvdbid`/`imdbid` to
+  releases, so advertising them led clients to prefer id searches that return
+  nothing. Caps now advertise only what works: `q,cat,season,ep` for TV and
+  `q,cat` for movies, so clients fall back to text/episode searches.
 - Parts with non-UTF-8 bytes in their subject/poster are now stored (#49).
   NNTP overview lines are byte streams and subjects/posters routinely carry
   Latin-1/CP437 bytes; PostgreSQL `TEXT` rejected them, failing the insert (and
