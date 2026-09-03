@@ -31,6 +31,7 @@ type mockStore struct {
 	userCount      int64
 	requeuedFailed bool
 	pingErr        error
+	savedSettings  map[string]string
 
 	createdGroup  string
 	deletedGroup  int64
@@ -48,6 +49,10 @@ type mockStore struct {
 }
 
 func (m *mockStore) Ping(context.Context) error { return m.pingErr }
+func (m *mockStore) SetSettings(_ context.Context, kv map[string]string) error {
+	m.savedSettings = kv
+	return nil
+}
 func (m *mockStore) SearchReleases(_ context.Context, f store.SearchFilter) ([]store.Release, int, error) {
 	m.lastFilter = f
 	return m.releases, m.total, nil
@@ -176,12 +181,23 @@ func (mockNZB) ForGUID(context.Context, string) ([]byte, string, error) {
 type mockJobs struct {
 	scanned, backfilled string
 	postProcessed       int
+	schedule            Schedule
 }
 
 func (m *mockJobs) TriggerScan(g string) error     { m.scanned = g; return nil }
 func (m *mockJobs) TriggerBackfill(g string) error { m.backfilled = g; return nil }
 func (m *mockJobs) TriggerPostProcess() error      { m.postProcessed++; return nil }
 func (m *mockJobs) Status() any                    { return map[string]string{"state": "idle"} }
+func (m *mockJobs) CurrentSchedule() Schedule {
+	if m.schedule == (Schedule{}) {
+		return Schedule{
+			ScanInterval: 15 * time.Minute, DownstreamInterval: 5 * time.Minute,
+			BuildInterval: 2 * time.Minute, PostProcessInterval: 5 * time.Minute,
+		}
+	}
+	return m.schedule
+}
+func (m *mockJobs) Reconfigure(s Schedule) { m.schedule = s }
 
 // testSetup wires an API with a real auth service and returns it plus the
 // mocks and pre-minted tokens.
@@ -694,5 +710,68 @@ func TestReadyProbe(t *testing.T) {
 	rec = do(t, env, http.MethodGet, "/api/v1/health", "", nil)
 	if rec.Code != http.StatusOK {
 		t.Errorf("health status = %d, want 200 (liveness independent of DB)", rec.Code)
+	}
+}
+
+func TestGetSchedule(t *testing.T) {
+	env := setup(t)
+	rec := do(t, env, http.MethodGet, "/api/v1/admin/schedule", env.adminTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get schedule status = %d, body=%s", rec.Code, rec.Body)
+	}
+	var resp scheduleResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.ScanIntervalSec != 900 { // 15m default from mockJobs
+		t.Errorf("scan_interval_sec = %d, want 900", resp.ScanIntervalSec)
+	}
+	if resp.PostProcessInterval == "" {
+		t.Error("expected a human-readable postprocess_interval string")
+	}
+}
+
+func TestUpdateSchedule(t *testing.T) {
+	env := setup(t)
+
+	// Valid update: applies to the controller and persists to settings.
+	rec := do(t, env, http.MethodPut, "/api/v1/admin/schedule", env.adminTok,
+		updateScheduleRequest{ScanInterval: "10m", PostProcessInterval: "3m"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update schedule status = %d, body=%s", rec.Code, rec.Body)
+	}
+	if env.jobs.schedule.ScanInterval != 10*time.Minute {
+		t.Errorf("worker not reconfigured: scan = %s, want 10m", env.jobs.schedule.ScanInterval)
+	}
+	if env.jobs.schedule.PostProcessInterval != 3*time.Minute {
+		t.Errorf("worker not reconfigured: pp = %s, want 3m", env.jobs.schedule.PostProcessInterval)
+	}
+	if env.store.savedSettings[settingScanInterval] == "" {
+		t.Error("scan interval not persisted to settings")
+	}
+
+	// Invalid duration -> 400.
+	rec = do(t, env, http.MethodPut, "/api/v1/admin/schedule", env.adminTok,
+		updateScheduleRequest{ScanInterval: "not-a-duration"})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid duration status = %d, want 400", rec.Code)
+	}
+
+	// Non-positive duration -> 400.
+	rec = do(t, env, http.MethodPut, "/api/v1/admin/schedule", env.adminTok,
+		updateScheduleRequest{BuildInterval: "0s"})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("zero duration status = %d, want 400", rec.Code)
+	}
+
+	// No fields -> 400.
+	rec = do(t, env, http.MethodPut, "/api/v1/admin/schedule", env.adminTok, updateScheduleRequest{})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("empty update status = %d, want 400", rec.Code)
+	}
+
+	// Non-admin forbidden.
+	rec = do(t, env, http.MethodPut, "/api/v1/admin/schedule", env.userTok,
+		updateScheduleRequest{ScanInterval: "10m"})
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("non-admin update status = %d, want 403", rec.Code)
 	}
 }

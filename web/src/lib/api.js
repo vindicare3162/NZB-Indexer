@@ -95,6 +95,8 @@ export const api = {
   createUser: (username, password, admin) =>
     request('POST', '/admin/users', { username, password, admin }),
   deleteUser: (id) => request('DELETE', `/admin/users/${id}`),
+  schedule: () => request('GET', '/admin/schedule'),
+  updateSchedule: (s) => request('PUT', '/admin/schedule', s),
   triggerScan: (group) => request('POST', '/admin/scan', { group }),
   triggerBackfill: (group) => request('POST', '/admin/backfill', { group }),
   triggerPostProcess: () => request('POST', '/admin/postprocess', {}),

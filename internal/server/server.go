@@ -99,13 +99,18 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 			enableBackfill = true
 		}
 	}
-	wrk := worker.New(st, sc, asm, builder, pp, logger, worker.Options{
+	// Schedule intervals: config/env provide the defaults, but a value set at
+	// runtime from the admin UI (persisted in the settings table) takes
+	// precedence so it survives restarts.
+	wopts := worker.Options{
 		ScanInterval:        cfg.Scan.Interval,
 		DownstreamInterval:  cfg.Scan.DownstreamInterval,
 		BuildInterval:       cfg.Scan.BuildInterval,
 		PostProcessInterval: cfg.Scan.PostProcessInterval,
 		EnableBackfill:      enableBackfill,
-	})
+	}
+	applyPersistedSchedule(ctx, st, &wopts, logger)
+	wrk := worker.New(st, sc, asm, builder, pp, logger, wopts)
 
 	// 5. Auth.
 	tokens, err := auth.NewTokenIssuer(cfg.Auth.JWTSecret, cfg.Auth.SessionTTL)
@@ -123,7 +128,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	})
 	srvMgr := &serverManager{store: st, pool: pool, connectTimeout: cfg.NNTP.ConnectTimeout, log: logger}
 	discovery := newDiscoveryService(pool, time.Hour)
-	restAPI := rest.New(st, nzbGen, authSvc, authSvc, wrk, srvMgr, logs, discovery, logger)
+	restAPI := rest.New(st, nzbGen, authSvc, authSvc, scheduleAdapter{wrk}, srvMgr, logs, discovery, logger)
 
 	spa, err := web.Handler()
 	if err != nil {

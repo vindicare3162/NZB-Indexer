@@ -20,6 +20,9 @@ type Store interface {
 	// Ping verifies the database is reachable (readiness probe).
 	Ping(ctx context.Context) error
 
+	// Settings (runtime-configurable options, e.g. the pipeline schedule).
+	SetSettings(ctx context.Context, kv map[string]string) error
+
 	// Search / details
 	SearchReleases(ctx context.Context, f store.SearchFilter) ([]store.Release, int, error)
 	GetReleaseByGUID(ctx context.Context, guid string) (store.Release, error)
@@ -107,6 +110,21 @@ type JobController interface {
 	// Status returns a snapshot of job/pipeline status and metrics as a
 	// JSON-serialisable value.
 	Status() any
+	// CurrentSchedule returns the live pipeline intervals.
+	CurrentSchedule() Schedule
+	// Reconfigure applies new pipeline intervals live. Any interval <= 0 is
+	// left unchanged.
+	Reconfigure(Schedule)
+}
+
+// Schedule holds the runtime-tunable pipeline intervals. It mirrors the
+// worker's schedule but lives here so the REST layer does not import the worker
+// package.
+type Schedule struct {
+	ScanInterval        time.Duration
+	DownstreamInterval  time.Duration
+	BuildInterval       time.Duration
+	PostProcessInterval time.Duration
 }
 
 // Authenticator authenticates login credentials and issues sessions.
@@ -172,6 +190,8 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/v1/admin/servers", admin(http.HandlerFunc(a.handleCreateServer)))
 	mux.Handle("PUT /api/v1/admin/servers/{id}", admin(http.HandlerFunc(a.handleUpdateServer)))
 	mux.Handle("DELETE /api/v1/admin/servers/{id}", admin(http.HandlerFunc(a.handleDeleteServer)))
+	mux.Handle("GET /api/v1/admin/schedule", admin(http.HandlerFunc(a.handleGetSchedule)))
+	mux.Handle("PUT /api/v1/admin/schedule", admin(http.HandlerFunc(a.handleUpdateSchedule)))
 	mux.Handle("POST /api/v1/admin/scan", admin(http.HandlerFunc(a.handleTriggerScan)))
 	mux.Handle("POST /api/v1/admin/backfill", admin(http.HandlerFunc(a.handleTriggerBackfill)))
 	mux.Handle("POST /api/v1/admin/postprocess", admin(http.HandlerFunc(a.handleTriggerPostProcess)))

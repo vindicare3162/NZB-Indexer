@@ -18,6 +18,8 @@
   let discoverOffset = $state(0);
   let discoverLoading = $state(false);
   let discoverCachedAt = $state('');
+  let schedule = $state({ scan_interval: '', downstream_interval: '', build_interval: '', postprocess_interval: '' });
+  let savingSchedule = $state(false);
   let error = $state('');
   let notice = $state('');
 
@@ -27,7 +29,35 @@
     api.servers().then((s) => { servers = s || []; }).catch((e) => { error = e.message; });
     api.status().then((s) => { status = s; }).catch(() => {});
     api.stats().then((s) => { stats = s; }).catch(() => {});
+    loadSchedule();
     loadLogs();
+  }
+
+  function loadSchedule() {
+    api.schedule().then((s) => {
+      if (s) schedule = {
+        scan_interval: s.scan_interval || '',
+        downstream_interval: s.downstream_interval || '',
+        build_interval: s.build_interval || '',
+        postprocess_interval: s.postprocess_interval || '',
+      };
+    }).catch(() => {});
+  }
+
+  async function saveSchedule(e) {
+    e.preventDefault();
+    savingSchedule = true;
+    error = '';
+    notice = '';
+    try {
+      await api.updateSchedule(schedule);
+      notice = 'Schedule updated and applied live';
+      loadSchedule();
+    } catch (err) {
+      error = err.message || 'Failed to update schedule';
+    } finally {
+      savingSchedule = false;
+    }
   }
 
   function loadLogs() {
@@ -280,6 +310,22 @@
     <button class="secondary" onclick={() => postProcess()}>Run post-processing now</button>
     <button class="secondary" onclick={() => retryFailedPP()}>Retry failed post-processing</button>
   </div>
+</div>
+
+<div class="panel">
+  <h3 style="margin-top:0">Schedule</h3>
+  <p class="muted">How often each pipeline stage runs. Use durations like <code>30s</code>, <code>5m</code>, <code>1h</code>. Changes apply live and persist across restarts.</p>
+  <form onsubmit={saveSchedule}>
+    <div class="row" style="flex-wrap:wrap; gap:0.8rem">
+      <label>Scan<br /><input placeholder="15m" bind:value={schedule.scan_interval} /></label>
+      <label>Assemble<br /><input placeholder="5m" bind:value={schedule.downstream_interval} /></label>
+      <label>Build<br /><input placeholder="2m" bind:value={schedule.build_interval} /></label>
+      <label>Post-process<br /><input placeholder="5m" bind:value={schedule.postprocess_interval} /></label>
+    </div>
+    <div class="row" style="margin-top:0.8rem">
+      <button type="submit" disabled={savingSchedule}>{savingSchedule ? 'Saving…' : 'Save schedule'}</button>
+    </div>
+  </form>
 </div>
 
 <div class="panel">

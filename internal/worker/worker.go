@@ -96,6 +96,17 @@ type Worker struct {
 	scanTriggers chan scanTrigger
 	ppTriggers   chan struct{}
 
+	// optsMu guards the schedule intervals in opts, which Reconfigure updates
+	// at runtime. The loops read intervals through the accessor methods.
+	optsMu sync.RWMutex
+	// Per-loop reset signals: Reconfigure pokes these so each loop rebuilds its
+	// ticker with the new interval without a restart. Buffered (cap 1) so a
+	// reconfigure never blocks and coalesces with a pending reset.
+	scanReset  chan struct{}
+	asmReset   chan struct{}
+	buildReset chan struct{}
+	ppReset    chan struct{}
+
 	// Each loop has its own mutex so scan, assemble/build, and post-process run
 	// concurrently while each is serialised internally.
 	scanMu  sync.Mutex
@@ -140,6 +151,91 @@ func New(groups GroupLister, scan Scanner, asm Assembler, build ReleaseBuilder, 
 		opts:         opts,
 		scanTriggers: make(chan scanTrigger, 16),
 		ppTriggers:   make(chan struct{}, 16),
+		scanReset:    make(chan struct{}, 1),
+		asmReset:     make(chan struct{}, 1),
+		buildReset:   make(chan struct{}, 1),
+		ppReset:      make(chan struct{}, 1),
+	}
+}
+
+// scanInterval, downstreamInterval, buildInterval, and postProcessInterval
+// return the current schedule intervals under the opts lock.
+func (w *Worker) scanInterval() time.Duration {
+	w.optsMu.RLock()
+	defer w.optsMu.RUnlock()
+	return w.opts.ScanInterval
+}
+
+func (w *Worker) downstreamInterval() time.Duration {
+	w.optsMu.RLock()
+	defer w.optsMu.RUnlock()
+	return w.opts.DownstreamInterval
+}
+
+func (w *Worker) buildInterval() time.Duration {
+	w.optsMu.RLock()
+	defer w.optsMu.RUnlock()
+	return w.opts.BuildInterval
+}
+
+func (w *Worker) postProcessInterval() time.Duration {
+	w.optsMu.RLock()
+	defer w.optsMu.RUnlock()
+	return w.opts.PostProcessInterval
+}
+
+// Schedule is the set of runtime-tunable pipeline intervals.
+type Schedule struct {
+	ScanInterval        time.Duration `json:"scan_interval"`
+	DownstreamInterval  time.Duration `json:"downstream_interval"`
+	BuildInterval       time.Duration `json:"build_interval"`
+	PostProcessInterval time.Duration `json:"postprocess_interval"`
+}
+
+// CurrentSchedule returns the current schedule intervals.
+func (w *Worker) CurrentSchedule() Schedule {
+	w.optsMu.RLock()
+	defer w.optsMu.RUnlock()
+	return Schedule{
+		ScanInterval:        w.opts.ScanInterval,
+		DownstreamInterval:  w.opts.DownstreamInterval,
+		BuildInterval:       w.opts.BuildInterval,
+		PostProcessInterval: w.opts.PostProcessInterval,
+	}
+}
+
+// Reconfigure updates the schedule intervals live. Any interval <= 0 is left
+// unchanged. Each affected loop resets its ticker to the new cadence without a
+// restart. Safe to call concurrently with the running loops.
+func (w *Worker) Reconfigure(s Schedule) {
+	w.optsMu.Lock()
+	if s.ScanInterval > 0 {
+		w.opts.ScanInterval = s.ScanInterval
+	}
+	if s.DownstreamInterval > 0 {
+		w.opts.DownstreamInterval = s.DownstreamInterval
+	}
+	if s.BuildInterval > 0 {
+		w.opts.BuildInterval = s.BuildInterval
+	}
+	if s.PostProcessInterval > 0 {
+		w.opts.PostProcessInterval = s.PostProcessInterval
+	}
+	w.optsMu.Unlock()
+
+	w.log.Info("worker schedule reconfigured",
+		"scan_interval", w.scanInterval(),
+		"downstream_interval", w.downstreamInterval(),
+		"build_interval", w.buildInterval(),
+		"postprocess_interval", w.postProcessInterval())
+
+	// Poke each loop to reset its ticker. Non-blocking: a pending reset already
+	// covers the change.
+	for _, ch := range []chan struct{}{w.scanReset, w.asmReset, w.buildReset, w.ppReset} {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -167,7 +263,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 // scanLoop runs an initial scan, then on ScanInterval and on manual triggers.
 func (w *Worker) scanLoop(ctx context.Context) {
-	ticker := time.NewTicker(w.opts.ScanInterval)
+	ticker := time.NewTicker(w.scanInterval())
 	defer ticker.Stop()
 
 	w.doScan(ctx, "", false)
@@ -186,6 +282,8 @@ func (w *Worker) scanLoop(ctx context.Context) {
 			}
 		case t := <-w.scanTriggers:
 			w.doScan(ctx, t.group, t.backfill)
+		case <-w.scanReset:
+			ticker.Reset(w.scanInterval())
 		}
 	}
 }
@@ -194,7 +292,7 @@ func (w *Worker) scanLoop(ctx context.Context) {
 // folds parts into binaries independently of scanning, building, and
 // post-processing.
 func (w *Worker) assembleLoop(ctx context.Context) {
-	ticker := time.NewTicker(w.opts.DownstreamInterval)
+	ticker := time.NewTicker(w.downstreamInterval())
 	defer ticker.Stop()
 
 	w.runAssemble(ctx)
@@ -205,6 +303,8 @@ func (w *Worker) assembleLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			w.runAssemble(ctx)
+		case <-w.asmReset:
+			ticker.Reset(w.downstreamInterval())
 		}
 	}
 }
@@ -214,7 +314,7 @@ func (w *Worker) assembleLoop(ctx context.Context) {
 // keep the assemble loop busy for a long time, but complete binaries must still
 // become releases promptly instead of waiting for assembly to fully drain.
 func (w *Worker) buildLoop(ctx context.Context) {
-	ticker := time.NewTicker(w.opts.BuildInterval)
+	ticker := time.NewTicker(w.buildInterval())
 	defer ticker.Stop()
 
 	w.runBuild(ctx)
@@ -225,6 +325,8 @@ func (w *Worker) buildLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			w.runBuild(ctx)
+		case <-w.buildReset:
+			ticker.Reset(w.buildInterval())
 		}
 	}
 }
@@ -234,7 +336,7 @@ func (w *Worker) buildLoop(ctx context.Context) {
 // scanning and assemble/build, so a large parts backlog cannot starve name
 // recovery.
 func (w *Worker) postProcessLoop(ctx context.Context) {
-	ticker := time.NewTicker(w.opts.PostProcessInterval)
+	ticker := time.NewTicker(w.postProcessInterval())
 	defer ticker.Stop()
 
 	w.runPostProcess(ctx)
@@ -247,6 +349,8 @@ func (w *Worker) postProcessLoop(ctx context.Context) {
 			w.runPostProcess(ctx)
 		case <-w.ppTriggers:
 			w.runPostProcess(ctx)
+		case <-w.ppReset:
+			ticker.Reset(w.postProcessInterval())
 		}
 	}
 }
