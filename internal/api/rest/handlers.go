@@ -1,18 +1,38 @@
 package rest
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vindicare/goindex/internal/auth"
 	"github.com/vindicare/goindex/internal/store"
 )
 
+// handleHealth is the liveness probe: it reports only that the process is up
+// and serving, without touching any dependency. Always 200.
 func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReady is the readiness probe: it verifies the database is reachable so
+// an orchestrator does not route traffic to an instance that cannot serve it.
+// Returns 200 when the DB responds, 503 otherwise.
+func (a *API) handleReady(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := a.store.Ping(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "not ready",
+			"error":  "database unreachable",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 type loginRequest struct {

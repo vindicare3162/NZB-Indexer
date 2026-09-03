@@ -7,6 +7,10 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Readiness probe `GET /api/v1/ready` (#64), distinct from the liveness probe
+  `GET /api/v1/health`. `/ready` pings the database (2s timeout) and returns 503
+  when it is unreachable, so orchestrators stop routing traffic to an instance
+  whose DB is down; `/health` remains an unconditional liveness check.
 - Categorization improvements (#62): the release search results table now shows
   each release's category name; the JSON search API accepts a comma-separated
   `cat` list (matching the Newznab handler, so clients requesting several

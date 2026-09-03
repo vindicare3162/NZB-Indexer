@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,7 @@ type mockStore struct {
 	servers2       []store.Server
 	userCount      int64
 	requeuedFailed bool
+	pingErr        error
 
 	createdGroup  string
 	deletedGroup  int64
@@ -45,6 +47,7 @@ type mockStore struct {
 	backfillArticles *int64
 }
 
+func (m *mockStore) Ping(context.Context) error { return m.pingErr }
 func (m *mockStore) SearchReleases(_ context.Context, f store.SearchFilter) ([]store.Release, int, error) {
 	m.lastFilter = f
 	return m.releases, m.total, nil
@@ -658,5 +661,38 @@ func TestSelfServiceAPIKeys(t *testing.T) {
 	}
 	if env.store.createdKeyLbl != "sonarr" {
 		t.Errorf("created key label = %q", env.store.createdKeyLbl)
+	}
+}
+
+func TestReadyProbe(t *testing.T) {
+	env := setup(t)
+
+	// DB reachable -> 200 ready.
+	rec := do(t, env, http.MethodGet, "/api/v1/ready", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ready (db up) status = %d, body=%s", rec.Code, rec.Body)
+	}
+	var ok map[string]string
+	json.Unmarshal(rec.Body.Bytes(), &ok)
+	if ok["status"] != "ready" {
+		t.Errorf("ready body = %v, want status=ready", ok)
+	}
+
+	// DB unreachable -> 503 not ready.
+	env.store.pingErr = errors.New("connection refused")
+	rec = do(t, env, http.MethodGet, "/api/v1/ready", "", nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready (db down) status = %d, want 503", rec.Code)
+	}
+	var bad map[string]string
+	json.Unmarshal(rec.Body.Bytes(), &bad)
+	if bad["status"] != "not ready" {
+		t.Errorf("not-ready body = %v, want status=not ready", bad)
+	}
+
+	// Liveness stays 200 regardless of DB state.
+	rec = do(t, env, http.MethodGet, "/api/v1/health", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Errorf("health status = %d, want 200 (liveness independent of DB)", rec.Code)
 	}
 }
