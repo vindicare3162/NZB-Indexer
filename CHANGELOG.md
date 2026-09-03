@@ -7,6 +7,14 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Admin health dashboard (#84). A new `GET /api/v1/admin/health` endpoint and a
+  "System health" panel on the Admin page surface process stats (goroutines,
+  heap, uptime), database health (size, buffer cache-hit ratio, pool
+  utilisation), Usenet connection pool state, and a set of "potential issue"
+  checks (DB reachability, no news server, no groups, low cache-hit ratio,
+  permanently-failed post-processing, default JWT secret). Overall status is the
+  worst check. Host CPU/disk/network remain the domain of node_exporter/the
+  Prometheus metrics (see `docs/monitoring.md`).
 - Optional release metadata enrichment (#82). When enabled
   (`GOINDEX_METADATA_ENABLED=true`), a background loop matches TV releases to
   shows via the keyless TVMaze provider and stores title, year, season/episode,

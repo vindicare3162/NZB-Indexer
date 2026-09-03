@@ -32,6 +32,8 @@ type Store interface {
 
 	// Pipeline health (admin)
 	PipelineStatistics(ctx context.Context) (store.PipelineStats, error)
+	// DatabaseHealth reports DB size, cache hit ratio, and pool utilisation.
+	DatabaseHealth(ctx context.Context) (store.DBHealth, error)
 	// RequeueFailedReleases resets failed post-processing releases to pending.
 	RequeueFailedReleases(ctx context.Context) (int64, error)
 
@@ -144,8 +146,13 @@ type API struct {
 	logs      LogSource
 	discoverer Discoverer
 	session   *auth.Service
+	probe     SystemProbe
 	log       *slog.Logger
 }
+
+// SetSystemProbe attaches a health probe (NNTP pool / config facts) used by the
+// admin health report. Optional; when unset those fields are omitted.
+func (a *API) SetSystemProbe(p SystemProbe) { a.probe = p }
 
 // New creates a REST API. servers, logs, and discoverer may be nil, disabling
 // their respective endpoints.
@@ -193,6 +200,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/v1/admin/servers", admin(http.HandlerFunc(a.handleCreateServer)))
 	mux.Handle("PUT /api/v1/admin/servers/{id}", admin(http.HandlerFunc(a.handleUpdateServer)))
 	mux.Handle("DELETE /api/v1/admin/servers/{id}", admin(http.HandlerFunc(a.handleDeleteServer)))
+	mux.Handle("GET /api/v1/admin/health", admin(http.HandlerFunc(a.handleHealthReport)))
 	mux.Handle("GET /api/v1/admin/schedule", admin(http.HandlerFunc(a.handleGetSchedule)))
 	mux.Handle("PUT /api/v1/admin/schedule", admin(http.HandlerFunc(a.handleUpdateSchedule)))
 	mux.Handle("POST /api/v1/admin/scan", admin(http.HandlerFunc(a.handleTriggerScan)))

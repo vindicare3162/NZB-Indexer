@@ -82,6 +82,9 @@ func (m *mockStore) RequeueFailedReleases(context.Context) (int64, error) {
 	m.requeuedFailed = true
 	return 7, nil
 }
+func (m *mockStore) DatabaseHealth(context.Context) (store.DBHealth, error) {
+	return store.DBHealth{SizeBytes: 1 << 20, CacheHitRatio: 0.99, PoolTotal: 2, PoolIdle: 1, PoolMax: 10}, nil
+}
 func (m *mockStore) PipelineStatistics(context.Context) (store.PipelineStats, error) {
 	return store.PipelineStats{
 		PartsTotal: 1000, PartsUnassigned: 200,
@@ -855,4 +858,67 @@ func TestBulkGroups(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("non-admin status = %d, want 403", rec.Code)
 	}
+}
+
+// stubProbe implements SystemProbe for the health-report test.
+type stubProbe struct {
+	open, idle    int
+	configured    bool
+	defaultSecret bool
+}
+
+func (p stubProbe) NNTPPoolStats() (int, int)                { return p.open, p.idle }
+func (p stubProbe) NewsServerConfigured(context.Context) bool { return p.configured }
+func (p stubProbe) DefaultJWTSecret() bool                    { return p.defaultSecret }
+
+func TestHealthReport(t *testing.T) {
+	env := setup(t)
+	env.api.SetSystemProbe(stubProbe{open: 3, idle: 2, configured: false, defaultSecret: true})
+
+	rec := do(t, env, http.MethodGet, "/api/v1/admin/health", env.adminTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health status = %d, body=%s", rec.Code, rec.Body)
+	}
+	var resp healthResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	// Process facts populated.
+	if resp.Process.Goroutines <= 0 || resp.Process.GoVersion == "" {
+		t.Errorf("process health not populated: %+v", resp.Process)
+	}
+	// DB section present (mock returns healthy values) and reachable check ok.
+	if resp.Database == nil || resp.Database.PoolMax != 10 {
+		t.Errorf("database health missing: %+v", resp.Database)
+	}
+	// Usenet section reflects the probe.
+	if resp.Usenet == nil || resp.Usenet.PoolOpen != 3 || resp.Usenet.ServerConfigured {
+		t.Errorf("usenet health wrong: %+v", resp.Usenet)
+	}
+	// No-server + default-secret should each produce a warn check, making the
+	// overall status at least warn.
+	if resp.Status != "warn" {
+		t.Errorf("overall status = %q, want warn", resp.Status)
+	}
+	var names []string
+	for _, c := range resp.Checks {
+		names = append(names, c.Name)
+	}
+	if !contains(names, "news_server") || !contains(names, "jwt_secret") {
+		t.Errorf("expected news_server + jwt_secret checks, got %v", names)
+	}
+
+	// Non-admin forbidden.
+	rec = do(t, env, http.MethodGet, "/api/v1/admin/health", env.userTok, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("non-admin health status = %d, want 403", rec.Code)
+	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }

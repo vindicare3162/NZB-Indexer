@@ -128,3 +128,51 @@ ORDER BY total DESC`)
 	}
 	return out, grows.Err()
 }
+
+// DBHealth summarises database health for the admin health dashboard.
+type DBHealth struct {
+	// SizeBytes is the on-disk size of the current database (pg_database_size).
+	SizeBytes int64 `json:"size_bytes"`
+	// CacheHitRatio is the shared-buffer cache hit ratio for this database
+	// (blks_hit / (blks_hit + blks_read)); -1 when there has been no read
+	// activity yet to compute it from.
+	CacheHitRatio float64 `json:"cache_hit_ratio"`
+	// Pool connection stats from the pgx pool.
+	PoolTotal    int32 `json:"pool_total"`
+	PoolIdle     int32 `json:"pool_idle"`
+	PoolAcquired int32 `json:"pool_acquired"`
+	PoolMax      int32 `json:"pool_max"`
+}
+
+// DatabaseHealth returns database size, buffer cache hit ratio, and pool
+// utilisation. It is cheap: pg_database_size is metadata and pg_stat_database is
+// an in-memory view.
+func (s *Store) DatabaseHealth(ctx context.Context) (DBHealth, error) {
+	var h DBHealth
+
+	if err := s.pool.QueryRow(ctx,
+		`SELECT pg_database_size(current_database())`).Scan(&h.SizeBytes); err != nil {
+		return h, fmt.Errorf("db size: %w", err)
+	}
+
+	// Cache hit ratio for the current database. When no blocks have been read
+	// yet (fresh DB), the denominator is zero; report -1 to signal "unknown".
+	var hit, read int64
+	if err := s.pool.QueryRow(ctx, `
+SELECT coalesce(blks_hit, 0), coalesce(blks_read, 0)
+FROM pg_stat_database WHERE datname = current_database()`).Scan(&hit, &read); err != nil {
+		return h, fmt.Errorf("cache stats: %w", err)
+	}
+	if hit+read > 0 {
+		h.CacheHitRatio = float64(hit) / float64(hit+read)
+	} else {
+		h.CacheHitRatio = -1
+	}
+
+	st := s.pool.Stat()
+	h.PoolTotal = st.TotalConns()
+	h.PoolIdle = st.IdleConns()
+	h.PoolAcquired = st.AcquiredConns()
+	h.PoolMax = st.MaxConns()
+	return h, nil
+}
