@@ -35,9 +35,12 @@ type mockStore struct {
 	createdUser   string
 	deletedUser   int64
 	createdKeyLbl string
-	createdServer string
-	updatedServer int64
-	deletedServer int64
+	createdServer    string
+	updatedServer    int64
+	deletedServer    int64
+	backfillGroupID  int64
+	backfillDays     *int
+	backfillArticles *int64
 }
 
 func (m *mockStore) SearchReleases(_ context.Context, f store.SearchFilter) ([]store.Release, int, error) {
@@ -66,6 +69,12 @@ func (m *mockStore) SetGroupActive(_ context.Context, id int64, active bool) err
 	return nil
 }
 func (m *mockStore) DeleteGroup(_ context.Context, id int64) error { m.deletedGroup = id; return nil }
+func (m *mockStore) SetGroupBackfillTarget(_ context.Context, id int64, days *int, articles *int64) error {
+	m.backfillGroupID = id
+	m.backfillDays = days
+	m.backfillArticles = articles
+	return nil
+}
 func (m *mockStore) ListUsers(context.Context) ([]store.User, error) { return m.users, nil }
 func (m *mockStore) CreateUser(_ context.Context, in store.CreateUserInput) (store.User, error) {
 	m.createdUser = in.Username
@@ -327,6 +336,42 @@ func TestAdminGroupCRUD(t *testing.T) {
 	}
 	if env.store.deletedGroup != 1 {
 		t.Errorf("deleted group = %d", env.store.deletedGroup)
+	}
+}
+
+func TestAdminSetGroupBackfillTarget(t *testing.T) {
+	env := setup(t)
+
+	days := 30
+	arts := int64(50000)
+	rec := do(t, env, http.MethodPut, "/api/v1/admin/groups/7/backfill", env.adminTok,
+		backfillTargetRequest{Days: &days, Articles: &arts})
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("set backfill status = %d, body=%s", rec.Code, rec.Body)
+	}
+	if env.store.backfillGroupID != 7 {
+		t.Errorf("group id = %d, want 7", env.store.backfillGroupID)
+	}
+	if env.store.backfillDays == nil || *env.store.backfillDays != 30 {
+		t.Errorf("days = %v, want 30", env.store.backfillDays)
+	}
+	if env.store.backfillArticles == nil || *env.store.backfillArticles != 50000 {
+		t.Errorf("articles = %v, want 50000", env.store.backfillArticles)
+	}
+
+	// Negative rejected.
+	neg := -5
+	rec = do(t, env, http.MethodPut, "/api/v1/admin/groups/7/backfill", env.adminTok,
+		backfillTargetRequest{Days: &neg})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("negative days status = %d, want 400", rec.Code)
+	}
+
+	// Non-admin forbidden.
+	rec = do(t, env, http.MethodPut, "/api/v1/admin/groups/7/backfill", env.userTok,
+		backfillTargetRequest{Days: &days})
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("user status = %d, want 403", rec.Code)
 	}
 }
 

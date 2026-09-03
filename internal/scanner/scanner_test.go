@@ -206,6 +206,39 @@ func TestScanBackfillWalksBackwardWithArticleLimit(t *testing.T) {
 	}
 }
 
+func TestScanBackfillPerGroupTargetOverridesGlobal(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+	g, _ := st.UpsertGroup(ctx, "alt.binaries.pgtarget", true)
+
+	// Server has 1..1000; already ingested from 900 up.
+	src := buildSource(1, 1000, time.Minute)
+	if err := st.UpdateGroupForwardPosition(ctx, g.ID, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateGroupBackfillPosition(ctx, g.ID, 900, false); err != nil {
+		t.Fatal(err)
+	}
+	// Per-group target: 50 articles per pass, overriding the global 200.
+	target := int64(50)
+	if err := st.SetGroupBackfillTarget(ctx, g.ID, nil, &target); err != nil {
+		t.Fatal(err)
+	}
+
+	sc := New(src, st, nil, Options{BatchSize: 100, BackfillMaxArticles: 200})
+	res, err := sc.ScanBackfill(ctx, g.Name)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	// With the per-group cap of 50, walk from 899 down to 850.
+	if res.NewLow != 850 {
+		t.Errorf("NewLow = %d, want 850 (per-group target of 50 should win over global 200)", res.NewLow)
+	}
+	if res.PartsInserted != 50 {
+		t.Errorf("PartsInserted = %d, want 50", res.PartsInserted)
+	}
+}
+
 func TestScanBackfillCompletesAtServerLow(t *testing.T) {
 	st := freshStore(t)
 	ctx := context.Background()

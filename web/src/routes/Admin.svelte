@@ -130,6 +130,26 @@
     try { await api.triggerBackfill(group || ''); notice = 'Backfill triggered'; }
     catch (e) { error = e.message; }
   }
+  async function setBackfillTarget(g) {
+    error = '';
+    const daysStr = prompt(`Backfill target for ${g.name}\n\nDays back to index (blank = use global default, 0 = no day limit):`, g.backfill_target_days ?? '');
+    if (daysStr === null) return;
+    const artStr = prompt(`Max articles per backfill pass (blank = default, 0 = unlimited):`, g.backfill_target_articles ?? '');
+    if (artStr === null) return;
+    const days = daysStr.trim() === '' ? null : parseInt(daysStr, 10);
+    const articles = artStr.trim() === '' ? null : parseInt(artStr, 10);
+    try {
+      await api.setGroupBackfill(g.id, days, articles);
+      notice = `Backfill target set for ${g.name}`;
+      loadAll();
+    } catch (e) { error = e.message; }
+  }
+  function backfillTargetLabel(g) {
+    const parts = [];
+    if (g.backfill_target_days != null) parts.push(`${g.backfill_target_days}d`);
+    if (g.backfill_target_articles != null) parts.push(`${fmtCount(g.backfill_target_articles)} art`);
+    return parts.length ? parts.join(' / ') : 'default';
+  }
 </script>
 
 <h2>Admin</h2>
@@ -216,7 +236,7 @@
   </div>
   {#if groups.length > 0}
     <table style="margin-top:0.8rem">
-      <thead><tr><th>Group</th><th>Active</th><th>Fwd pos</th><th>Backfill</th><th></th></tr></thead>
+      <thead><tr><th>Group</th><th>Active</th><th>Fwd pos</th><th>Backfill</th><th>Target</th><th></th></tr></thead>
       <tbody>
         {#each groups as g}
           <tr>
@@ -224,10 +244,12 @@
             <td>{g.active ? 'yes' : 'no'}</td>
             <td>{g.last_scanned_high}</td>
             <td>{g.backfill_complete ? 'done' : g.backfill_low}</td>
+            <td class="muted">{backfillTargetLabel(g)}</td>
             <td class="row">
               <button class="secondary" onclick={() => toggleGroup(g)}>{g.active ? 'Disable' : 'Enable'}</button>
               <button class="secondary" onclick={() => scan(g.name)}>Scan</button>
               <button class="secondary" onclick={() => backfill(g.name)}>Backfill</button>
+              <button class="secondary" onclick={() => setBackfillTarget(g)}>Target</button>
               <button class="danger" onclick={() => removeGroup(g.id)}>Delete</button>
             </td>
           </tr>

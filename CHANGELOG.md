@@ -7,6 +7,10 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Per-group backfill targets configurable from the admin UI (#5). Each group can
+  set a day cutoff and/or a per-pass article cap that overrides the global
+  backfill defaults; the groups table shows the target and backfill progress.
+  Backfill runs on the schedule when any group has a target.
 - Newsgroup discovery in the admin UI (#4). Search the groups the provider
   carries (via NNTP `LIST ACTIVE`) with server-side caching, filtering, and
   pagination, and add groups to the index with one click. Results are ranked by

@@ -8,6 +8,19 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// groupColumns is the shared SELECT/RETURNING column list for groups, kept in
+// one place so all group queries scan the same shape.
+const groupColumns = `id, name, active, last_scanned_high, backfill_low, backfill_complete, backfill_target_days, backfill_target_articles, created_at, updated_at`
+
+// scanGroup scans a row in groupColumns order into a Group.
+func scanGroup(row pgx.Row) (Group, error) {
+	var g Group
+	err := row.Scan(&g.ID, &g.Name, &g.Active, &g.LastScannedHigh, &g.BackfillLow,
+		&g.BackfillComplete, &g.BackfillTargetDays, &g.BackfillTargetArticles,
+		&g.CreatedAt, &g.UpdatedAt)
+	return g, err
+}
+
 // UpsertGroup inserts a group by name or returns the existing one. The active
 // flag is applied on insert; existing rows keep their current state.
 func (s *Store) UpsertGroup(ctx context.Context, name string, active bool) (Group, error) {
@@ -15,12 +28,8 @@ func (s *Store) UpsertGroup(ctx context.Context, name string, active bool) (Grou
 INSERT INTO groups (name, active)
 VALUES ($1, $2)
 ON CONFLICT (name) DO UPDATE SET updated_at = now()
-RETURNING id, name, active, last_scanned_high, backfill_low, backfill_complete, created_at, updated_at`
-	var g Group
-	err := s.pool.QueryRow(ctx, q, name, active).Scan(
-		&g.ID, &g.Name, &g.Active, &g.LastScannedHigh, &g.BackfillLow,
-		&g.BackfillComplete, &g.CreatedAt, &g.UpdatedAt,
-	)
+RETURNING ` + groupColumns
+	g, err := scanGroup(s.pool.QueryRow(ctx, q, name, active))
 	if err != nil {
 		return Group{}, fmt.Errorf("upsert group %q: %w", name, err)
 	}
@@ -29,14 +38,8 @@ RETURNING id, name, active, last_scanned_high, backfill_low, backfill_complete, 
 
 // GetGroupByName returns the group with the given name, or ErrNotFound.
 func (s *Store) GetGroupByName(ctx context.Context, name string) (Group, error) {
-	const q = `
-SELECT id, name, active, last_scanned_high, backfill_low, backfill_complete, created_at, updated_at
-FROM groups WHERE name = $1`
-	var g Group
-	err := s.pool.QueryRow(ctx, q, name).Scan(
-		&g.ID, &g.Name, &g.Active, &g.LastScannedHigh, &g.BackfillLow,
-		&g.BackfillComplete, &g.CreatedAt, &g.UpdatedAt,
-	)
+	g, err := scanGroup(s.pool.QueryRow(ctx,
+		`SELECT `+groupColumns+` FROM groups WHERE name = $1`, name))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Group{}, ErrNotFound
 	}
@@ -49,9 +52,7 @@ FROM groups WHERE name = $1`
 // ListGroups returns all groups ordered by name. When activeOnly is true, only
 // active groups are returned.
 func (s *Store) ListGroups(ctx context.Context, activeOnly bool) ([]Group, error) {
-	q := `
-SELECT id, name, active, last_scanned_high, backfill_low, backfill_complete, created_at, updated_at
-FROM groups`
+	q := `SELECT ` + groupColumns + ` FROM groups`
 	if activeOnly {
 		q += ` WHERE active = TRUE`
 	}
@@ -65,14 +66,43 @@ FROM groups`
 
 	var out []Group
 	for rows.Next() {
-		var g Group
-		if err := rows.Scan(&g.ID, &g.Name, &g.Active, &g.LastScannedHigh,
-			&g.BackfillLow, &g.BackfillComplete, &g.CreatedAt, &g.UpdatedAt); err != nil {
+		g, err := scanGroup(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan group: %w", err)
 		}
 		out = append(out, g)
 	}
 	return out, rows.Err()
+}
+
+// SetGroupBackfillTarget sets (or clears with nil) a group's per-group backfill
+// target. days and articles are independent; either may be nil to fall back to
+// the global default for that dimension.
+func (s *Store) SetGroupBackfillTarget(ctx context.Context, id int64, days *int, articles *int64) error {
+	ct, err := s.pool.Exec(ctx, `
+UPDATE groups SET backfill_target_days = $2, backfill_target_articles = $3,
+                  backfill_complete = FALSE, updated_at = now()
+WHERE id = $1`, id, days, articles)
+	if err != nil {
+		return fmt.Errorf("set backfill target: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// AnyGroupHasBackfillTarget reports whether any group has an explicit backfill
+// target, so the worker can enable backfill even without a global setting.
+func (s *Store) AnyGroupHasBackfillTarget(ctx context.Context) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+SELECT EXISTS(SELECT 1 FROM groups
+              WHERE backfill_target_days IS NOT NULL OR backfill_target_articles IS NOT NULL)`).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check backfill targets: %w", err)
+	}
+	return exists, nil
 }
 
 // GetGroupName returns the name of the group with the given id, or ErrNotFound.
