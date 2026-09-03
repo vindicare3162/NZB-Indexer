@@ -7,6 +7,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Categorization improvements (#62): the release search results table now shows
+  each release's category name; the JSON search API accepts a comma-separated
+  `cat` list (matching the Newznab handler, so clients requesting several
+  categories are honoured); and the name classifier gained coverage for
+  Audiobooks, TV/Sport, TV/Documentary, Comics and Movies/Foreign, which were
+  seeded categories the classifier never previously emitted.
 - The full pipeline schedule is now configurable via environment variables
   (#52). In addition to `GOINDEX_SCAN_INTERVAL`, the assemble, release-build and
   post-processing cadences and the forward-scan cap are settable without a YAML

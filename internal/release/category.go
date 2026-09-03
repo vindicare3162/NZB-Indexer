@@ -6,10 +6,11 @@ import "regexp"
 // categories in the database.
 const (
 	CatConsole   = 1000
-	CatMovies    = 2000
-	CatMoviesSD  = 2030
-	CatMoviesHD  = 2040
-	CatMoviesUHD = 2045
+	CatMovies        = 2000
+	CatMoviesForeign = 2010
+	CatMoviesSD      = 2030
+	CatMoviesHD      = 2040
+	CatMoviesUHD     = 2045
 	CatAudio     = 3000
 	CatAudioMP3  = 3010
 	CatAudioLoss = 3040
@@ -19,11 +20,15 @@ const (
 	CatTVSD      = 5030
 	CatTVHD      = 5040
 	CatTVUHD     = 5045
+	CatTVSport   = 5060
 	CatTVAnime   = 5070
+	CatTVDoc     = 5080
 	CatXXX       = 6000
 	CatBooks     = 7000
-	CatBooksEbook = 7020
 	CatBooksMags = 7010
+	CatBooksEbook = 7020
+	CatBooksComics = 7030
+	CatAudiobook = 3030
 	CatOther     = 8000
 )
 
@@ -45,13 +50,32 @@ var rules = []rule{
 	// XXX first: adult tags are unambiguous and should not be miscategorized.
 	mustRule(`\b(xxx|porn|brazzers|naughtyamerica|blacked|onlyfans)\b`, CatXXX),
 
+	// Audiobooks before generic audio and books: an explicit audiobook tag is
+	// unambiguous regardless of any mp3/m4b hints.
+	mustRule(`\b(audiobook|audio\s*book|m4b|librivox)\b`, CatAudiobook),
+
+	// Anime before the generic TV rules so anime keeps its dedicated category
+	// even when it carries SxxExx / resolution markers.
+	mustRule(`\banime\b`, CatTVAnime),
+
+	// Sport before generic TV: live sport rarely has SxxExx, so match on
+	// league/event tags. Kept ahead of the episode rules for the rare overlap.
+	mustRule(`\b(uefa|epl|nba|nfl|nhl|mlb|wwe|ufc|formula\s*1|f1|motogp|premier\s*league|champions\s*league|grand\s*prix)\b`, CatTVSport),
+
+	// Documentaries before generic TV: an explicit documentary tag wins.
+	mustRule(`\b(documentary|docuseries|bbc\s*docs?)\b`, CatTVDoc),
+
+	// Comics before audio/movies/books: cbr/cbz and "comic" are specific comic
+	// markers. Placed ahead of the audio rules because "cbr" also means
+	// constant-bitrate audio; here the comic meaning takes precedence.
+	mustRule(`\b(comic|cbr|cbz|graphic\s*novel)\b`, CatBooksComics),
+
 	// TV: SxxExx / season-episode patterns, or explicit resolution combined
 	// with episode markers.
 	mustRule(`\bs\d{1,2}\s*e\d{1,3}\b`, CatTV),
 	mustRule(`\b\d{1,2}x\d{2,3}\b`, CatTV),
 	mustRule(`\bseason\s*\d{1,2}\b`, CatTV),
 	mustRule(`\b(hdtv|pdtv|web[- ]?dl|webrip)\b.*\b(s\d{1,2}|episode)\b`, CatTV),
-	mustRule(`\banime\b`, CatTVAnime),
 
 	// Movies: a 4-digit year with common movie source/quality tags.
 	mustRule(`\b(19|20)\d{2}\b.*\b(bluray|blu[- ]?ray|bdrip|brrip|dvdrip|web[- ]?dl|webrip|hdrip|remux|x264|x265|h264|h265|hevc)\b`, CatMovies),
@@ -59,11 +83,11 @@ var rules = []rule{
 
 	// Audio.
 	mustRule(`\b(flac|ape|wavpack|dsd)\b`, CatAudioLoss),
-	mustRule(`\b(mp3|320kbps|v0|cbr|vbr|discography|album|single)\b`, CatAudioMP3),
+	mustRule(`\b(mp3|320kbps|v0|vbr|discography|album|single)\b`, CatAudioMP3),
 
 	// Books.
+	mustRule(`\bmagazine\b`, CatBooksMags),
 	mustRule(`\b(epub|mobi|azw3|azw|kindle)\b`, CatBooksEbook),
-	mustRule(`\b(magazine|comic|cbr|cbz)\b`, CatBooksMags),
 	mustRule(`\b(ebook|retail\s*ebook)\b`, CatBooks),
 
 	// PC / games / software.
@@ -85,6 +109,11 @@ var (
 	reResUHD = regexp.MustCompile(`(?i)\b(2160p|4320p|4k|8k|uhd)\b`)
 	reResHD  = regexp.MustCompile(`(?i)\b(1080p|1080i|720p|hd)\b`)
 	reResSD  = regexp.MustCompile(`(?i)\b(480p|576p|360p|sd|dvdrip|dvd|vhs|xvid|divx)\b`)
+
+	// Foreign-language markers. A movie carrying one of these is routed to
+	// Movies/Foreign rather than a resolution subcategory. "multi" is
+	// deliberately excluded: multi-audio releases are usually English-primary.
+	reForeign = regexp.MustCompile(`(?i)\b(french|german|italian|spanish|dutch|nordic|swedish|danish|norwegian|finnish|korean|japanese|chinese|hindi|tamil|telugu|russian|polish|czech|hungarian|turkish|vostfr|truefrench|castellano|latino|dublado|deutsch|ita|ger|fre|spa|kor|jpn)\b`)
 )
 
 // resolutionTier classifies the resolution implied by a normalized name. When
@@ -109,6 +138,9 @@ func resolutionTier(s string) int {
 func refineVideoCategory(parent int, s string) int {
 	switch parent {
 	case CatMovies:
+		if reForeign.MatchString(s) {
+			return CatMoviesForeign
+		}
 		switch resolutionTier(s) {
 		case resUHD:
 			return CatMoviesUHD
