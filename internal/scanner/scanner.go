@@ -28,6 +28,11 @@ type Repo interface {
 type Options struct {
 	// BatchSize is the number of articles fetched per XOVER call.
 	BatchSize int64
+	// ForwardMaxArticles caps how many articles a single forward-scan pass
+	// ingests before yielding, so a firehose group cannot monopolise a cycle.
+	// The watermark is persisted so the next pass resumes where this one
+	// stopped. Zero means unbounded (scan up to the server high).
+	ForwardMaxArticles int64
 	// BackfillDays limits backfill to articles posted within this many days.
 	// Zero disables the date bound.
 	BackfillDays int
@@ -101,13 +106,22 @@ func (s *Scanner) ScanForward(ctx context.Context, groupName string) (ScanResult
 		return res, nil
 	}
 
-	for begin := start; begin <= info.High; begin += s.opts.BatchSize {
+	// Bound how far this pass scans so a firehose group yields. The next pass
+	// resumes from the persisted watermark.
+	scanTo := info.High
+	if s.opts.ForwardMaxArticles > 0 {
+		if capped := start + s.opts.ForwardMaxArticles - 1; capped < scanTo {
+			scanTo = capped
+		}
+	}
+
+	for begin := start; begin <= scanTo; begin += s.opts.BatchSize {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
 		end := begin + s.opts.BatchSize - 1
-		if end > info.High {
-			end = info.High
+		if end > scanTo {
+			end = scanTo
 		}
 
 		pulled, inserted, err := s.ingestRange(ctx, g, begin, end)

@@ -92,6 +92,10 @@ type JobController interface {
 	TriggerScan(group string) error
 	// TriggerBackfill requests a backfill pass.
 	TriggerBackfill(group string) error
+	// TriggerPostProcess requests an immediate post-processing pass, so an
+	// operator can recover names for pending releases without waiting for a
+	// scan or the downstream interval.
+	TriggerPostProcess() error
 	// Status returns a snapshot of job/pipeline status and metrics as a
 	// JSON-serialisable value.
 	Status() any
@@ -161,6 +165,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("DELETE /api/v1/admin/servers/{id}", admin(http.HandlerFunc(a.handleDeleteServer)))
 	mux.Handle("POST /api/v1/admin/scan", admin(http.HandlerFunc(a.handleTriggerScan)))
 	mux.Handle("POST /api/v1/admin/backfill", admin(http.HandlerFunc(a.handleTriggerBackfill)))
+	mux.Handle("POST /api/v1/admin/postprocess", admin(http.HandlerFunc(a.handleTriggerPostProcess)))
 	mux.Handle("GET /api/v1/admin/status", admin(http.HandlerFunc(a.handleStatus)))
 	mux.Handle("GET /api/v1/admin/logs", admin(http.HandlerFunc(a.handleLogs)))
 	mux.Handle("GET /api/v1/admin/discover", admin(http.HandlerFunc(a.handleDiscover)))

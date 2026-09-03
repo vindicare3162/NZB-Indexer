@@ -65,10 +65,12 @@ func newTestWorker(opts Options) (*Worker, *mockScanner, *mockAsm, *mockBuild, *
 	return w, s, a, b, p
 }
 
-func TestRunCycleUpdatesMetrics(t *testing.T) {
+func TestScanAndDownstreamUpdateMetrics(t *testing.T) {
 	w, s, a, b, p := newTestWorker(Options{ScanInterval: time.Hour})
+	ctx := context.Background()
 
-	w.runCycle(context.Background(), "")
+	w.doScan(ctx, "", false)
+	w.runDownstream(ctx)
 
 	// Two groups scanned forward once each.
 	if got := atomic.LoadInt32(&s.forward); got != 2 {
@@ -89,16 +91,72 @@ func TestRunCycleUpdatesMetrics(t *testing.T) {
 		t.Errorf("release metrics = %+v", m)
 	}
 	if m.CurrentStage != "idle" {
-		t.Errorf("stage = %q, want idle after cycle", m.CurrentStage)
+		t.Errorf("stage = %q, want idle after downstream", m.CurrentStage)
 	}
 }
 
 func TestBackfillOptionRunsBackfill(t *testing.T) {
 	w, s, _, _, _ := newTestWorker(Options{ScanInterval: time.Hour, EnableBackfill: true})
-	w.runCycle(context.Background(), "")
+	w.doScan(context.Background(), "", true)
 	if atomic.LoadInt32(&s.backfill) != 2 {
 		t.Errorf("backfill scans = %d, want 2 (one per group)", s.backfill)
 	}
+}
+
+// TestDownstreamRunsWhileScanBlocked is the core #15 guarantee: a slow scan
+// must not prevent post-processing from running.
+func TestDownstreamRunsWhileScanBlocked(t *testing.T) {
+	g := &mockGroups{groups: []store.Group{{Name: "g1"}}}
+	scanStarted := make(chan struct{})
+	releaseScan := make(chan struct{})
+	s := &blockingScanner{started: scanStarted, release: releaseScan}
+	a := &mockAsm{}
+	b := &mockBuild{}
+	p := &mockPP{}
+	// Short intervals so both loops tick quickly.
+	w := New(g, s, a, b, p, nil, Options{ScanInterval: 10 * time.Millisecond, DownstreamInterval: 10 * time.Millisecond})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	// Wait until the scan is in progress and blocked.
+	select {
+	case <-scanStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("scan did not start")
+	}
+
+	// While the scan is blocked, the downstream loop must still run post-process.
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&p.calls) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("post-processing did not run while scan was blocked (starvation)")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	close(releaseScan) // let the scan finish
+}
+
+// blockingScanner blocks in ScanForward until released, to simulate a slow scan.
+type blockingScanner struct {
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
+}
+
+func (bs *blockingScanner) ScanForward(ctx context.Context, _ string) (scanner.ScanResult, error) {
+	bs.startOnce.Do(func() { close(bs.started) })
+	select {
+	case <-bs.release:
+	case <-ctx.Done():
+	}
+	return scanner.ScanResult{}, nil
+}
+func (bs *blockingScanner) ScanBackfill(context.Context, string) (scanner.ScanResult, error) {
+	return scanner.ScanResult{}, nil
 }
 
 func TestTriggersAndRunLoopShutdown(t *testing.T) {

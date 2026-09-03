@@ -96,6 +96,7 @@ export const api = {
   deleteUser: (id) => request('DELETE', `/admin/users/${id}`),
   triggerScan: (group) => request('POST', '/admin/scan', { group }),
   triggerBackfill: (group) => request('POST', '/admin/backfill', { group }),
+  triggerPostProcess: () => request('POST', '/admin/postprocess', {}),
   status: () => request('GET', '/admin/status'),
   logs: (level = '', limit = 200) => {
     const params = new URLSearchParams();

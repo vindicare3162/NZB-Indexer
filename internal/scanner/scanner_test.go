@@ -262,3 +262,64 @@ func TestScanBackfillCompletesAtServerLow(t *testing.T) {
 		t.Error("group backfill_complete should be true")
 	}
 }
+
+// TestScanForwardRespectsArticleCap verifies that ForwardMaxArticles bounds a
+// single forward pass so a firehose group yields, persisting the watermark so
+// the next pass resumes where this one stopped.
+func TestScanForwardRespectsArticleCap(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+
+	g, err := st.UpsertGroup(ctx, "alt.binaries.firehose", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Server has 500 articles at 1000..1499. First scan is bootstrap
+	// (LastScannedHigh == 0), so it starts at the server low (1000) and the cap
+	// of 200 should stop it at 1199.
+	src := buildSource(1000, 500, time.Minute)
+	sc := New(src, st, nil, Options{BatchSize: 50, ForwardMaxArticles: 200})
+
+	res, err := sc.ScanForward(ctx, g.Name)
+	if err != nil {
+		t.Fatalf("scan forward: %v", err)
+	}
+	if res.PartsInserted != 200 {
+		t.Errorf("first pass PartsInserted = %d, want 200 (capped)", res.PartsInserted)
+	}
+
+	g2, err := st.GetGroupByName(ctx, g.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g2.LastScannedHigh != 1199 {
+		t.Errorf("watermark after capped pass = %d, want 1199", g2.LastScannedHigh)
+	}
+
+	// Second pass resumes at 1200 and, still capped at 200, stops at 1399.
+	res2, err := sc.ScanForward(ctx, g.Name)
+	if err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+	if res2.PartsInserted != 200 {
+		t.Errorf("second pass PartsInserted = %d, want 200 (capped, resumed)", res2.PartsInserted)
+	}
+	g3, _ := st.GetGroupByName(ctx, g.Name)
+	if g3.LastScannedHigh != 1399 {
+		t.Errorf("watermark after second pass = %d, want 1399", g3.LastScannedHigh)
+	}
+
+	// Third pass ingests the remaining 100 (1400..1499); cap is not reached.
+	res3, err := sc.ScanForward(ctx, g.Name)
+	if err != nil {
+		t.Fatalf("third scan: %v", err)
+	}
+	if res3.PartsInserted != 100 {
+		t.Errorf("third pass PartsInserted = %d, want 100 (tail)", res3.PartsInserted)
+	}
+	total, _ := st.CountParts(ctx, g.ID)
+	if total != 500 {
+		t.Errorf("total parts = %d, want 500", total)
+	}
+}

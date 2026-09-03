@@ -153,10 +153,14 @@ func (mockNZB) ForGUID(context.Context, string) ([]byte, string, error) {
 	return []byte("<nzb/>"), "rel.nzb", nil
 }
 
-type mockJobs struct{ scanned, backfilled string }
+type mockJobs struct {
+	scanned, backfilled string
+	postProcessed       int
+}
 
 func (m *mockJobs) TriggerScan(g string) error     { m.scanned = g; return nil }
 func (m *mockJobs) TriggerBackfill(g string) error { m.backfilled = g; return nil }
+func (m *mockJobs) TriggerPostProcess() error      { m.postProcessed++; return nil }
 func (m *mockJobs) Status() any                    { return map[string]string{"state": "idle"} }
 
 // testSetup wires an API with a real auth service and returns it plus the
@@ -454,6 +458,14 @@ func TestAdminTriggersAndStatus(t *testing.T) {
 	rec = do(t, env, http.MethodPost, "/api/v1/admin/backfill", env.adminTok, triggerRequest{})
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("backfill trigger status = %d", rec.Code)
+	}
+
+	rec = do(t, env, http.MethodPost, "/api/v1/admin/postprocess", env.adminTok, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("postprocess trigger status = %d", rec.Code)
+	}
+	if env.jobs.postProcessed != 1 {
+		t.Errorf("postProcessed = %d, want 1", env.jobs.postProcessed)
 	}
 
 	rec = do(t, env, http.MethodGet, "/api/v1/admin/status", env.adminTok, nil)
