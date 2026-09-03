@@ -71,6 +71,10 @@ func (m *mockStore) PipelineStatistics(context.Context) (store.PipelineStats, er
 		BinariesTotal: 50, BinariesComplete: 30, BinariesUnreleased: 5,
 		ReleasesTotal: 25, ReleasesByPP: map[string]int64{"pending": 4, "done": 21},
 		ReleasesFailedExhausted: 2,
+		Groups: []store.GroupReleaseStats{
+			{Name: "alt.binaries.tv", ReleasesTotal: 20, ReleasesPending: 3},
+			{Name: "alt.binaries.movies", ReleasesTotal: 5, ReleasesPending: 1},
+		},
 	}, nil
 }
 func (m *mockStore) ListGroups(context.Context, bool) ([]store.Group, error)  { return m.groups, nil }
@@ -520,6 +524,9 @@ func TestAdminTriggersAndStatus(t *testing.T) {
 	}
 	if stats.ReleasesFailedExhausted != 2 {
 		t.Errorf("releases_failed_exhausted = %d, want 2", stats.ReleasesFailedExhausted)
+	}
+	if len(stats.Groups) != 2 || stats.Groups[0].Name != "alt.binaries.tv" || stats.Groups[0].ReleasesTotal != 20 {
+		t.Errorf("per-group stats = %+v", stats.Groups)
 	}
 }
 

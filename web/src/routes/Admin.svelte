@@ -324,6 +324,18 @@
       </tbody>
     </table>
     <p class="muted" style="font-size:0.8rem">Parts totals are estimates; binary/release counts are exact.</p>
+
+    {#if stats.groups && stats.groups.length > 0}
+      <h4 style="margin:0.8rem 0 0.3rem">Releases by group</h4>
+      <table>
+        <thead><tr><th>Group</th><th>Releases</th><th>Pending pp</th></tr></thead>
+        <tbody>
+          {#each stats.groups as gr}
+            <tr><td>{gr.name}</td><td>{fmtCount(gr.releases_total)}</td><td>{fmtCount(gr.releases_pending)}</td></tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
   {:else}
     <p class="muted">No stats available.</p>
   {/if}
