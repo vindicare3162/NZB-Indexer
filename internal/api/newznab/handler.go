@@ -110,8 +110,19 @@ func (h *Handler) handleCaps(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
+	query := buildQuery(q)
+
+	// An external-id search (imdbid/tvdbid/rid/...) that produced no query
+	// tokens cannot be resolved by a header-only indexer. Return an empty feed
+	// rather than falling through to "match everything", which would make a
+	// client treat every release as a match.
+	if query == "" && hasIDParam(q) {
+		h.writeEmptyFeed(w)
+		return
+	}
+
 	filter := store.SearchFilter{
-		Query:      buildQuery(q),
+		Query:      query,
 		Categories: parseCategories(q.Get("cat")),
 		Limit:      h.clampLimit(q.Get("limit")),
 		Offset:     parseInt(q.Get("offset"), 0),
@@ -136,6 +147,22 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, rel := range releases {
 		feed.Channel.Items = append(feed.Channel.Items, h.releaseToItem(rel))
+	}
+	writeXML(w, http.StatusOK, feed)
+}
+
+// writeEmptyFeed returns a valid, empty RSS result feed (total=0).
+func (h *Handler) writeEmptyFeed(w http.ResponseWriter) {
+	feed := rss{
+		Version:      "2.0",
+		NewznabXMLNS: newznabNS,
+		AtomXMLNS:    "http://www.w3.org/2005/Atom",
+		Channel: channel{
+			Title:       "goindex",
+			Description: "goindex search results",
+			Link:        h.baseURL,
+			Response:    nnResponse{Offset: 0, Total: 0},
+		},
 	}
 	writeXML(w, http.StatusOK, feed)
 }
