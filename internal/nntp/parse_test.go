@@ -1,8 +1,10 @@
 package nntp
 
 import (
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestParseOverviewLine(t *testing.T) {
@@ -35,6 +37,27 @@ func TestParseOverviewLine(t *testing.T) {
 func TestParseOverviewLineTooFewFields(t *testing.T) {
 	if _, ok := parseOverviewLine("123\tsubject\tfrom"); ok {
 		t.Error("expected short line to be rejected")
+	}
+}
+
+func TestParseOverviewLineSanitizesInvalidUTF8(t *testing.T) {
+	// A subject and poster carrying a raw Latin-1 byte (0xfc = 'ü') — invalid
+	// UTF-8. The parsed fields must be valid UTF-8 so they can be stored in a
+	// UTF-8 TEXT column without failing the insert.
+	line := "1\tGr\xfc\xdfe.Release.mkv\tp\xfcster@x\tMon, 02 Jan 2006 15:04:05 -0700\t<m@h>\t\t100\t1"
+	ov, ok := parseOverviewLine(line)
+	if !ok {
+		t.Fatal("expected line to parse")
+	}
+	if !utf8.ValidString(ov.Subject) {
+		t.Errorf("Subject is not valid UTF-8: %q", ov.Subject)
+	}
+	if !utf8.ValidString(ov.From) {
+		t.Errorf("From is not valid UTF-8: %q", ov.From)
+	}
+	// Valid ASCII content is preserved around the replaced bytes.
+	if !strings.Contains(ov.Subject, "Release.mkv") {
+		t.Errorf("Subject lost its ASCII content: %q", ov.Subject)
 	}
 }
 
