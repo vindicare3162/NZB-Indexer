@@ -20,11 +20,13 @@ type fakeConn struct {
 
 	// per-call behaviour
 	groupInfo    GroupInfo
-	groupErr     error
-	overviewData []Overview
-	overErr      error
-	bodyData     string
-	bodyErr      error
+	groupErr        error
+	overviewData    []Overview
+	overErr         error
+	availableGroups []AvailableGroup
+	listErr         error
+	bodyData        string
+	bodyErr         error
 
 	pingErr error
 	closed  bool
@@ -61,6 +63,10 @@ func (f *fakeConn) overview(begin, end int64) ([]Overview, error) {
 		return nil, f.overErr
 	}
 	return f.overviewData, nil
+}
+
+func (f *fakeConn) listActive() ([]AvailableGroup, error) {
+	return f.availableGroups, f.listErr
 }
 
 func (f *fakeConn) body(messageID string) (io.ReadCloser, error) {

@@ -11,6 +11,12 @@
   let newGroup = $state('');
   let newUser = $state({ username: '', password: '', admin: false });
   let newServer = $state({ name: '', host: '', port: 563, tls: true, username: '', password: '', max_conns: 10, priority: 0, enabled: true });
+  let discoverQuery = $state('');
+  let discoverResults = $state([]);
+  let discoverTotal = $state(0);
+  let discoverOffset = $state(0);
+  let discoverLoading = $state(false);
+  let discoverCachedAt = $state('');
   let error = $state('');
   let notice = $state('');
 
@@ -69,6 +75,30 @@
     error = '';
     try { await api.createGroup(newGroup); newGroup = ''; loadAll(); }
     catch (e) { error = e.message; }
+  }
+
+  async function runDiscover(offset = 0, refresh = false) {
+    error = '';
+    discoverLoading = true;
+    discoverOffset = offset;
+    try {
+      const res = await api.discover(discoverQuery, 25, offset, refresh);
+      discoverResults = res.groups || [];
+      discoverTotal = res.total || 0;
+      discoverCachedAt = res.cached_at || '';
+    } catch (e) { error = e.message; }
+    finally { discoverLoading = false; }
+  }
+  async function addDiscovered(name) {
+    error = '';
+    try { await api.createGroup(name); notice = `Added ${name}`; loadAll(); }
+    catch (e) { error = e.message; }
+  }
+  function fmtCount(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
   }
   async function toggleGroup(g) {
     try { await api.setGroupActive(g.id, !g.active); loadAll(); }
@@ -142,6 +172,39 @@
     </table>
   {:else}
     <p class="muted">No news servers configured.</p>
+  {/if}
+</div>
+
+<div class="panel">
+  <h3 style="margin-top:0">Discover newsgroups</h3>
+  <p class="muted" style="margin-top:0">Search the groups your provider carries and add ones to index. The first search fetches the full list from the provider (can take a few seconds).</p>
+  <div class="row">
+    <input placeholder="filter e.g. alt.binaries" bind:value={discoverQuery} style="flex:1; min-width:200px"
+           onkeydown={(e) => { if (e.key === 'Enter') runDiscover(0); }} />
+    <button onclick={() => runDiscover(0)} disabled={discoverLoading}>{discoverLoading ? 'Searching…' : 'Search'}</button>
+    <button class="secondary" onclick={() => runDiscover(0, true)} disabled={discoverLoading} title="Refresh cached list from provider">Refresh</button>
+  </div>
+  {#if discoverResults.length > 0}
+    <table style="margin-top:0.8rem">
+      <thead><tr><th>Group</th><th>~Articles</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        {#each discoverResults as g}
+          <tr>
+            <td>{g.name}</td>
+            <td class="muted">{fmtCount(g.estimated_count)}</td>
+            <td class="muted">{g.status}</td>
+            <td><button class="secondary" onclick={() => addDiscovered(g.name)}>Add</button></td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+    <div class="row" style="justify-content:space-between; margin-top:0.6rem">
+      <span class="muted">{discoverTotal} match{discoverTotal === 1 ? '' : 'es'}{#if discoverCachedAt} · list cached {new Date(discoverCachedAt).toLocaleTimeString()}{/if}</span>
+      <div class="row">
+        <button class="secondary" disabled={discoverOffset <= 0} onclick={() => runDiscover(discoverOffset - 25)}>Prev</button>
+        <button class="secondary" disabled={discoverOffset + 25 >= discoverTotal} onclick={() => runDiscover(discoverOffset + 25)}>Next</button>
+      </div>
+    </div>
   {/if}
 </div>
 

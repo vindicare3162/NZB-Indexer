@@ -92,6 +92,44 @@ func (a *API) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// --- newsgroup discovery ---
+
+type discoverResponse struct {
+	Total    int               `json:"total"`
+	Limit    int               `json:"limit"`
+	Offset   int               `json:"offset"`
+	CachedAt string            `json:"cached_at,omitempty"`
+	Groups   []DiscoveredGroup `json:"groups"`
+}
+
+func (a *API) handleDiscover(w http.ResponseWriter, r *http.Request) {
+	if a.discoverer == nil {
+		writeError(w, http.StatusServiceUnavailable, "discovery not available")
+		return
+	}
+	q := r.URL.Query()
+	limit := parseIntDefault(q.Get("limit"), 50)
+	if limit > 200 {
+		limit = 200
+	}
+	offset := parseIntDefault(q.Get("offset"), 0)
+	refresh := q.Get("refresh") == "1" || strings.EqualFold(q.Get("refresh"), "true")
+
+	groups, total, cachedAt, err := a.discoverer.SearchGroups(r.Context(), q.Get("q"), limit, offset, refresh)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to fetch group list from provider: "+err.Error())
+		return
+	}
+	if groups == nil {
+		groups = []DiscoveredGroup{}
+	}
+	resp := discoverResponse{Total: total, Limit: limit, Offset: offset, Groups: groups}
+	if !cachedAt.IsZero() {
+		resp.CachedAt = cachedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // --- news servers ---
 
 func (a *API) handleListServers(w http.ResponseWriter, r *http.Request) {

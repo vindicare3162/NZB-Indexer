@@ -251,6 +251,21 @@ func (p *Pool) Overview(ctx context.Context, group string, begin, end int64) ([]
 	return out, err
 }
 
+// ListActive returns the groups the server carries. The list can be large
+// (100k+ groups); callers should cache the result.
+func (p *Pool) ListActive(ctx context.Context) ([]AvailableGroup, error) {
+	var groups []AvailableGroup
+	err := p.withConn(ctx, func(c conn) error {
+		g, err := c.listActive()
+		if err != nil {
+			return err
+		}
+		groups = g
+		return nil
+	})
+	return groups, err
+}
+
 // Body fetches and returns the full decoded body bytes of an article.
 func (p *Pool) Body(ctx context.Context, messageID string) ([]byte, error) {
 	var data []byte

@@ -39,6 +39,19 @@ type Overview struct {
 	Bytes int64
 }
 
+// AvailableGroup describes a newsgroup the provider carries, from LIST ACTIVE.
+type AvailableGroup struct {
+	// Name is the newsgroup name.
+	Name string
+	// High and Low are the reported article-number bounds.
+	High int64
+	Low  int64
+	// EstimatedCount is high-low+1 (an upper bound; actual may be lower).
+	EstimatedCount int64
+	// Status is the posting status flag ("y", "n", "m", ...).
+	Status string
+}
+
 // Config configures the connection pool.
 type Config struct {
 	// Host is the NNTP server hostname.
