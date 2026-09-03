@@ -15,6 +15,18 @@ var ErrUnauthorized = errors.New("auth: unauthorized")
 // ErrRateLimited indicates the caller exceeded their request budget.
 var ErrRateLimited = errors.New("auth: rate limited")
 
+// RateLimitedError is returned when a caller exceeds their budget; it carries
+// the window reset time so callers can emit a Retry-After header. It matches
+// ErrRateLimited under errors.Is.
+type RateLimitedError struct {
+	ResetAt time.Time
+}
+
+func (e *RateLimitedError) Error() string { return ErrRateLimited.Error() }
+func (e *RateLimitedError) Is(target error) bool {
+	return target == ErrRateLimited
+}
+
 // Repo is the subset of the store the auth service needs.
 type Repo interface {
 	GetUserByUsername(ctx context.Context, username string) (store.User, error)
@@ -29,6 +41,11 @@ type Principal struct {
 	Role     string
 	// APIKeyID is set when authentication was via API key (0 for sessions).
 	APIKeyID int64
+	// Rate-limit snapshot for the current request, set on API-key auth so the
+	// caller can emit X-RateLimit-* headers. Limit <= 0 means unlimited.
+	RateLimit          int
+	RateLimitRemaining int
+	RateLimitReset     time.Time
 }
 
 // IsAdmin reports whether the principal has the admin role.
@@ -97,9 +114,15 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, apiKey string) (Princi
 	if limit <= 0 {
 		limit = s.defaultRateLimit
 	}
+	var (
+		remaining = -1 // -1 => unlimited/unknown
+		resetAt   time.Time
+	)
 	if s.limiter != nil {
-		if ok, _, _ := s.limiter.Allow(strconv.FormatInt(rec.Key.ID, 10), limit); !ok {
-			return Principal{}, ErrRateLimited
+		ok, rem, reset := s.limiter.Allow(strconv.FormatInt(rec.Key.ID, 10), limit)
+		remaining, resetAt = rem, reset
+		if !ok {
+			return Principal{}, &RateLimitedError{ResetAt: reset}
 		}
 	}
 
@@ -107,10 +130,13 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, apiKey string) (Princi
 	_ = s.repo.TouchAPIKey(ctx, rec.Key.ID)
 
 	return Principal{
-		UserID:   rec.User.ID,
-		Username: rec.User.Username,
-		Role:     rec.User.Role,
-		APIKeyID: rec.Key.ID,
+		UserID:             rec.User.ID,
+		Username:           rec.User.Username,
+		Role:               rec.User.Role,
+		APIKeyID:           rec.Key.ID,
+		RateLimit:          limit,
+		RateLimitRemaining: remaining,
+		RateLimitReset:     resetAt,
 	}, nil
 }
 

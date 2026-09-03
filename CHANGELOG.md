@@ -7,6 +7,11 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Rate-limit headers on the Newznab API (#51). Authenticated responses now
+  carry `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`, and
+  a 429 (rate-limited) response includes a `Retry-After` header (seconds until
+  the window resets) so clients like Prowlarr/Sonarr back off instead of
+  retrying immediately.
 - Per-group release breakdown in the stats view (#47). `GET /api/v1/admin/stats`
   now includes a `groups` array (per group: name, total releases, releases
   pending post-processing), and the admin Pipeline-depth panel shows a
