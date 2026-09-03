@@ -86,6 +86,14 @@ func (m *mockStore) PipelineStatistics(context.Context) (store.PipelineStats, er
 	}, nil
 }
 func (m *mockStore) ListGroups(context.Context, bool) ([]store.Group, error)  { return m.groups, nil }
+func (m *mockStore) GetGroupByName(_ context.Context, name string) (store.Group, error) {
+	for _, g := range m.groups {
+		if g.Name == name {
+			return g, nil
+		}
+	}
+	return store.Group{}, store.ErrNotFound
+}
 func (m *mockStore) UpsertGroup(_ context.Context, name string, active bool) (store.Group, error) {
 	m.createdGroup = name
 	return store.Group{ID: 1, Name: name, Active: active}, nil
@@ -773,5 +781,69 @@ func TestUpdateSchedule(t *testing.T) {
 		updateScheduleRequest{ScanInterval: "10m"})
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("non-admin update status = %d, want 403", rec.Code)
+	}
+}
+
+func TestBulkGroups(t *testing.T) {
+	env := setup(t)
+	// Pre-existing group so we can assert "existing" vs "added".
+	env.store.groups = []store.Group{{ID: 5, Name: "alt.binaries.existing"}}
+
+	body := bulkGroupsRequest{
+		Names: []string{
+			"alt.binaries.movies",
+			"ALT.BINARIES.TV",           // upper-case -> normalised
+			"  alt.binaries.movies  ",   // duplicate after trim
+			"alt.binaries.existing",     // already exists
+			"not a group",               // invalid (space) -> skipped
+			"nodots",                    // invalid (no dot) -> skipped
+			"",                          // blank -> skipped
+		},
+		BackfillDays: 7,
+	}
+	rec := do(t, env, http.MethodPost, "/api/v1/admin/groups/bulk", env.adminTok, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bulk status = %d, body=%s", rec.Code, rec.Body)
+	}
+	var resp bulkGroupsResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	// movies + tv added, existing reported existing; invalids/dupes/blanks dropped.
+	if resp.Added != 2 {
+		t.Errorf("added = %d, want 2 (%+v)", resp.Added, resp.Results)
+	}
+	if resp.Existing != 1 {
+		t.Errorf("existing = %d, want 1", resp.Existing)
+	}
+	if resp.Errors != 0 {
+		t.Errorf("errors = %d, want 0", resp.Errors)
+	}
+	if len(resp.Results) != 3 {
+		t.Errorf("results = %d, want 3 valid unique names", len(resp.Results))
+	}
+	// Backfill window applied (mock records last call).
+	if env.store.backfillDays == nil || *env.store.backfillDays != 7 {
+		t.Errorf("backfill days not applied: %v", env.store.backfillDays)
+	}
+
+	// Empty/all-invalid -> 400.
+	rec = do(t, env, http.MethodPost, "/api/v1/admin/groups/bulk", env.adminTok,
+		bulkGroupsRequest{Names: []string{"", "bad name", "nodots"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("all-invalid status = %d, want 400", rec.Code)
+	}
+
+	// Negative backfill -> 400.
+	rec = do(t, env, http.MethodPost, "/api/v1/admin/groups/bulk", env.adminTok,
+		bulkGroupsRequest{Names: []string{"alt.binaries.x"}, BackfillDays: -1})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("negative backfill status = %d, want 400", rec.Code)
+	}
+
+	// Non-admin forbidden.
+	rec = do(t, env, http.MethodPost, "/api/v1/admin/groups/bulk", env.userTok,
+		bulkGroupsRequest{Names: []string{"alt.binaries.x"}})
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("non-admin status = %d, want 403", rec.Code)
 	}
 }
