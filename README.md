@@ -78,7 +78,7 @@ parallelism disabled (`-p 1`) so packages don't clobber each other:
 # Start a disposable Postgres
 docker run --rm -d --name goindex-test-pg \
   -e POSTGRES_USER=goindex -e POSTGRES_PASSWORD=goindex -e POSTGRES_DB=goindex_test \
-  -p 55432:5432 postgres:16-alpine
+  -p 55432:5432 postgres:18-alpine
 
 # Run the full suite against it
 GOINDEX_TEST_DSN="postgres://goindex:goindex@localhost:55432/goindex_test?sslmode=disable" \
