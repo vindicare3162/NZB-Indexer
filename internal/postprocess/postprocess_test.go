@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -448,13 +449,31 @@ func (c *countingFetcher) Body(_ context.Context, _ string) ([]byte, error) {
 }
 
 // slowFetcher delays each fetch by delay (respecting ctx) to simulate a slow
-// provider, and returns a canned body per message-id.
+// provider, and returns a canned body per message-id. It records the peak
+// number of concurrently in-flight fetches, which is a deterministic proof of
+// parallelism (independent of wall-clock timing under CI/DB load).
 type slowFetcher struct {
 	delay  time.Duration
 	bodies map[string][]byte
+
+	mu      sync.Mutex
+	inFlt   int
+	peakFlt int
 }
 
 func (f *slowFetcher) Body(ctx context.Context, messageID string) ([]byte, error) {
+	f.mu.Lock()
+	f.inFlt++
+	if f.inFlt > f.peakFlt {
+		f.peakFlt = f.inFlt
+	}
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.inFlt--
+		f.mu.Unlock()
+	}()
+
 	select {
 	case <-time.After(f.delay):
 	case <-ctx.Done():
@@ -464,6 +483,12 @@ func (f *slowFetcher) Body(ctx context.Context, messageID string) ([]byte, error
 		return b, nil
 	}
 	return nil, os.ErrNotExist
+}
+
+func (f *slowFetcher) peak() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.peakFlt
 }
 
 // TestPostProcessRunsReleasesConcurrently verifies that releases are processed
@@ -523,10 +548,15 @@ func TestPostProcessRunsReleasesConcurrently(t *testing.T) {
 	if res.Renamed != n {
 		t.Errorf("renamed = %d, want %d (each release recovers a name)", res.Renamed, n)
 	}
-	// Sequential lower bound would be ~n*delay (one fetch each, at minimum).
-	// With 4 workers it must be well under that; allow generous slack for CI.
-	if elapsed >= time.Duration(n)*delay {
-		t.Errorf("elapsed %v >= sequential lower bound %v: releases were not processed concurrently",
-			elapsed, time.Duration(n)*delay)
+	// Deterministic proof of parallelism: at some point more than one fetch was
+	// in flight at once, which can only happen if releases ran concurrently.
+	// This does not depend on wall-clock timing (robust under CI/DB load).
+	if peak := fetch.peak(); peak < 2 {
+		t.Errorf("peak concurrent fetches = %d, want >= 2 (releases were not processed concurrently)", peak)
+	}
+	// Loose wall-clock sanity check against the fully-sequential time
+	// (n releases * 2 fetches * delay = 3.2s); generous margin for slow CI/DB.
+	if seq := time.Duration(n) * 2 * delay; elapsed >= seq {
+		t.Errorf("elapsed %v >= sequential time %v: no speedup from concurrency", elapsed, seq)
 	}
 }
