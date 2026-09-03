@@ -54,6 +54,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   page shows a live, auto-refreshing log view.
 
 ### Fixed
+- PAR2-recovered names no longer keep a volume suffix (#31). When recovering a
+  name from PAR2, a part filename like `Show.S03E10.HDTV.XviD.part1.rar` was
+  reduced only to `Show.S03E10.HDTV.XviD.part1` (the `.part1` was left behind),
+  producing a worse name than the original. Volume suffixes (`.partNN`,
+  `.volNN+NN`, `.rNN`) are now stripped along with the archive extension so a
+  recovery set collapses to its clean base name.
 - Single-article posts are now released (#28). When an article subject has no
   yEnc segment counter, the scanner records `total_parts = 0`; the assembler
   treated such binaries as incomplete forever, so single-article files (small

@@ -80,6 +80,35 @@ func TestBestReleaseName(t *testing.T) {
 	if got != "Great.Movie.2024.1080p" {
 		t.Errorf("bestReleaseName = %q, want Great.Movie.2024.1080p", got)
 	}
+
+	// Volume suffixes on the archive parts must be stripped too (#31): all of
+	// these reduce to the same base, and the recovered name must not keep a
+	// ".partN" / ".rNN" tail.
+	volNames := []string{
+		"Saving.Grace.S03E10.HDTV.XviD.part1.rar",
+		"Saving.Grace.S03E10.HDTV.XviD.part2.rar",
+		"Saving.Grace.S03E10.HDTV.XviD.r05",
+		"Saving.Grace.S03E10.HDTV.XviD.vol00+01.par2",
+	}
+	if got := bestReleaseName(volNames); got != "Saving.Grace.S03E10.HDTV.XviD" {
+		t.Errorf("bestReleaseName(volNames) = %q, want Saving.Grace.S03E10.HDTV.XviD", got)
+	}
+}
+
+func TestStripKnownExt(t *testing.T) {
+	cases := map[string]string{
+		"Show.S03E10.HDTV.XviD.part1.rar":     "Show.S03E10.HDTV.XviD",
+		"Movie.2024.1080p.vol01+02.par2":      "Movie.2024.1080p",
+		"Movie.2024.1080p.r05":                "Movie.2024.1080p",
+		"Movie.2024.1080p.mkv":                "Movie.2024.1080p",
+		"Great.Movie.2024.1080p.par2":         "Great.Movie.2024.1080p",
+		"plain.name.without.volume":           "plain.name.without.volume",
+	}
+	for in, want := range cases {
+		if got := stripKnownExt(in); got != want {
+			t.Errorf("stripKnownExt(%q) = %q, want %q", in, got, want)
+		}
+	}
 }
 
 func TestHasPar2Magic(t *testing.T) {

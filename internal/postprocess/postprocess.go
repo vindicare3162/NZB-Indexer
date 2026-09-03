@@ -380,30 +380,27 @@ func bestReleaseName(names []string) string {
 	return strings.TrimSpace(best)
 }
 
-// reVolSuffix matches a PAR2 recovery-volume suffix like ".vol01+02".
-var reVolSuffix = regexp.MustCompile(`(?i)\.vol\d+\+\d+$`)
-
-// stripKnownExt removes a trailing archive/media/par2 extension (and any PAR2
-// recovery-volume suffix) from a name, so all volumes of a set collapse to the
+// reVolSuffix matches a trailing archive/parity volume suffix such as
+// ".vol01+02", ".part007", or ".r05", so all volumes of a set collapse to the
 // same base name.
+var reVolSuffix = regexp.MustCompile(`(?i)\.(vol\d+\+\d+|part\d+|r\d+|\d{2,3})$`)
+
+// stripKnownExt removes a trailing archive/media/par2 extension and any volume
+// suffix left behind (e.g. ".part1.rar" or ".vol01+02.par2"), so every file of
+// a recovery set reduces to the same clean base name.
 func stripKnownExt(name string) string {
 	lower := strings.ToLower(name)
 	for _, ext := range []string{".par2", ".rar", ".zip", ".7z", ".mkv", ".mp4", ".avi", ".nfo", ".sfv"} {
 		if strings.HasSuffix(lower, ext) {
 			name = name[:len(name)-len(ext)]
-			// A PAR2 file may be "<base>.vol01+02.par2"; strip the vol suffix
-			// left behind so recovery volumes share one base name.
+			// Strip any volume suffix now exposed (".part1", ".vol01+02",
+			// ".r05") so recovery volumes share one base name.
 			return reVolSuffix.ReplaceAllString(name, "")
 		}
 	}
-	// Also strip .rNN / .partNN volume suffixes.
-	if i := strings.LastIndexByte(name, '.'); i > 0 {
-		suffix := strings.ToLower(name[i+1:])
-		if len(suffix) >= 2 && (suffix[0] == 'r' || strings.HasPrefix(suffix, "part")) {
-			return name[:i]
-		}
-	}
-	return name
+	// No known extension: still strip a bare trailing volume suffix
+	// (e.g. "<base>.r05" or "<base>.part07").
+	return reVolSuffix.ReplaceAllString(name, "")
 }
 
 // sanitizeNFO converts decoded NFO bytes into clean UTF-8 text. NFO files are
