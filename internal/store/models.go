@@ -20,8 +20,14 @@ type Group struct {
 	LastScannedHigh  int64     `json:"last_scanned_high"`
 	BackfillLow      int64     `json:"backfill_low"`
 	BackfillComplete bool      `json:"backfill_complete"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	// BackfillTargetDays overrides the global backfill day cutoff for this
+	// group when non-nil (0 = no day bound).
+	BackfillTargetDays *int `json:"backfill_target_days,omitempty"`
+	// BackfillTargetArticles overrides the global per-pass article cap for this
+	// group when non-nil (0 = unlimited).
+	BackfillTargetArticles *int64    `json:"backfill_target_articles,omitempty"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 // Part is a single article header row belonging to a multi-part binary.

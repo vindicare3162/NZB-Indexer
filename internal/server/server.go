@@ -84,10 +84,19 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	})
 	nzbGen := nzb.NewGenerator(st)
 
-	// 4. Worker scheduler (also serves as the REST JobController).
+	// 4. Worker scheduler (also serves as the REST JobController). Backfill runs
+	// on the schedule when a global setting is configured or any group has a
+	// per-group backfill target (runtime-added targets are also reachable via
+	// the manual per-group Backfill action immediately).
+	enableBackfill := cfg.Scan.BackfillDays > 0 || cfg.Scan.BackfillMaxArticles > 0
+	if !enableBackfill {
+		if has, err := st.AnyGroupHasBackfillTarget(ctx); err == nil && has {
+			enableBackfill = true
+		}
+	}
 	wrk := worker.New(st, sc, asm, builder, pp, logger, worker.Options{
 		ScanInterval:   cfg.Scan.Interval,
-		EnableBackfill: cfg.Scan.BackfillDays > 0 || cfg.Scan.BackfillMaxArticles > 0,
+		EnableBackfill: enableBackfill,
 	})
 
 	// 5. Auth.

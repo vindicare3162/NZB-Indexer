@@ -75,6 +75,39 @@ func (a *API) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type backfillTargetRequest struct {
+	// Days and Articles are the per-group backfill targets. A field set to null
+	// (omitted) clears that dimension's override; 0 means "no bound / unlimited".
+	Days     *int   `json:"days"`
+	Articles *int64 `json:"articles"`
+}
+
+func (a *API) handleSetGroupBackfill(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid group id")
+		return
+	}
+	var req backfillTargetRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if (req.Days != nil && *req.Days < 0) || (req.Articles != nil && *req.Articles < 0) {
+		writeError(w, http.StatusBadRequest, "backfill targets must not be negative")
+		return
+	}
+	if err := a.store.SetGroupBackfillTarget(r.Context(), id, req.Days, req.Articles); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "group not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to set backfill target")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *API) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {

@@ -58,8 +58,8 @@ func TestMigrateUpDownAndVersion(t *testing.T) {
 	if dirty {
 		t.Fatal("schema is dirty after migrate up")
 	}
-	if v != 4 {
-		t.Fatalf("expected schema version 4, got %d", v)
+	if v != 5 {
+		t.Fatalf("expected schema version 5, got %d", v)
 	}
 
 	// Re-running up should be a no-op, not an error.
@@ -107,6 +107,63 @@ func TestSeedCategoriesPresent(t *testing.T) {
 
 	if _, err := st.GetCategory(ctx, 999999); err != ErrNotFound {
 		t.Errorf("expected ErrNotFound for unknown category, got %v", err)
+	}
+}
+
+func TestGroupBackfillTarget(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+
+	g, err := st.UpsertGroup(ctx, "alt.binaries.bftarget", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No target initially.
+	if g.BackfillTargetDays != nil || g.BackfillTargetArticles != nil {
+		t.Errorf("expected nil targets initially, got %+v", g)
+	}
+	has, err := st.AnyGroupHasBackfillTarget(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has {
+		t.Error("expected no group with backfill target")
+	}
+
+	// Set both dimensions.
+	days := 30
+	arts := int64(50000)
+	if err := st.SetGroupBackfillTarget(ctx, g.ID, &days, &arts); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetGroupByName(ctx, g.Name)
+	if got.BackfillTargetDays == nil || *got.BackfillTargetDays != 30 {
+		t.Errorf("target days = %v, want 30", got.BackfillTargetDays)
+	}
+	if got.BackfillTargetArticles == nil || *got.BackfillTargetArticles != 50000 {
+		t.Errorf("target articles = %v, want 50000", got.BackfillTargetArticles)
+	}
+
+	has, _ = st.AnyGroupHasBackfillTarget(ctx)
+	if !has {
+		t.Error("expected a group with backfill target after setting")
+	}
+
+	// Clear the days dimension (nil), keep articles.
+	if err := st.SetGroupBackfillTarget(ctx, g.ID, nil, &arts); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetGroupByName(ctx, g.Name)
+	if got.BackfillTargetDays != nil {
+		t.Errorf("target days should be cleared, got %v", got.BackfillTargetDays)
+	}
+	if got.BackfillTargetArticles == nil {
+		t.Error("target articles should remain set")
+	}
+
+	// Not found.
+	if err := st.SetGroupBackfillTarget(ctx, 99999, &days, nil); err != ErrNotFound {
+		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
 

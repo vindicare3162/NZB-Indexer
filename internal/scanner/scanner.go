@@ -159,16 +159,27 @@ func (s *Scanner) ScanBackfill(ctx context.Context, groupName string) (ScanResul
 		upper = info.High
 	}
 
+	// Effective backfill limits: a per-group target overrides the global
+	// default for each dimension when set.
+	maxArticles := s.opts.BackfillMaxArticles
+	if g.BackfillTargetArticles != nil {
+		maxArticles = *g.BackfillTargetArticles
+	}
+	days := s.opts.BackfillDays
+	if g.BackfillTargetDays != nil {
+		days = *g.BackfillTargetDays
+	}
+
 	// The lowest article we're willing to fetch this pass.
 	target := info.Low
-	if s.opts.BackfillMaxArticles > 0 {
-		if lim := upper - s.opts.BackfillMaxArticles + 1; lim > target {
+	if maxArticles > 0 {
+		if lim := upper - maxArticles + 1; lim > target {
 			target = lim
 		}
 	}
 	cutoff := time.Time{}
-	if s.opts.BackfillDays > 0 {
-		cutoff = time.Now().AddDate(0, 0, -s.opts.BackfillDays)
+	if days > 0 {
+		cutoff = time.Now().AddDate(0, 0, -days)
 	}
 
 	if upper < info.Low {
