@@ -136,6 +136,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	srvMgr := &serverManager{store: st, pool: pool, connectTimeout: cfg.NNTP.ConnectTimeout, log: logger}
 	discovery := newDiscoveryService(pool, time.Hour)
 	restAPI := rest.New(st, nzbGen, authSvc, authSvc, scheduleAdapter{wrk}, srvMgr, logs, discovery, logger)
+	restAPI.SetSystemProbe(systemProbe{pool: pool, store: st, jwtSecret: cfg.Auth.JWTSecret})
 
 	spa, err := web.Handler()
 	if err != nil {

@@ -97,6 +97,7 @@ export const api = {
   createUser: (username, password, admin) =>
     request('POST', '/admin/users', { username, password, admin }),
   deleteUser: (id) => request('DELETE', `/admin/users/${id}`),
+  health: () => request('GET', '/admin/health'),
   schedule: () => request('GET', '/admin/schedule'),
   updateSchedule: (s) => request('PUT', '/admin/schedule', s),
   triggerScan: (group) => request('POST', '/admin/scan', { group }),

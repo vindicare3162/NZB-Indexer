@@ -23,6 +23,7 @@
   let discoverCachedAt = $state('');
   let schedule = $state({ scan_interval: '', downstream_interval: '', build_interval: '', postprocess_interval: '' });
   let savingSchedule = $state(false);
+  let health = $state(null);
   let error = $state('');
   let notice = $state('');
 
@@ -33,7 +34,16 @@
     api.status().then((s) => { status = s; }).catch(() => {});
     api.stats().then((s) => { stats = s; }).catch(() => {});
     loadSchedule();
+    api.health().then((h) => { health = h; }).catch(() => {});
     loadLogs();
+  }
+
+  function fmtBytes(bytes) {
+    if (!bytes) return '—';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let n = bytes, i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return `${n.toFixed(1)} ${units[i]}`;
   }
 
   function loadSchedule() {
@@ -220,6 +230,53 @@
 <h2>Admin</h2>
 {#if error}<p class="error">{error}</p>{/if}
 {#if notice}<p class="muted">{notice}</p>{/if}
+
+{#if health}
+  <div class="panel">
+    <h3 style="margin-top:0">
+      System health
+      <span class="badge" style="background:{health.status === 'ok' ? '#1a7f37' : health.status === 'warn' ? '#9a6700' : '#b42318'}">{health.status}</span>
+    </h3>
+    <div class="row" style="gap:2rem; flex-wrap:wrap">
+      <div>
+        <div class="muted" style="font-size:0.8rem">Process</div>
+        <div>Goroutines: {health.process.goroutines}</div>
+        <div>Heap: {health.process.heap_alloc_mb} MB</div>
+        <div>Uptime: {Math.floor(health.process.uptime_secs / 60)} min</div>
+        <div class="muted" style="font-size:0.8rem">{health.process.go_version}</div>
+      </div>
+      {#if health.database}
+        <div>
+          <div class="muted" style="font-size:0.8rem">Database</div>
+          <div>Size: {fmtBytes(health.database.size_bytes)}</div>
+          <div>Cache hit: {health.database.cache_hit_ratio < 0 ? '—' : (health.database.cache_hit_ratio * 100).toFixed(1) + '%'}</div>
+          <div>Pool: {health.database.pool_total}/{health.database.pool_max} ({health.database.pool_idle} idle)</div>
+        </div>
+      {/if}
+      {#if health.usenet}
+        <div>
+          <div class="muted" style="font-size:0.8rem">Usenet</div>
+          <div>Connections: {health.usenet.pool_open} open, {health.usenet.pool_idle} idle</div>
+          <div>Server: {health.usenet.server_configured ? 'configured' : 'not configured'}</div>
+        </div>
+      {/if}
+    </div>
+    {#if health.checks && health.checks.length > 0}
+      <table style="margin-top:0.8rem">
+        <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody>
+          {#each health.checks as c}
+            <tr>
+              <td>{c.name}</td>
+              <td style="color:{c.status === 'ok' ? '#1a7f37' : c.status === 'warn' ? '#9a6700' : '#b42318'}">{c.status}</td>
+              <td class="muted">{c.message || ''}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  </div>
+{/if}
 
 <div class="panel">
   <h3 style="margin-top:0">News servers</h3>
