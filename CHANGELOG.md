@@ -6,6 +6,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Changed
+- The assembler now drains its backlog within a single pipeline cycle (#3):
+  it folds batches in a loop until nothing remains or a configurable per-run cap
+  is hit, instead of one fixed batch per cycle. Large parts backlogs turn into
+  releases far sooner. Context cancellation is honoured between batches.
+
 ### Added
 - Configurable news servers managed from the admin UI (#6). Servers (host, port,
   TLS, credentials, max connections, priority, enabled) are stored in the
