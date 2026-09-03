@@ -403,6 +403,15 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.jobs.Status())
 }
 
+func (a *API) handleStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := a.store.PipelineStatistics(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
 func (a *API) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if a.logs == nil {
 		writeJSON(w, http.StatusOK, []any{})

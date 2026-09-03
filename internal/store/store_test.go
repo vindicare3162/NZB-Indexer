@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -234,5 +235,67 @@ func TestGroupCRUD(t *testing.T) {
 	}
 	if err := st.DeleteGroup(ctx, g.ID); err != ErrNotFound {
 		t.Errorf("expected ErrNotFound deleting missing group, got %v", err)
+	}
+}
+
+func TestPipelineStatistics(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+	g, _ := st.UpsertGroup(ctx, "alt.binaries.stats", true)
+
+	// Seed a complete single-file binary (5/5) and an incomplete one (2/4).
+	seedStatsParts(t, st, g.ID, "Complete.mkv", "p1", 1000, 5, 5)
+	seedStatsParts(t, st, g.ID, "Incomplete.mkv", "p2", 2000, 2, 4)
+	if _, err := st.AssembleBinaries(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := st.PipelineStatistics(ctx)
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	// Two binaries formed, one complete.
+	if stats.BinariesTotal != 2 {
+		t.Errorf("binaries total = %d, want 2", stats.BinariesTotal)
+	}
+	if stats.BinariesComplete != 1 {
+		t.Errorf("binaries complete = %d, want 1", stats.BinariesComplete)
+	}
+	// The complete one is unreleased (no release builder run here).
+	if stats.BinariesUnreleased != 1 {
+		t.Errorf("binaries unreleased = %d, want 1", stats.BinariesUnreleased)
+	}
+	// ReleasesByPP is initialised even with no releases.
+	if stats.ReleasesByPP == nil {
+		t.Error("ReleasesByPP should be non-nil")
+	}
+	if stats.ReleasesTotal != 0 {
+		t.Errorf("releases total = %d, want 0 (no build run)", stats.ReleasesTotal)
+	}
+	// Estimates are non-negative (exact values depend on ANALYZE timing).
+	if stats.PartsTotal < 0 || stats.PartsUnassigned < 0 {
+		t.Errorf("estimates must be non-negative: %+v", stats)
+	}
+}
+
+// seedStatsParts inserts `collected` of `total` parts for a single-file binary.
+func seedStatsParts(t *testing.T, st *Store, groupID int64, norm, poster string, articleBase int64, collected, total int) {
+	t.Helper()
+	var parts []PartInput
+	for i := 1; i <= collected; i++ {
+		parts = append(parts, PartInput{
+			GroupID:       groupID,
+			ArticleNumber: articleBase + int64(i),
+			MessageID:     fmt.Sprintf("m-%s-%d@x", norm, i),
+			Subject:       fmt.Sprintf(`"%s" yEnc (%d/%d)`, norm, i, total),
+			Poster:        poster,
+			Bytes:         1000,
+			PartNumber:    i,
+			TotalParts:    total,
+			NormSubject:   norm,
+		})
+	}
+	if _, err := st.InsertParts(context.Background(), parts); err != nil {
+		t.Fatalf("seed stats parts: %v", err)
 	}
 }
