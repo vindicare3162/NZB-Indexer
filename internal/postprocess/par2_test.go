@@ -23,7 +23,8 @@ func buildFileDescPacket(filename string) []byte {
 	binary.LittleEndian.PutUint64(pkt[8:16], uint64(pktLen))
 	// pkt[16:32] MD5 packet hash (left zero for the test)
 	// pkt[32:48] recovery set id (left zero)
-	copy(pkt[40:56], par2FileDescType)
+	// pkt[48:64] packet type (per the PAR2 spec).
+	copy(pkt[48:64], par2FileDescType)
 	copy(pkt[par2HeaderLen:], body)
 	return pkt
 }
@@ -93,6 +94,36 @@ func TestHasPar2Magic(t *testing.T) {
 	}
 	if HasPar2Magic([]byte("not par2 data at all")) {
 		t.Error("false positive on non-PAR2 data")
+	}
+}
+
+// TestParsePar2TypeOffsetIsSpecCompliant guards against the packet-type field
+// being read at the wrong offset. The PAR2 header is magic(8) + length(8) +
+// packet-hash(16) + recovery-set-id(16) + type(16), so the type MUST be at
+// byte 48. A regression here (reading at 40, as an earlier bug did) makes
+// ParsePar2Filenames silently find nothing. This builds a packet with the type
+// placed at offset 48 and distinctive non-type bytes at 40 to catch a misread.
+func TestParsePar2TypeOffsetIsSpecCompliant(t *testing.T) {
+	name := []byte("Recovered.Name.2024.1080p.mkv")
+	pad := (4 - len(name)%4) % 4
+	body := make([]byte, 16+16+16+8+len(name)+pad)
+	copy(body[56:], name)
+
+	pktLen := par2HeaderLen + len(body)
+	pkt := make([]byte, pktLen)
+	copy(pkt[0:8], par2Magic)
+	binary.LittleEndian.PutUint64(pkt[8:16], uint64(pktLen))
+	// Put recognisable garbage across [40:48] (end of the recovery-set-id) so a
+	// parser that (wrongly) reads the type at offset 40 would not match.
+	for i := 40; i < 48; i++ {
+		pkt[i] = 0xAB
+	}
+	copy(pkt[48:64], par2FileDescType) // correct location
+	copy(pkt[par2HeaderLen:], body)
+
+	names, err := ParsePar2Filenames(pkt)
+	if err != nil || len(names) != 1 || names[0] != "Recovered.Name.2024.1080p.mkv" {
+		t.Fatalf("expected the filename to be recovered from a spec-compliant packet; got %v err=%v", names, err)
 	}
 }
 

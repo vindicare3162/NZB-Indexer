@@ -181,6 +181,56 @@ func TestPostProcessMarksFailedOnFetchError(t *testing.T) {
 	}
 }
 
+// blockingFetcher blocks in Body until the fetch context is cancelled, then
+// returns its error. It records how long the longest fetch actually took.
+type blockingFetcher struct{}
+
+func (blockingFetcher) Body(ctx context.Context, _ string) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestPostProcessBoundsHungFetch verifies that a stalled body fetch is bounded
+// by FetchTimeout so a single hung article cannot block the whole pass (#22).
+func TestPostProcessBoundsHungFetch(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+	guid, _, _ := seedObfuscatedRelease(t, st)
+
+	// A fetcher that never returns until its per-fetch context is cancelled.
+	p := New(blockingFetcher{}, st, nil, Options{
+		BatchLimit:         100,
+		MaxFetchPerRelease: 4,
+		FetchTimeout:       200 * time.Millisecond,
+	})
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { _, err := p.Run(ctx); done <- err }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("post-processing hung despite FetchTimeout (a stalled fetch was not bounded)")
+	}
+	// Each of up to MaxFetchPerRelease fetches is bounded by FetchTimeout, so
+	// the whole release resolves quickly relative to an unbounded hang.
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("processing took %v, expected it to be bounded by FetchTimeout", elapsed)
+	}
+
+	rel, err := st.GetReleaseByGUID(ctx, guid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel.PPStatus != store.PPDone {
+		t.Errorf("pp_status = %q, want done", rel.PPStatus)
+	}
+}
+
 // seedFullyObfuscatedRelease creates a release whose segment subjects are pure
 // random hex (NO .par2/.nfo filename hints at all) but one segment's body is a
 // PAR2 file. Returns the release GUID and the message-id of the PAR2 segment.

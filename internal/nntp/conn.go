@@ -1,6 +1,7 @@
 package nntp
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -23,7 +24,9 @@ type conn interface {
 	// listActive returns the groups the server carries (LIST ACTIVE).
 	listActive() ([]AvailableGroup, error)
 	// body returns the decoded body of the article with the given message-id.
-	body(messageID string) (io.ReadCloser, error)
+	// It honours the context deadline by applying it as a socket read deadline,
+	// so a stalled read cannot block indefinitely.
+	body(ctx context.Context, messageID string) (io.ReadCloser, error)
 	// ping cheaply checks the connection is still usable.
 	ping() error
 	// close terminates the connection.
@@ -239,7 +242,14 @@ func (c *netConn) listActive() ([]AvailableGroup, error) {
 	return out, nil
 }
 
-func (c *netConn) body(messageID string) (io.ReadCloser, error) {
+func (c *netConn) body(ctx context.Context, messageID string) (io.ReadCloser, error) {
+	// Apply the context deadline as a socket read/write deadline so a stalled
+	// read cannot block indefinitely. Cleared before returning.
+	if dl, ok := ctx.Deadline(); ok {
+		_ = c.raw.SetDeadline(dl)
+		defer c.raw.SetDeadline(time.Time{}) //nolint:errcheck
+	}
+
 	id, err := c.tp.Cmd("BODY %s", ensureAngle(messageID))
 	if err != nil {
 		return nil, err

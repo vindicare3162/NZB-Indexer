@@ -69,7 +69,7 @@ func (f *fakeConn) listActive() ([]AvailableGroup, error) {
 	return f.availableGroups, f.listErr
 }
 
-func (f *fakeConn) body(messageID string) (io.ReadCloser, error) {
+func (f *fakeConn) body(_ context.Context, messageID string) (io.ReadCloser, error) {
 	if f.bodyErr != nil {
 		return nil, f.bodyErr
 	}

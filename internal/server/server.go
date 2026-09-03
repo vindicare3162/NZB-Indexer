@@ -82,6 +82,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	pp := postprocess.New(pool, st, logger, postprocess.Options{
 		BatchLimit:         200,
 		MaxFetchPerRelease: 4,
+		FetchTimeout:       30 * time.Second,
 	})
 	nzbGen := nzb.NewGenerator(st)
 
