@@ -94,10 +94,15 @@ func (h *Handler) handleCaps(w http.ResponseWriter, r *http.Request) {
 			URL:       h.baseURL,
 		},
 		Limits: capsLimits{Max: h.maxLim, Default: h.defLim},
+		// Advertise only params the handler resolves effectively. As a
+		// header-only indexer with no external-id -> release mapping, id-based
+		// searches (rid/tvdbid/imdbid) can't be resolved, so they are not
+		// advertised; clients then lead with text/season/episode searches that
+		// actually work. (imdbid is still accepted as a text token.)
 		Searching: capsSearching{
 			Search:      capsSearch{Available: "yes", SupportedParams: "q,cat,limit,offset"},
-			TVSearch:    capsSearch{Available: "yes", SupportedParams: "q,cat,season,ep,rid,tvdbid,limit,offset"},
-			MovieSearch: capsSearch{Available: "yes", SupportedParams: "q,cat,imdbid,limit,offset"},
+			TVSearch:    capsSearch{Available: "yes", SupportedParams: "q,cat,season,ep,limit,offset"},
+			MovieSearch: capsSearch{Available: "yes", SupportedParams: "q,cat,limit,offset"},
 			AudioSearch: capsSearch{Available: "yes", SupportedParams: "q,cat,limit,offset"},
 			BookSearch:  capsSearch{Available: "yes", SupportedParams: "q,cat,limit,offset"},
 		},
