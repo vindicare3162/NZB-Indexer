@@ -383,6 +383,18 @@ func (a *API) handleTriggerBackfill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "backfill triggered"})
 }
 
+func (a *API) handleTriggerPostProcess(w http.ResponseWriter, r *http.Request) {
+	if a.jobs == nil {
+		writeError(w, http.StatusServiceUnavailable, "job controller not available")
+		return
+	}
+	if err := a.jobs.TriggerPostProcess(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "post-process triggered"})
+}
+
 func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if a.jobs == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"jobs": "unavailable"})

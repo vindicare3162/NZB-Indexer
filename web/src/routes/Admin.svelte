@@ -130,6 +130,12 @@
     try { await api.triggerBackfill(group || ''); notice = 'Backfill triggered'; }
     catch (e) { error = e.message; }
   }
+  async function postProcess() {
+    error = '';
+    notice = '';
+    try { await api.triggerPostProcess(); notice = 'Post-processing triggered'; }
+    catch (e) { error = e.message; }
+  }
   async function setBackfillTarget(g) {
     error = '';
     const daysStr = prompt(`Backfill target for ${g.name}\n\nDays back to index (blank = use global default, 0 = no day limit):`, g.backfill_target_days ?? '');
@@ -260,6 +266,7 @@
   <div class="row" style="margin-top:0.8rem">
     <button onclick={() => scan('')}>Scan all</button>
     <button class="secondary" onclick={() => backfill('')}>Backfill all</button>
+    <button class="secondary" onclick={() => postProcess()}>Run post-processing now</button>
   </div>
 </div>
 

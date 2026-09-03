@@ -31,6 +31,16 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   page shows a live, auto-refreshing log view.
 
 ### Changed
+- Pipeline throughput at scale: scanning can no longer starve post-processing
+  (#15). The worker now runs its scan loop and its downstream loop (assemble ->
+  build -> post-process) as independent goroutines on separate intervals, so a
+  long-running scan of a high-volume group no longer blocks release building or
+  name recovery. Forward scans are also bounded per pass (`forward_max_articles`,
+  default 1,000,000) so a firehose group yields, persisting its watermark to
+  resume next pass. A `downstream_interval` (default 5m) controls how often the
+  downstream loop runs. Operators can also trigger an immediate post-processing
+  pass from the admin UI ("Run post-processing now") or
+  `POST /api/v1/admin/postprocess`.
 - The assembler now drains its backlog within a single pipeline cycle (#3):
   it folds batches in a loop until nothing remains or a configurable per-run cap
   is hit, instead of one fixed batch per cycle. Large parts backlogs turn into

@@ -70,6 +70,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	// 3. Pipeline stages.
 	sc := scanner.New(pool, st, logger, scanner.Options{
 		BatchSize:           int64(cfg.Scan.BatchSize),
+		ForwardMaxArticles:  int64(cfg.Scan.ForwardMaxArticles),
 		BackfillDays:        cfg.Scan.BackfillDays,
 		BackfillMaxArticles: int64(cfg.Scan.BackfillMaxArticles),
 	})
@@ -95,8 +96,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		}
 	}
 	wrk := worker.New(st, sc, asm, builder, pp, logger, worker.Options{
-		ScanInterval:   cfg.Scan.Interval,
-		EnableBackfill: enableBackfill,
+		ScanInterval:       cfg.Scan.Interval,
+		DownstreamInterval: cfg.Scan.DownstreamInterval,
+		EnableBackfill:     enableBackfill,
 	})
 
 	// 5. Auth.
