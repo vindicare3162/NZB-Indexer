@@ -17,6 +17,9 @@ import (
 
 // Store is the subset of persistence the REST API needs.
 type Store interface {
+	// Ping verifies the database is reachable (readiness probe).
+	Ping(ctx context.Context) error
+
 	// Search / details
 	SearchReleases(ctx context.Context, f store.SearchFilter) ([]store.Release, int, error)
 	GetReleaseByGUID(ctx context.Context, guid string) (store.Release, error)
@@ -140,6 +143,7 @@ func (a *API) Routes() http.Handler {
 	// Public.
 	mux.HandleFunc("POST /api/v1/login", a.handleLogin)
 	mux.HandleFunc("GET /api/v1/health", a.handleHealth)
+	mux.HandleFunc("GET /api/v1/ready", a.handleReady)
 	mux.HandleFunc("GET /api/v1/setup/status", a.handleSetupStatus)
 	mux.HandleFunc("POST /api/v1/setup", a.handleSetup)
 
