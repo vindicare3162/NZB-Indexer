@@ -6,6 +6,17 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Changed
+- Upgraded the bundled database image from PostgreSQL 16 to **18**
+  (`postgres:18-alpine`) for the newer major's performance work, notably the
+  PostgreSQL 18 asynchronous I/O subsystem that speeds up sequential scans,
+  bitmap heap scans and vacuums — all heavily used over the large `parts` and
+  `releases` tables (#74). The full test suite passes against PG 18.6.
+  **Upgrade note:** a new PostgreSQL major will not start on a data directory
+  initialised by an older major. Fresh deployments are unaffected; existing
+  `goindex-db` volumes must be migrated with a `pg_dump`/`pg_restore` (or
+  `pg_upgrade`) before switching the image.
+
 ### Docs
 - Added `docs/redis-caching-analysis.md` (#72): a decision record recommending
   in-process caching (categories/caps + API-key auth) now and deferring Redis
