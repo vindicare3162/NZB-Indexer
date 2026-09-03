@@ -7,6 +7,13 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Prometheus metrics at `GET /metrics` and a Grafana dashboard (#78). Exposes
+  HTTP request counters/latency (with bounded `route` labels), pipeline-depth
+  gauges (parts/binaries/releases, releases-by-pp-status, failed-exhausted) and
+  worker activity counters (articles pulled, releases created/renamed, cycles),
+  plus the standard Go/process collectors. A ready-to-import dashboard lives at
+  `docs/grafana/goindex-dashboard.json`; see `docs/monitoring.md` for scrape
+  config. The endpoint is unauthenticated by convention and exposes no secrets.
 - Database backup and recovery scripts (#76): `scripts/backup.sh` produces a
   compressed, restore-friendly `pg_dump` (custom format) from the running
   Compose stack with optional retention pruning, and `scripts/restore.sh`

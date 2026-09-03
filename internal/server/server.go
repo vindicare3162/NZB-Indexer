@@ -17,6 +17,7 @@ import (
 	"github.com/vindicare/goindex/internal/auth"
 	"github.com/vindicare/goindex/internal/config"
 	"github.com/vindicare/goindex/internal/logbuf"
+	"github.com/vindicare/goindex/internal/metrics"
 	"github.com/vindicare/goindex/internal/nntp"
 	"github.com/vindicare/goindex/internal/postprocess"
 	"github.com/vindicare/goindex/internal/release"
@@ -135,18 +136,32 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		return fmt.Errorf("spa handler: %w", err)
 	}
 
+	// Prometheus metrics: HTTP instruments plus a pipeline/worker collector
+	// evaluated on scrape from the store stats and worker snapshot.
+	met := metrics.New(metrics.Providers{
+		Pipeline: func(ctx context.Context) (metrics.PipelineSnapshot, error) {
+			return pipelineSnapshot(ctx, st)
+		},
+		Worker: func() metrics.WorkerSnapshot {
+			return workerSnapshot(wrk.MetricsSnapshot())
+		},
+	})
+
 	mux := http.NewServeMux()
 	// Newznab API, protected by API-key auth.
 	mux.Handle("/api", authSvc.RequireAPIKey(nnHandler))
 	mux.Handle("/api/", authSvc.RequireAPIKey(nnHandler))
 	// JSON REST API for the SPA.
 	mux.Handle("/api/v1/", restAPI.Routes())
+	// Prometheus scrape endpoint (unauthenticated by convention; exposes only
+	// operational counters, no secrets).
+	mux.Handle("/metrics", met.Handler())
 	// Everything else: the embedded SPA.
 	mux.Handle("/", spa)
 
 	srv := &http.Server{
 		Addr:         cfg.Server.ListenAddr,
-		Handler:      accessLog(logger, mux),
+		Handler:      met.Middleware(accessLog(logger, mux)),
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}

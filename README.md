@@ -156,6 +156,14 @@ Notes:
 - Both scripts honour `DB_SERVICE`, `DB_NAME`, `DB_USER`, and `COMPOSE`
   overrides if your setup differs from the defaults.
 
+## Monitoring
+
+goindex exposes Prometheus metrics at `GET /metrics` (HTTP request/latency
+counters plus pipeline-depth and worker gauges). Point Prometheus at it and
+import the bundled Grafana dashboard. See
+[`docs/monitoring.md`](./docs/monitoring.md) for the metric list, scrape config,
+and dashboard import steps.
+
 ## Architecture
 
 The pipeline stages are:
