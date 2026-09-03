@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -107,57 +108,86 @@ func (p *Processor) Run(ctx context.Context) (Result, error) {
 }
 
 // processOne handles a single release, returning the outcome to apply.
+//
+// Two strategies run within a shared fetch budget:
+//  1. Subject-hinted: segments whose subject reveals a .par2/.nfo filename are
+//     fetched directly (cheap, works for well-labelled posts).
+//  2. Content-probed: when the release name looks obfuscated (random hex/
+//     base64 with no real words) and PAR2 was not already recovered, probe the
+//     remaining segments and identify PAR2 by its file magic rather than the
+//     subject. This is what recovers real names for obfuscated releases.
 func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (store.ReleasePPResult, error) {
 	var res store.ReleasePPResult
 
-	// Identify candidate PAR2 and NFO segments by their subject filename.
-	par2Segs, nfoSegs := classifySegments(pr.Segments)
+	par2Segs, nfoSegs, otherSegs := classifySegments(pr.Segments)
 
 	fetched := 0
 	budget := p.opts.MaxFetchPerRelease
 
-	// PAR2 first: try to recover the real filename set.
-	for _, seg := range par2Segs {
+	fetchDecoded := func(messageID string) ([]byte, bool) {
 		if fetched >= budget {
-			break
+			return nil, false
 		}
 		fetched++
-		body, err := p.fetch.Body(ctx, seg.MessageID)
+		body, err := p.fetch.Body(ctx, messageID)
 		if err != nil {
-			continue // try the next candidate
+			return nil, false
 		}
 		decoded, err := DecodeYenc(body)
 		if err != nil {
-			// Some servers return already-decoded bodies; try raw.
+			// Some servers return already-decoded bodies; fall back to raw.
 			decoded = body
 		}
-		names, err := ParsePar2Filenames(decoded)
-		if err != nil || len(names) == 0 {
+		return decoded, true
+	}
+
+	// (1) Subject-hinted PAR2.
+	for _, seg := range par2Segs {
+		decoded, ok := fetchDecoded(seg.MessageID)
+		if !ok {
+			if fetched >= budget {
+				break
+			}
 			continue
 		}
-		if best := bestReleaseName(names); best != "" {
+		if best := namefromPar2(decoded); best != "" {
 			res.Name = best
 			res.SearchName = release.SearchName(best)
 			break
 		}
 	}
 
-	// NFO next: capture the NFO text.
+	// (2) Content-probe for obfuscated releases when no PAR2 name yet.
+	if res.Name == "" && isObfuscated(pr.Release.Name) {
+		for _, seg := range otherSegs {
+			if fetched >= budget {
+				break
+			}
+			decoded, ok := fetchDecoded(seg.MessageID)
+			if !ok {
+				continue
+			}
+			if !HasPar2Magic(decoded) {
+				continue
+			}
+			if best := namefromPar2(decoded); best != "" {
+				res.Name = best
+				res.SearchName = release.SearchName(best)
+				break
+			}
+		}
+	}
+
+	// (3) NFO text.
 	for _, seg := range nfoSegs {
 		if fetched >= budget {
 			break
 		}
-		fetched++
-		body, err := p.fetch.Body(ctx, seg.MessageID)
-		if err != nil {
+		decoded, ok := fetchDecoded(seg.MessageID)
+		if !ok {
 			continue
 		}
-		decoded, err := DecodeYenc(body)
-		if err != nil {
-			decoded = body
-		}
-		text := sanitizeNFO(decoded)
-		if text != "" {
+		if text := sanitizeNFO(decoded); text != "" {
 			res.NFO = &text
 			break
 		}
@@ -166,9 +196,21 @@ func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (st
 	return res, nil
 }
 
-// classifySegments splits segments into PAR2 and NFO candidates based on the
-// filename embedded in each segment's subject.
-func classifySegments(segs []store.PartSegment) (par2, nfo []store.PartSegment) {
+// namefromPar2 parses PAR2 filenames from a decoded body and returns the best
+// release name, or "" when the body is not usable PAR2.
+func namefromPar2(decoded []byte) string {
+	names, err := ParsePar2Filenames(decoded)
+	if err != nil || len(names) == 0 {
+		return ""
+	}
+	return bestReleaseName(names)
+}
+
+// classifySegments splits segments into subject-hinted PAR2, subject-hinted
+// NFO, and everything else (candidates for content probing). Smaller segments
+// are preferred first in the "other" bucket, since PAR2 index packets are
+// typically among the smaller articles in a post.
+func classifySegments(segs []store.PartSegment) (par2, nfo, other []store.PartSegment) {
 	for _, s := range segs {
 		name := filenameFromSubject(s.Subject)
 		switch {
@@ -176,9 +218,123 @@ func classifySegments(segs []store.PartSegment) (par2, nfo []store.PartSegment) 
 			par2 = append(par2, s)
 		case LooksLikeNFO(name):
 			nfo = append(nfo, s)
+		default:
+			other = append(other, s)
 		}
 	}
-	return par2, nfo
+	sort.SliceStable(other, func(i, j int) bool { return other[i].Bytes < other[j].Bytes })
+	return par2, nfo, other
+}
+
+// reHexLike matches a token that is entirely hex digits (a common obfuscation).
+var reHexLike = regexp.MustCompile(`^[0-9a-fA-F]{16,}$`)
+
+// isObfuscated reports whether a release name looks like a random/obfuscated
+// identifier (hex or base64-ish with no meaningful words), rather than a
+// human-readable scene/release name. Such releases are the ones worth probing
+// for a PAR2-recovered real name.
+func isObfuscated(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return true
+	}
+	// A pure long hex string is almost certainly obfuscated.
+	if reHexLike.MatchString(name) {
+		return true
+	}
+
+	// Split on common separators and inspect the tokens.
+	fields := strings.FieldsFunc(name, func(r rune) bool {
+		return r == ' ' || r == '.' || r == '-' || r == '_'
+	})
+	if len(fields) == 0 {
+		return true
+	}
+
+	// Count tokens that look like real words vs random tokens. A name is
+	// considered obfuscated when it has no word-like tokens and at least one
+	// long random-looking token.
+	hasWord := false
+	hasRandom := false
+	for _, f := range fields {
+		if isWordLike(f) {
+			hasWord = true
+			continue
+		}
+		// A long non-word token (hex, base64, letter/digit soup) is random.
+		if len(f) >= 8 {
+			hasRandom = true
+		}
+	}
+	if hasWord {
+		return false
+	}
+	return hasRandom
+}
+
+// isWordLike reports whether a token resembles a real word rather than a
+// random/base64 identifier. A real word is a run of >=3 letters that is all
+// lowercase, all uppercase, or Title-case (leading capital then lowercase),
+// contains no digits, and includes at least one vowel. Mixed-case runs like
+// "PERuop" or letter/digit soup like "4Mg2PER" are rejected.
+func isWordLike(tok string) bool {
+	if len(tok) < 3 {
+		return false
+	}
+	hasDigit := false
+	letters := 0
+	for _, r := range tok {
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+			letters++
+		}
+	}
+	if hasDigit || letters < 3 || letters != len([]rune(tok)) {
+		return false // real words in release names don't mix digits into a token
+	}
+	if !isWordCase(tok) {
+		return false // reject mixed-case (base64-like) runs
+	}
+	return hasVowel(tok)
+}
+
+// isWordCase reports whether s is all-lower, all-upper, or Title-case.
+func isWordCase(s string) bool {
+	rs := []rune(s)
+	allLower, allUpper := true, true
+	for _, r := range rs {
+		if r >= 'A' && r <= 'Z' {
+			allLower = false
+		}
+		if r >= 'a' && r <= 'z' {
+			allUpper = false
+		}
+	}
+	if allLower || allUpper {
+		return true
+	}
+	// Title-case: first upper, remainder lower.
+	if rs[0] >= 'A' && rs[0] <= 'Z' {
+		for _, r := range rs[1:] {
+			if r >= 'A' && r <= 'Z' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func hasVowel(s string) bool {
+	for _, r := range strings.ToLower(s) {
+		switch r {
+		case 'a', 'e', 'i', 'o', 'u', 'y':
+			return true
+		}
+	}
+	return false
 }
 
 // filenameFromSubject extracts a quoted filename from a subject, or returns the

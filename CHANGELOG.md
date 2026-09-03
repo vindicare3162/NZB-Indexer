@@ -7,6 +7,11 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Real-name recovery for obfuscated releases (#1). When a release name looks
+  obfuscated (random hex/base64 with no real words), post-processing now probes
+  candidate segments and identifies PAR2 files by their packet magic rather than
+  relying on subject filename hints, then renames the release from the recovered
+  PAR2 filename. Readable names are left untouched (no wasted fetches).
 - First-run setup flow (#2). On a fresh instance the web UI presents a setup
   screen to create the initial admin account, backed by public
   `GET /api/v1/setup/status` and `POST /api/v1/setup` endpoints. Setup only

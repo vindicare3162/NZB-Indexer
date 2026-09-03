@@ -171,3 +171,139 @@ func TestPostProcessMarksFailedOnFetchError(t *testing.T) {
 		t.Errorf("expected no NFO, got %q", *rel.NFO)
 	}
 }
+
+// seedFullyObfuscatedRelease creates a release whose segment subjects are pure
+// random hex (NO .par2/.nfo filename hints at all) but one segment's body is a
+// PAR2 file. Returns the release GUID and the message-id of the PAR2 segment.
+func seedFullyObfuscatedRelease(t *testing.T, st *store.Store) (guid, par2MsgID string) {
+	t.Helper()
+	ctx := context.Background()
+	g, _ := st.UpsertGroup(ctx, "alt.binaries.obf", true)
+
+	par2MsgID = "obf-par2@example.com"
+	norm := "e5bcd657b08345c075b6534bac9d3149"
+
+	parts := []store.PartInput{
+		{
+			GroupID: g.ID, ArticleNumber: 1, MessageID: "obf-data1@x",
+			Subject: "e5bcd657b08345c075b6534bac9d3149 (1/3)", Poster: "p", Bytes: 500000,
+			PartNumber: 1, TotalParts: 3, NormSubject: norm,
+		},
+		{
+			// The PAR2 segment — smaller, and its subject gives no hint.
+			GroupID: g.ID, ArticleNumber: 2, MessageID: par2MsgID,
+			Subject: "e5bcd657b08345c075b6534bac9d3149 (2/3)", Poster: "p", Bytes: 800,
+			PartNumber: 2, TotalParts: 3, NormSubject: norm,
+		},
+		{
+			GroupID: g.ID, ArticleNumber: 3, MessageID: "obf-data3@x",
+			Subject: "e5bcd657b08345c075b6534bac9d3149 (3/3)", Poster: "p", Bytes: 500000,
+			PartNumber: 3, TotalParts: 3, NormSubject: norm,
+		},
+	}
+	if _, err := st.InsertParts(ctx, parts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AssembleBinaries(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	b := release.New(st, nil, release.Options{BatchLimit: 100})
+	if _, err := b.Build(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Pool().QueryRow(ctx, `SELECT guid FROM releases LIMIT 1`).Scan(&guid); err != nil {
+		t.Fatal(err)
+	}
+	return guid, par2MsgID
+}
+
+func TestPostProcessRenamesObfuscatedViaContentProbe(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+
+	guid, par2MsgID := seedFullyObfuscatedRelease(t, st)
+
+	// The PAR2 body recovers the real name; note the subject had no hint.
+	par2Raw := buildFileDescPacket("Real.Movie.Title.2024.1080p.BluRay.x264-GRP.mkv")
+	fetch := &fakeFetcher{
+		bodies: map[string][]byte{
+			par2MsgID:     encodeYenc("blob", par2Raw),
+			"obf-data1@x": encodeYenc("blob", []byte("not par2, just media bytes")),
+			"obf-data3@x": encodeYenc("blob", []byte("more media bytes")),
+		},
+	}
+
+	// Budget large enough to probe past the non-PAR2 data segments.
+	p := New(fetch, st, nil, Options{BatchLimit: 100, MaxFetchPerRelease: 5})
+	res, err := p.Run(ctx)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Renamed != 1 {
+		t.Errorf("Renamed = %d, want 1 (content-probe should recover the name)", res.Renamed)
+	}
+
+	rel, err := st.GetReleaseByGUID(ctx, guid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel.Name != "Real.Movie.Title.2024.1080p.BluRay.x264-GRP" {
+		t.Errorf("renamed to %q, want the PAR2-recovered base name", rel.Name)
+	}
+	if rel.PPStatus != store.PPDone {
+		t.Errorf("pp_status = %q, want done", rel.PPStatus)
+	}
+}
+
+func TestPostProcessSkipsContentProbeForReadableNames(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+
+	// A readable release name: content-probing should NOT run, so even though a
+	// PAR2 body is available on a non-hinted segment, no rename occurs (we trust
+	// the already-good name and save bandwidth).
+	g, _ := st.UpsertGroup(ctx, "alt.binaries.readable", true)
+	norm := `"Good.Release.Name.2024.1080p.mkv"`
+	parts := []store.PartInput{
+		{GroupID: g.ID, ArticleNumber: 1, MessageID: "rd1@x", Subject: `"Good.Release.Name.2024.1080p.mkv" yEnc (1/2)`, Poster: "p", Bytes: 1000, PartNumber: 1, TotalParts: 2, NormSubject: norm},
+		{GroupID: g.ID, ArticleNumber: 2, MessageID: "rd2@x", Subject: `"Good.Release.Name.2024.1080p.mkv" yEnc (2/2)`, Poster: "p", Bytes: 800, PartNumber: 2, TotalParts: 2, NormSubject: norm},
+	}
+	if _, err := st.InsertParts(ctx, parts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AssembleBinaries(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	b := release.New(st, nil, release.Options{BatchLimit: 100})
+	if _, err := b.Build(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var guid string
+	st.Pool().QueryRow(ctx, `SELECT guid FROM releases LIMIT 1`).Scan(&guid)
+
+	var fetchCount int
+	fetch := &countingFetcher{onFetch: func() { fetchCount++ }}
+	p := New(fetch, st, nil, Options{BatchLimit: 100, MaxFetchPerRelease: 5})
+	if _, err := p.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// No .par2/.nfo-hinted segments and a readable name => no fetches at all.
+	if fetchCount != 0 {
+		t.Errorf("fetches = %d, want 0 (readable name should skip content probe)", fetchCount)
+	}
+	// The release builder cleans the name (strips the .mkv extension); the
+	// point is that post-processing did NOT further change it via a probe.
+	rel, _ := st.GetReleaseByGUID(ctx, guid)
+	if rel.Name != "Good.Release.Name.2024.1080p" {
+		t.Errorf("name = %q, should be the builder-cleaned name (unchanged by pp)", rel.Name)
+	}
+}
+
+// countingFetcher counts Body calls; it always returns not-found so nothing is
+// recovered, letting us assert the probe was (or was not) attempted.
+type countingFetcher struct{ onFetch func() }
+
+func (c *countingFetcher) Body(_ context.Context, _ string) ([]byte, error) {
+	c.onFetch()
+	return nil, os.ErrNotExist
+}
