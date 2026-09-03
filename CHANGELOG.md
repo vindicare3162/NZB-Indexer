@@ -76,6 +76,11 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   page shows a live, auto-refreshing log view.
 
 ### Fixed
+- Admin menu no longer disappears after a page reload (#42). The web UI kept
+  only the auth token across reloads, so the in-memory role was empty until the
+  next login and the Admin nav vanished. On startup the UI now restores the
+  username/role from `GET /api/v1/me` when a token exists, so admin status
+  persists across reloads (and an invalid token cleanly logs out).
 - Newznab caps no longer advertise unsupported id search params (#55). As a
   header-only indexer, goindex can't resolve `rid`/`tvdbid`/`imdbid` to
   releases, so advertising them led clients to prefer id searches that return
