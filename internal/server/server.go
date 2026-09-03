@@ -105,7 +105,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		DefaultLimit: 100,
 	})
 	srvMgr := &serverManager{store: st, pool: pool, connectTimeout: cfg.NNTP.ConnectTimeout, log: logger}
-	restAPI := rest.New(st, nzbGen, authSvc, authSvc, wrk, srvMgr, logs, logger)
+	discovery := newDiscoveryService(pool, time.Hour)
+	restAPI := rest.New(st, nzbGen, authSvc, authSvc, wrk, srvMgr, logs, discovery, logger)
 
 	spa, err := web.Handler()
 	if err != nil {

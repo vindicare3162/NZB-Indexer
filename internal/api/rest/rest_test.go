@@ -92,6 +92,23 @@ func (m *mockStore) UpdateServer(_ context.Context, id int64, in store.ServerInp
 }
 func (m *mockStore) DeleteServer(_ context.Context, id int64) error { m.deletedServer = id; return nil }
 
+type mockDiscoverer struct{}
+
+func (mockDiscoverer) SearchGroups(_ context.Context, query string, limit, offset int, refresh bool) ([]DiscoveredGroup, int, time.Time, error) {
+	all := []DiscoveredGroup{
+		{Name: "alt.binaries.movies", EstimatedCount: 5000, Status: "y"},
+		{Name: "alt.binaries.tv", EstimatedCount: 3000, Status: "y"},
+		{Name: "comp.lang.go", EstimatedCount: 100, Status: "y"},
+	}
+	var matched []DiscoveredGroup
+	for _, g := range all {
+		if query == "" || strings.Contains(g.Name, query) {
+			matched = append(matched, g)
+		}
+	}
+	return matched, len(matched), time.Unix(1700000000, 0), nil
+}
+
 type mockLogs struct{}
 
 func (mockLogs) Recent(limit int, minLevel *slog.Level) []logbuf.Entry {
@@ -158,7 +175,7 @@ func setup(t *testing.T) testEnv {
 
 	st := &mockStore{}
 	jobs := &mockJobs{}
-	api := New(st, mockNZB{}, svc, svc, jobs, nil, mockLogs{}, nil)
+	api := New(st, mockNZB{}, svc, svc, jobs, nil, mockLogs{}, mockDiscoverer{}, nil)
 
 	adminTok, _, _ := svc.Login(context.Background(), "admin", "password123")
 	userTok, _, _ := svc.Login(context.Background(), "bob", "password123")
@@ -390,6 +407,38 @@ func TestAdminServerCRUD(t *testing.T) {
 	rec = do(t, env, http.MethodGet, "/api/v1/admin/servers", env.userTok, nil)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("user->servers status = %d, want 403", rec.Code)
+	}
+}
+
+func TestAdminDiscover(t *testing.T) {
+	env := setup(t)
+
+	// No filter: all groups.
+	rec := do(t, env, http.MethodGet, "/api/v1/admin/discover", env.adminTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("discover status = %d", rec.Code)
+	}
+	var resp discoverResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Total != 3 || len(resp.Groups) != 3 {
+		t.Errorf("discover total/groups = %d/%d, want 3/3", resp.Total, len(resp.Groups))
+	}
+	if resp.CachedAt == "" {
+		t.Error("expected cached_at timestamp")
+	}
+
+	// Filtered query.
+	rec = do(t, env, http.MethodGet, "/api/v1/admin/discover?q=binaries", env.adminTok, nil)
+	resp = discoverResponse{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Total != 2 {
+		t.Errorf("filtered total = %d, want 2", resp.Total)
+	}
+
+	// Admin-only.
+	rec = do(t, env, http.MethodGet, "/api/v1/admin/discover", env.userTok, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("user->discover status = %d, want 403", rec.Code)
 	}
 }
 

@@ -20,6 +20,8 @@ type conn interface {
 	selectGroup(name string) (GroupInfo, error)
 	// overview returns header summaries for [begin,end] in the current group.
 	overview(begin, end int64) ([]Overview, error)
+	// listActive returns the groups the server carries (LIST ACTIVE).
+	listActive() ([]AvailableGroup, error)
 	// body returns the decoded body of the article with the given message-id.
 	body(messageID string) (io.ReadCloser, error)
 	// ping cheaply checks the connection is still usable.
@@ -189,6 +191,52 @@ func (c *netConn) overviewWith(cmd string, begin, end int64) ([]string, error) {
 		return nil, err
 	}
 	return c.tp.ReadDotLines()
+}
+
+// listActive sends LIST ACTIVE and parses the group list. Each data line is
+// "group high low status", e.g. "alt.binaries.foo 1234 1 y". The estimated
+// article count is high-low+1.
+func (c *netConn) listActive() ([]AvailableGroup, error) {
+	id, err := c.tp.Cmd("LIST ACTIVE")
+	if err != nil {
+		return nil, err
+	}
+	c.tp.StartResponse(id)
+	defer c.tp.EndResponse(id)
+
+	// 215 = list of groups follows (dot-terminated).
+	if _, _, err := c.tp.ReadCodeLine(215); err != nil {
+		return nil, err
+	}
+	lines, err := c.tp.ReadDotLines()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AvailableGroup, 0, len(lines))
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		high, _ := strconv.ParseInt(fields[1], 10, 64)
+		low, _ := strconv.ParseInt(fields[2], 10, 64)
+		count := high - low + 1
+		if count < 0 {
+			count = 0
+		}
+		status := ""
+		if len(fields) >= 4 {
+			status = fields[3]
+		}
+		out = append(out, AvailableGroup{
+			Name:           fields[0],
+			High:           high,
+			Low:            low,
+			EstimatedCount: count,
+			Status:         status,
+		})
+	}
+	return out, nil
 }
 
 func (c *netConn) body(messageID string) (io.ReadCloser, error) {

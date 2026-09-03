@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/vindicare/goindex/internal/auth"
 	"github.com/vindicare/goindex/internal/logbuf"
@@ -47,6 +48,21 @@ type Store interface {
 // NZBGenerator builds an NZB for a release GUID.
 type NZBGenerator interface {
 	ForGUID(ctx context.Context, guid string) (data []byte, filename string, err error)
+}
+
+// DiscoveredGroup is a newsgroup the provider carries, returned by discovery.
+type DiscoveredGroup struct {
+	Name           string `json:"name"`
+	EstimatedCount int64  `json:"estimated_count"`
+	Status         string `json:"status"`
+}
+
+// Discoverer searches the provider's carried newsgroups. A nil discoverer
+// disables the discovery endpoint.
+type Discoverer interface {
+	// SearchGroups returns a filtered, paginated page of groups plus the total
+	// match count and the cache timestamp. refresh forces a cache reload.
+	SearchGroups(ctx context.Context, query string, limit, offset int, refresh bool) (groups []DiscoveredGroup, total int, cachedAt time.Time, err error)
 }
 
 // LogSource exposes recent captured log entries for the admin log view. A nil
@@ -89,21 +105,21 @@ type API struct {
 	store   Store
 	nzb     NZBGenerator
 	authn   Authenticator
-	jobs    JobController
-	servers ServerManager
-	logs    LogSource
-	session *auth.Service
-	log     *slog.Logger
+	jobs      JobController
+	servers   ServerManager
+	logs      LogSource
+	discoverer Discoverer
+	session   *auth.Service
+	log       *slog.Logger
 }
 
-// New creates a REST API. servers and logs may be nil, disabling their
-// respective endpoints (server changes then apply only on restart; the log
-// view returns empty).
-func New(st Store, nzb NZBGenerator, authn Authenticator, session *auth.Service, jobs JobController, servers ServerManager, logs LogSource, log *slog.Logger) *API {
+// New creates a REST API. servers, logs, and discoverer may be nil, disabling
+// their respective endpoints.
+func New(st Store, nzb NZBGenerator, authn Authenticator, session *auth.Service, jobs JobController, servers ServerManager, logs LogSource, discoverer Discoverer, log *slog.Logger) *API {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &API{store: st, nzb: nzb, authn: authn, jobs: jobs, servers: servers, logs: logs, session: session, log: log}
+	return &API{store: st, nzb: nzb, authn: authn, jobs: jobs, servers: servers, logs: logs, discoverer: discoverer, session: session, log: log}
 }
 
 // Routes returns the REST API mux mounted under /api/v1.
@@ -142,6 +158,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/v1/admin/backfill", admin(http.HandlerFunc(a.handleTriggerBackfill)))
 	mux.Handle("GET /api/v1/admin/status", admin(http.HandlerFunc(a.handleStatus)))
 	mux.Handle("GET /api/v1/admin/logs", admin(http.HandlerFunc(a.handleLogs)))
+	mux.Handle("GET /api/v1/admin/discover", admin(http.HandlerFunc(a.handleDiscover)))
 
 	return mux
 }

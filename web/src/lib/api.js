@@ -75,6 +75,14 @@ export const api = {
   createServer: (s) => request('POST', '/admin/servers', s),
   updateServer: (id, s) => request('PUT', `/admin/servers/${id}`, s),
   deleteServer: (id) => request('DELETE', `/admin/servers/${id}`),
+  discover: (q = '', limit = 50, offset = 0, refresh = false) => {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    params.set('limit', String(limit));
+    params.set('offset', String(offset));
+    if (refresh) params.set('refresh', '1');
+    return request('GET', `/admin/discover?${params.toString()}`);
+  },
   groups: () => request('GET', '/admin/groups'),
   createGroup: (name) => request('POST', '/admin/groups', { name, active: true }),
   setGroupActive: (id, active) => request('PATCH', `/admin/groups/${id}`, { active }),

@@ -7,6 +7,10 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Newsgroup discovery in the admin UI (#4). Search the groups the provider
+  carries (via NNTP `LIST ACTIVE`) with server-side caching, filtering, and
+  pagination, and add groups to the index with one click. Results are ranked by
+  estimated size.
 - Viewable application logs in the admin UI (#7). A bounded in-memory ring
   buffer captures recent log records alongside stderr output, exposed via an
   admin-only `GET /api/v1/admin/logs` endpoint with level filtering. The admin
