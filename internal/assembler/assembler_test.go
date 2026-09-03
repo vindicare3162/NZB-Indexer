@@ -28,6 +28,93 @@ func TestIsComplete(t *testing.T) {
 	}
 }
 
+// drainRepo is a mock Repo that returns a scripted sequence of touched counts
+// from AssembleBinaries, for testing the drain loop without a database.
+type drainRepo struct {
+	touchedSeq []int // returned in order; missing entries return 0
+	calls      int
+	aged       int64
+}
+
+func (d *drainRepo) AssembleBinaries(_ context.Context, _ int) (int, error) {
+	i := d.calls
+	d.calls++
+	if i < len(d.touchedSeq) {
+		return d.touchedSeq[i], nil
+	}
+	return 0, nil
+}
+func (d *drainRepo) AgeOutStaleBinaries(_ context.Context, _ time.Duration) (int64, error) {
+	return d.aged, nil
+}
+func (d *drainRepo) ListCompleteUnreleasedBinaries(_ context.Context, _ int) ([]store.Binary, error) {
+	return nil, nil
+}
+
+func TestAssembleDrainsBacklog(t *testing.T) {
+	// Three full-ish batches then nothing: the loop should run until a batch
+	// touches 0 and report the backlog fully drained.
+	repo := &drainRepo{touchedSeq: []int{500, 500, 120}}
+	a := New(repo, nil, Options{BatchLimit: 500, MaxBatchesPerRun: 100})
+
+	res, err := a.Assemble(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.BinariesTouched != 1120 {
+		t.Errorf("BinariesTouched = %d, want 1120", res.BinariesTouched)
+	}
+	if res.Batches != 3 {
+		t.Errorf("Batches = %d, want 3", res.Batches)
+	}
+	if !res.Drained {
+		t.Error("expected Drained = true when a batch touches 0")
+	}
+	// 4 calls: 3 productive + 1 that returned 0 to stop.
+	if repo.calls != 4 {
+		t.Errorf("AssembleBinaries calls = %d, want 4", repo.calls)
+	}
+}
+
+func TestAssembleRespectsBatchCap(t *testing.T) {
+	// Every batch returns a full count; the cap must stop the loop and report
+	// not-drained.
+	repo := &drainRepo{touchedSeq: []int{500, 500, 500, 500, 500}}
+	a := New(repo, nil, Options{BatchLimit: 500, MaxBatchesPerRun: 3})
+
+	res, err := a.Assemble(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Batches != 3 {
+		t.Errorf("Batches = %d, want 3 (capped)", res.Batches)
+	}
+	if res.BinariesTouched != 1500 {
+		t.Errorf("BinariesTouched = %d, want 1500", res.BinariesTouched)
+	}
+	if res.Drained {
+		t.Error("expected Drained = false when the cap is hit")
+	}
+	if repo.calls != 3 {
+		t.Errorf("AssembleBinaries calls = %d, want 3 (should not exceed cap)", repo.calls)
+	}
+}
+
+func TestAssembleHonoursContextCancel(t *testing.T) {
+	repo := &drainRepo{touchedSeq: []int{500, 500, 500}}
+	a := New(repo, nil, Options{BatchLimit: 500, MaxBatchesPerRun: 100})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+
+	_, err := a.Assemble(ctx)
+	if err == nil {
+		t.Error("expected context cancellation error")
+	}
+	if repo.calls != 0 {
+		t.Errorf("should not run any batch when ctx is already cancelled, got %d calls", repo.calls)
+	}
+}
+
 func freshStore(t *testing.T) *store.Store {
 	t.Helper()
 	dsn := os.Getenv("GOINDEX_TEST_DSN")
