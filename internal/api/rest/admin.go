@@ -395,6 +395,20 @@ func (a *API) handleTriggerPostProcess(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "post-process triggered"})
 }
 
+func (a *API) handleRetryFailed(w http.ResponseWriter, r *http.Request) {
+	n, err := a.store.RequeueFailedReleases(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Kick a post-processing pass so the requeued releases are picked up
+	// promptly (best-effort; the scheduled loop would pick them up anyway).
+	if a.jobs != nil {
+		_ = a.jobs.TriggerPostProcess()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "failed releases requeued", "requeued": n})
+}
+
 func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if a.jobs == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"jobs": "unavailable"})

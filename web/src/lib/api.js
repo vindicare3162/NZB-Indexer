@@ -97,6 +97,7 @@ export const api = {
   triggerScan: (group) => request('POST', '/admin/scan', { group }),
   triggerBackfill: (group) => request('POST', '/admin/backfill', { group }),
   triggerPostProcess: () => request('POST', '/admin/postprocess', {}),
+  retryFailedPP: () => request('POST', '/admin/postprocess/retry-failed', {}),
   status: () => request('GET', '/admin/status'),
   stats: () => request('GET', '/admin/stats'),
   logs: (level = '', limit = 200) => {

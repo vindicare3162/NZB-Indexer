@@ -307,6 +307,33 @@ func TestPipelineStatistics(t *testing.T) {
 	if stats2.ReleasesFailedExhausted != 1 {
 		t.Errorf("failed exhausted = %d, want 1 (only the attempts>=max one)", stats2.ReleasesFailedExhausted)
 	}
+
+	// Requeue the failed releases: both should go back to pending with attempts=0.
+	n, err := st.RequeueFailedReleases(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("requeued = %d, want 2", n)
+	}
+	stats3, err := st.PipelineStatistics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats3.ReleasesByPP["failed"] != 0 {
+		t.Errorf("failed after requeue = %d, want 0", stats3.ReleasesByPP["failed"])
+	}
+	if stats3.ReleasesFailedExhausted != 0 {
+		t.Errorf("exhausted after requeue = %d, want 0", stats3.ReleasesFailedExhausted)
+	}
+	var attempts int
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT coalesce(max(pp_attempts),0) FROM releases WHERE guid IN ('stats-fail-retryable','stats-fail-exhausted')`).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 {
+		t.Errorf("pp_attempts after requeue = %d, want 0", attempts)
+	}
 }
 
 // seedStatsParts inserts `collected` of `total` parts for a single-file binary.

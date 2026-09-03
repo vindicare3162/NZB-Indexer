@@ -25,6 +25,8 @@ type Store interface {
 
 	// Pipeline health (admin)
 	PipelineStatistics(ctx context.Context) (store.PipelineStats, error)
+	// RequeueFailedReleases resets failed post-processing releases to pending.
+	RequeueFailedReleases(ctx context.Context) (int64, error)
 
 	// Groups (admin)
 	ListGroups(ctx context.Context, activeOnly bool) ([]store.Group, error)
@@ -169,6 +171,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/v1/admin/scan", admin(http.HandlerFunc(a.handleTriggerScan)))
 	mux.Handle("POST /api/v1/admin/backfill", admin(http.HandlerFunc(a.handleTriggerBackfill)))
 	mux.Handle("POST /api/v1/admin/postprocess", admin(http.HandlerFunc(a.handleTriggerPostProcess)))
+	mux.Handle("POST /api/v1/admin/postprocess/retry-failed", admin(http.HandlerFunc(a.handleRetryFailed)))
 	mux.Handle("GET /api/v1/admin/status", admin(http.HandlerFunc(a.handleStatus)))
 	mux.Handle("GET /api/v1/admin/stats", admin(http.HandlerFunc(a.handleStats)))
 	mux.Handle("GET /api/v1/admin/logs", admin(http.HandlerFunc(a.handleLogs)))

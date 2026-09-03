@@ -138,6 +138,15 @@
     try { await api.triggerPostProcess(); notice = 'Post-processing triggered'; }
     catch (e) { error = e.message; }
   }
+  async function retryFailedPP() {
+    error = '';
+    notice = '';
+    try {
+      const res = await api.retryFailedPP();
+      notice = `Requeued ${res.requeued} failed release(s) for post-processing`;
+      api.stats().then((s) => { stats = s; }).catch(() => {});
+    } catch (e) { error = e.message; }
+  }
   async function setBackfillTarget(g) {
     error = '';
     const daysStr = prompt(`Backfill target for ${g.name}\n\nDays back to index (blank = use global default, 0 = no day limit):`, g.backfill_target_days ?? '');
@@ -269,6 +278,7 @@
     <button onclick={() => scan('')}>Scan all</button>
     <button class="secondary" onclick={() => backfill('')}>Backfill all</button>
     <button class="secondary" onclick={() => postProcess()}>Run post-processing now</button>
+    <button class="secondary" onclick={() => retryFailedPP()}>Retry failed post-processing</button>
   </div>
 </div>
 

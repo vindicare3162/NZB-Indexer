@@ -7,6 +7,11 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- "Retry failed post-processing" admin action (#45). Releases whose PAR2/NFO
+  fetch exhausted the retry budget stay `failed`; an operator can now requeue
+  all of them (reset to `pending`, `pp_attempts=0`) from the admin UI or
+  `POST /api/v1/admin/postprocess/retry-failed`, which also kicks a
+  post-processing pass. Useful after a temporary provider problem is resolved.
 - Failed / exhausted-retry post-processing counts in the stats view (#40). The
   admin Pipeline-depth panel now shows how many releases are pending, done,
   failed-but-awaiting-retry, and failed with retries exhausted (permanently
