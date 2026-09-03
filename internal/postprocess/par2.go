@@ -57,7 +57,9 @@ func ParsePar2Filenames(data []byte) ([]string, error) {
 			offset = start + len(par2Magic)
 			continue
 		}
-		pktType := data[start+40 : start+56]
+		// Packet type occupies the 16 bytes at offset 48 (after magic[8] +
+		// length[8] + packet-hash[16] + recovery-set-id[16]).
+		pktType := data[start+48 : start+64]
 		body := data[start+par2HeaderLen : start+int(pktLen)]
 
 		if bytes.Equal(pktType, par2FileDescType) {
@@ -95,3 +97,5 @@ func parseFileDescName(body []byte) string {
 func IsMainPacketType(t []byte) bool {
 	return bytes.Equal(t, par2MainType)
 }
+
+

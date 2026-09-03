@@ -46,6 +46,18 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   admin-only `GET /api/v1/admin/logs` endpoint with level filtering. The admin
   page shows a live, auto-refreshing log view.
 
+### Fixed
+- PAR2 filename recovery now works (#21). The PAR2 packet type field was read at
+  the wrong byte offset (40 instead of the spec's 48), so File Description
+  packets were never recognised and post-processing recovered no names or NFOs
+  against a real provider. Reading the type at the correct offset restores name
+  and NFO recovery. (The test fixture shared the same offset mistake, which had
+  masked the bug; it and a dedicated regression test now pin the spec offset.)
+- A stalled article-body fetch no longer blocks post-processing (#22). Each
+  fetch is bounded by a per-fetch timeout (`FetchTimeout`, default 30s) applied
+  as a socket read deadline, so one hung article can no longer stall the whole
+  post-processing loop.
+
 ### Changed
 - Release-building runs in its own loop (#18 follow-up). Previously assembly and
   release-building shared a loop (assemble-until-drained, then build), so a

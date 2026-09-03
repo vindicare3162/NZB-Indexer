@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/vindicare/goindex/internal/release"
@@ -33,6 +34,10 @@ type Options struct {
 	// single release (bandwidth/connection budget). Zero means a small
 	// default.
 	MaxFetchPerRelease int
+	// FetchTimeout bounds a single article-body fetch, so a stalled read on the
+	// NNTP connection cannot block the whole post-processing pass. Zero means a
+	// sensible default.
+	FetchTimeout time.Duration
 }
 
 // Processor recovers real names and NFO text for releases.
@@ -50,6 +55,9 @@ func New(fetch Fetcher, repo Repo, log *slog.Logger, opts Options) *Processor {
 	}
 	if opts.MaxFetchPerRelease <= 0 {
 		opts.MaxFetchPerRelease = 4
+	}
+	if opts.FetchTimeout <= 0 {
+		opts.FetchTimeout = 30 * time.Second
 	}
 	if log == nil {
 		log = slog.Default()
@@ -129,7 +137,10 @@ func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (st
 			return nil, false
 		}
 		fetched++
-		body, err := p.fetch.Body(ctx, messageID)
+		// Bound each fetch so a stalled read can't block the whole pass.
+		fctx, cancel := context.WithTimeout(ctx, p.opts.FetchTimeout)
+		body, err := p.fetch.Body(fctx, messageID)
+		cancel()
 		if err != nil {
 			return nil, false
 		}

@@ -270,7 +270,7 @@ func (p *Pool) ListActive(ctx context.Context) ([]AvailableGroup, error) {
 func (p *Pool) Body(ctx context.Context, messageID string) ([]byte, error) {
 	var data []byte
 	err := p.withConn(ctx, func(c conn) error {
-		r, err := c.body(messageID)
+		r, err := c.body(ctx, messageID)
 		if err != nil {
 			return err
 		}
