@@ -6,7 +6,10 @@ services:
       POSTGRES_PASSWORD: ${GOINDEX_DB_PASSWORD:-changeme}
       POSTGRES_DB: goindex
     volumes:
-      - goindex-db:/var/lib/postgresql/data
+      # postgres:18+ changed the recommended layout: mount the volume at
+      # /var/lib/postgresql (data lives in a versioned subdirectory) rather than
+      # at /var/lib/postgresql/data. See docker-library/postgres#37 / #1259.
+      - goindex-db:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U goindex -d goindex"]
       interval: 10s
