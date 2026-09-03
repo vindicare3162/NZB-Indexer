@@ -7,6 +7,15 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Optional release metadata enrichment (#82). When enabled
+  (`GOINDEX_METADATA_ENABLED=true`), a background loop matches TV releases to
+  shows via the keyless TVMaze provider and stores title, year, season/episode,
+  a cover image, and an overview (migration 0011, `release_metadata`). The
+  release detail page shows the cover and overview, and the JSON release detail
+  gains a `metadata` object. Providers are behind an interface; the feature is
+  off by default and degrades gracefully (disabled or provider errors leave
+  releases unchanged). Configurable via `config.example.yaml` /
+  `GOINDEX_METADATA_PROVIDER` / `GOINDEX_METADATA_INTERVAL`.
 - Prometheus metrics at `GET /metrics` and a Grafana dashboard (#78). Exposes
   HTTP request counters/latency (with bounded `route` labels), pipeline-depth
   gauges (parts/binaries/releases, releases-by-pp-status, failed-exhausted) and

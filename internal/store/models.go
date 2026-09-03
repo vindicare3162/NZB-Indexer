@@ -89,6 +89,22 @@ type Release struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
+// ReleaseMetadata is optional external metadata matched to a release (TV show
+// or movie): title, year, season/episode, cover art, and an overview.
+type ReleaseMetadata struct {
+	ReleaseID  int64     `json:"release_id"`
+	Title      string    `json:"title"`
+	Year       *int      `json:"year,omitempty"`
+	Season     *int      `json:"season,omitempty"`
+	Episode    *int      `json:"episode,omitempty"`
+	Source     string    `json:"source"`
+	ExternalID string    `json:"external_id"`
+	PosterURL  string    `json:"poster_url"`
+	Overview   string    `json:"overview"`
+	Matched    bool      `json:"matched"`
+	FetchedAt  time.Time `json:"fetched_at"`
+}
+
 // Segment is one NZB segment (article) within a release file.
 type Segment struct {
 	MessageID string `json:"message_id"`

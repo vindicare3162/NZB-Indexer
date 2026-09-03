@@ -190,10 +190,16 @@ func (a *API) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {
 	if files == nil {
 		files = []store.ReleaseFile{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"release": rel,
 		"files":   files,
-	})
+	}
+	// Include external metadata when the release has been enriched (best-effort:
+	// absence or error simply omits it).
+	if md, err := a.store.GetReleaseMetadata(r.Context(), rel.ID); err == nil && md.Matched {
+		resp["metadata"] = md
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *API) handleDownload(w http.ResponseWriter, r *http.Request) {
