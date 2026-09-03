@@ -6,6 +6,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Added
+- Viewable application logs in the admin UI (#7). A bounded in-memory ring
+  buffer captures recent log records alongside stderr output, exposed via an
+  admin-only `GET /api/v1/admin/logs` endpoint with level filtering. The admin
+  page shows a live, auto-refreshing log view.
+
 ### Changed
 - The assembler now drains its backlog within a single pipeline cycle (#3):
   it folds batches in a loop until nothing remains or a configurable per-run cap

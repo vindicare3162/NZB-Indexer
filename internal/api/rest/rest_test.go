@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/vindicare/goindex/internal/auth"
+	"github.com/vindicare/goindex/internal/logbuf"
 	"github.com/vindicare/goindex/internal/store"
 )
 
@@ -90,6 +92,33 @@ func (m *mockStore) UpdateServer(_ context.Context, id int64, in store.ServerInp
 }
 func (m *mockStore) DeleteServer(_ context.Context, id int64) error { m.deletedServer = id; return nil }
 
+type mockLogs struct{}
+
+func (mockLogs) Recent(limit int, minLevel *slog.Level) []logbuf.Entry {
+	all := []logbuf.Entry{
+		{Level: "INFO", Message: "info one"},
+		{Level: "WARN", Message: "warn one"},
+		{Level: "ERROR", Message: "error one"},
+	}
+	var out []logbuf.Entry
+	for _, e := range all {
+		if minLevel != nil {
+			lv := slog.LevelInfo
+			switch e.Level {
+			case "WARN":
+				lv = slog.LevelWarn
+			case "ERROR":
+				lv = slog.LevelError
+			}
+			if lv < *minLevel {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 type mockNZB struct{}
 
 func (mockNZB) ForGUID(context.Context, string) ([]byte, string, error) {
@@ -129,7 +158,7 @@ func setup(t *testing.T) testEnv {
 
 	st := &mockStore{}
 	jobs := &mockJobs{}
-	api := New(st, mockNZB{}, svc, svc, jobs, nil, nil)
+	api := New(st, mockNZB{}, svc, svc, jobs, nil, mockLogs{}, nil)
 
 	adminTok, _, _ := svc.Login(context.Background(), "admin", "password123")
 	userTok, _, _ := svc.Login(context.Background(), "bob", "password123")
@@ -361,6 +390,35 @@ func TestAdminServerCRUD(t *testing.T) {
 	rec = do(t, env, http.MethodGet, "/api/v1/admin/servers", env.userTok, nil)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("user->servers status = %d, want 403", rec.Code)
+	}
+}
+
+func TestAdminLogs(t *testing.T) {
+	env := setup(t)
+
+	// All levels.
+	rec := do(t, env, http.MethodGet, "/api/v1/admin/logs", env.adminTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logs status = %d", rec.Code)
+	}
+	var entries []logbuf.Entry
+	json.Unmarshal(rec.Body.Bytes(), &entries)
+	if len(entries) != 3 {
+		t.Errorf("entries = %d, want 3", len(entries))
+	}
+
+	// Level filter (warn+): drops the INFO entry.
+	rec = do(t, env, http.MethodGet, "/api/v1/admin/logs?level=warn", env.adminTok, nil)
+	entries = nil
+	json.Unmarshal(rec.Body.Bytes(), &entries)
+	if len(entries) != 2 {
+		t.Errorf("warn-filtered entries = %d, want 2", len(entries))
+	}
+
+	// Admin-only.
+	rec = do(t, env, http.MethodGet, "/api/v1/admin/logs", env.userTok, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("user->logs status = %d, want 403", rec.Code)
 	}
 }
 

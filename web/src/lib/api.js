@@ -86,4 +86,10 @@ export const api = {
   triggerScan: (group) => request('POST', '/admin/scan', { group }),
   triggerBackfill: (group) => request('POST', '/admin/backfill', { group }),
   status: () => request('GET', '/admin/status'),
+  logs: (level = '', limit = 200) => {
+    const params = new URLSearchParams();
+    if (level) params.set('level', level);
+    params.set('limit', String(limit));
+    return request('GET', `/admin/logs?${params.toString()}`);
+  },
 };
