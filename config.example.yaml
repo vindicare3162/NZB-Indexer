@@ -64,3 +64,13 @@ auth:
   session_ttl: 24h
   default_rate_limit: 100
   rate_limit_window: 1h
+
+metadata:
+  # Optional release metadata enrichment (match TV shows for cover art and
+  # details). Disabled by default (env: GOINDEX_METADATA_ENABLED).
+  enabled: false
+  # Provider: "tvmaze" (keyless, TV) is the default and only built-in provider.
+  # (env: GOINDEX_METADATA_PROVIDER)
+  provider: tvmaze
+  # How often the enrichment loop runs (env: GOINDEX_METADATA_INTERVAL).
+  interval: 30m

@@ -5,6 +5,7 @@
 
   let release = $state(null);
   let files = $state([]);
+  let metadata = $state(null);
   let error = $state('');
   let loading = $state(true);
 
@@ -15,6 +16,7 @@
       .then((res) => {
         release = res.release;
         files = res.files || [];
+        metadata = res.metadata || null;
       })
       .catch((err) => { error = err.message || 'Failed to load release'; })
       .finally(() => { loading = false; });
@@ -48,6 +50,26 @@
       <a href={api.nzbUrl(release.guid)}><button>Download NZB</button></a>
     </p>
   </div>
+
+  {#if metadata}
+    <div class="panel">
+      <h3 style="margin-top:0">Matched: {metadata.title}{metadata.year ? ` (${metadata.year})` : ''}</h3>
+      <div class="row" style="gap:1.2rem; align-items:flex-start">
+        {#if metadata.poster_url}
+          <img src={metadata.poster_url} alt={metadata.title} style="max-width:150px; border-radius:6px" />
+        {/if}
+        <div style="flex:1">
+          {#if metadata.season}
+            <p class="muted" style="margin-top:0">
+              Season {metadata.season}{metadata.episode ? `, Episode ${metadata.episode}` : ''}
+            </p>
+          {/if}
+          {#if metadata.overview}<p>{metadata.overview}</p>{/if}
+          <p class="muted" style="font-size:0.8rem">Source: {metadata.source}</p>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   {#if release.nfo}
     <div class="panel">

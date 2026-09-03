@@ -48,6 +48,8 @@ services:
       # Scanning
       GOINDEX_SCAN_GROUPS: ${GOINDEX_SCAN_GROUPS:-}
       GOINDEX_SCAN_INTERVAL: ${GOINDEX_SCAN_INTERVAL:-15m}
+      # Optional metadata enrichment (match TV shows for cover art/details).
+      GOINDEX_METADATA_ENABLED: ${GOINDEX_METADATA_ENABLED:-false}
       GOINDEX_LOG_LEVEL: ${GOINDEX_LOG_LEVEL:-info}
     restart: unless-stopped
 

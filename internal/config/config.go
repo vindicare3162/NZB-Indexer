@@ -23,8 +23,24 @@ type Config struct {
 	Scan ScanConfig `yaml:"scan"`
 	// Auth holds authentication settings.
 	Auth AuthConfig `yaml:"auth"`
+	// Metadata holds optional release metadata-enrichment settings.
+	Metadata MetadataConfig `yaml:"metadata"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `yaml:"log_level"`
+}
+
+// MetadataConfig configures optional release metadata enrichment (matching
+// releases to TV shows/movies for cover art and details). Disabled by default
+// so existing deployments are unaffected.
+type MetadataConfig struct {
+	// Enabled turns on the enrichment loop. When false, releases carry no
+	// external metadata and no provider requests are made.
+	Enabled bool `yaml:"enabled"`
+	// Provider selects the metadata source. Currently "tvmaze" (keyless, TV) is
+	// supported and is the default when Enabled and Provider is empty.
+	Provider string `yaml:"provider"`
+	// Interval is how often the enrichment loop runs. Zero uses a sane default.
+	Interval time.Duration `yaml:"interval"`
 }
 
 // ServerConfig configures the embedded HTTP server.
@@ -143,6 +159,11 @@ func Default() Config {
 			SSLMode:  "disable",
 			MaxConns: 10,
 		},
+		Metadata: MetadataConfig{
+			Enabled:  false,
+			Provider: "tvmaze",
+			Interval: 30 * time.Minute,
+		},
 		NNTP: NNTPConfig{
 			Port:           563,
 			TLS:            true,
@@ -239,6 +260,10 @@ func applyEnv(cfg *Config) {
 	envInt("GOINDEX_SCAN_FORWARD_MAX_ARTICLES", &cfg.Scan.ForwardMaxArticles)
 	envInt("GOINDEX_SCAN_BACKFILL_DAYS", &cfg.Scan.BackfillDays)
 	envInt("GOINDEX_SCAN_BACKFILL_MAX_ARTICLES", &cfg.Scan.BackfillMaxArticles)
+
+	envBool("GOINDEX_METADATA_ENABLED", &cfg.Metadata.Enabled)
+	envStr("GOINDEX_METADATA_PROVIDER", &cfg.Metadata.Provider)
+	envDur("GOINDEX_METADATA_INTERVAL", &cfg.Metadata.Interval)
 
 	envStr("GOINDEX_AUTH_JWT_SECRET", &cfg.Auth.JWTSecret)
 	envDur("GOINDEX_AUTH_SESSION_TTL", &cfg.Auth.SessionTTL)

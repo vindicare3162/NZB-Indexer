@@ -61,7 +61,7 @@ func newTestWorker(opts Options) (*Worker, *mockScanner, *mockAsm, *mockBuild, *
 	a := &mockAsm{}
 	b := &mockBuild{}
 	p := &mockPP{}
-	w := New(g, s, a, b, p, nil, opts)
+	w := New(g, s, a, b, p, nil, nil, opts)
 	return w, s, a, b, p
 }
 
@@ -116,7 +116,7 @@ func TestDownstreamRunsWhileScanBlocked(t *testing.T) {
 	b := &mockBuild{}
 	p := &mockPP{}
 	// Short intervals so all loops tick quickly.
-	w := New(g, s, a, b, p, nil, Options{
+	w := New(g, s, a, b, p, nil, nil, Options{
 		ScanInterval:        10 * time.Millisecond,
 		DownstreamInterval:  10 * time.Millisecond,
 		PostProcessInterval: 10 * time.Millisecond,
@@ -157,7 +157,7 @@ func TestPostProcessRunsWhileAssembleBlocked(t *testing.T) {
 	a := &blockingAsm{started: asmStarted, release: releaseAsm}
 	b := &mockBuild{}
 	p := &mockPP{}
-	w := New(g, s, a, b, p, nil, Options{
+	w := New(g, s, a, b, p, nil, nil, Options{
 		ScanInterval:        time.Hour, // keep scan out of the way
 		DownstreamInterval:  10 * time.Millisecond,
 		PostProcessInterval: 10 * time.Millisecond,
@@ -199,7 +199,7 @@ func TestBuildRunsWhileAssembleBlocked(t *testing.T) {
 	a := &blockingAsm{started: asmStarted, release: releaseAsm}
 	b := &mockBuild{}
 	p := &mockPP{}
-	w := New(g, s, a, b, p, nil, Options{
+	w := New(g, s, a, b, p, nil, nil, Options{
 		ScanInterval:        time.Hour,
 		DownstreamInterval:  10 * time.Millisecond,
 		BuildInterval:       10 * time.Millisecond,
@@ -351,7 +351,7 @@ func TestReconfigureAppliesLive(t *testing.T) {
 	a := &mockAsm{}
 	b := &mockBuild{}
 	p := &mockPP{}
-	w := New(g, s, a, b, p, nil, Options{
+	w := New(g, s, a, b, p, nil, nil, Options{
 		ScanInterval:        time.Hour,
 		DownstreamInterval:  time.Hour,
 		BuildInterval:       time.Hour,

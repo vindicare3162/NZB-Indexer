@@ -43,6 +43,14 @@ type PostProcessor interface {
 	Run(ctx context.Context) (postprocess.Result, error)
 }
 
+// Enricher matches releases to external metadata (TV show/movie). It is
+// optional; a nil enricher (or one that reports Enabled()==false) disables the
+// enrichment loop entirely.
+type Enricher interface {
+	Enabled() bool
+	Run(ctx context.Context) error
+}
+
 // Options configures scheduling.
 type Options struct {
 	// ScanInterval is how often the scan loop runs (forward, plus backfill when
@@ -62,6 +70,9 @@ type Options struct {
 	PostProcessInterval time.Duration
 	// EnableBackfill runs a backfill pass alongside forward scans.
 	EnableBackfill bool
+	// EnrichInterval is how often the metadata-enrichment loop runs. Zero uses
+	// a default. The loop only runs when an Enricher is supplied and enabled.
+	EnrichInterval time.Duration
 }
 
 // Metrics is a snapshot of pipeline activity, exposed via Status().
@@ -84,13 +95,14 @@ type Metrics struct {
 // (assemble -> build -> post-process) loop run as independent goroutines so a
 // long-running scan cannot starve post-processing.
 type Worker struct {
-	groups GroupLister
-	scan   Scanner
-	asm    Assembler
-	build  ReleaseBuilder
-	pp     PostProcessor
-	log    *slog.Logger
-	opts   Options
+	groups  GroupLister
+	scan    Scanner
+	asm     Assembler
+	build   ReleaseBuilder
+	pp      PostProcessor
+	enrich  Enricher
+	log     *slog.Logger
+	opts    Options
 
 	// Manual job requests are delivered into their respective loops.
 	scanTriggers chan scanTrigger
@@ -109,10 +121,11 @@ type Worker struct {
 
 	// Each loop has its own mutex so scan, assemble/build, and post-process run
 	// concurrently while each is serialised internally.
-	scanMu  sync.Mutex
-	asmMu   sync.Mutex
-	buildMu sync.Mutex
-	ppMu    sync.Mutex
+	scanMu   sync.Mutex
+	asmMu    sync.Mutex
+	buildMu  sync.Mutex
+	ppMu     sync.Mutex
+	enrichMu sync.Mutex
 
 	mu      sync.Mutex
 	metrics Metrics
@@ -124,10 +137,13 @@ type scanTrigger struct {
 	backfill bool
 }
 
-// New creates a Worker.
-func New(groups GroupLister, scan Scanner, asm Assembler, build ReleaseBuilder, pp PostProcessor, log *slog.Logger, opts Options) *Worker {
+// New creates a Worker. enrich may be nil to disable metadata enrichment.
+func New(groups GroupLister, scan Scanner, asm Assembler, build ReleaseBuilder, pp PostProcessor, enrich Enricher, log *slog.Logger, opts Options) *Worker {
 	if opts.ScanInterval <= 0 {
 		opts.ScanInterval = 15 * time.Minute
+	}
+	if opts.EnrichInterval <= 0 {
+		opts.EnrichInterval = 30 * time.Minute
 	}
 	if opts.DownstreamInterval <= 0 {
 		opts.DownstreamInterval = opts.ScanInterval
@@ -147,6 +163,7 @@ func New(groups GroupLister, scan Scanner, asm Assembler, build ReleaseBuilder, 
 		asm:          asm,
 		build:        build,
 		pp:           pp,
+		enrich:       enrich,
 		log:          log,
 		opts:         opts,
 		scanTriggers: make(chan scanTrigger, 16),
@@ -257,6 +274,10 @@ func (w *Worker) Run(ctx context.Context) {
 	go func() { defer wg.Done(); w.assembleLoop(ctx) }()
 	go func() { defer wg.Done(); w.buildLoop(ctx) }()
 	go func() { defer wg.Done(); w.postProcessLoop(ctx) }()
+	if w.enrich != nil && w.enrich.Enabled() {
+		wg.Add(1)
+		go func() { defer wg.Done(); w.enrichLoop(ctx) }()
+	}
 	wg.Wait()
 	w.log.Info("worker stopped")
 }
@@ -352,6 +373,37 @@ func (w *Worker) postProcessLoop(ctx context.Context) {
 		case <-w.ppReset:
 			ticker.Reset(w.postProcessInterval())
 		}
+	}
+}
+
+// enrichLoop runs an initial metadata-enrichment pass, then on EnrichInterval.
+// It runs independently of the other loops so metadata lookups (which hit an
+// external API) never block the pipeline.
+func (w *Worker) enrichLoop(ctx context.Context) {
+	ticker := time.NewTicker(w.opts.EnrichInterval)
+	defer ticker.Stop()
+
+	w.runEnrich(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.runEnrich(ctx)
+		}
+	}
+}
+
+// runEnrich runs one metadata-enrichment pass under its own mutex.
+func (w *Worker) runEnrich(ctx context.Context) {
+	w.enrichMu.Lock()
+	defer w.enrichMu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
+	if err := w.enrich.Run(ctx); err != nil {
+		w.recordError(fmt.Errorf("metadata enrichment: %w", err))
 	}
 }
 

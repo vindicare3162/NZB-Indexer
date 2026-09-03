@@ -32,6 +32,7 @@ type mockStore struct {
 	requeuedFailed bool
 	pingErr        error
 	savedSettings  map[string]string
+	metadata       map[int64]store.ReleaseMetadata
 
 	createdGroup  string
 	deletedGroup  int64
@@ -64,6 +65,14 @@ func (m *mockStore) GetReleaseByGUID(_ context.Context, guid string) (store.Rele
 		}
 	}
 	return store.Release{}, store.ErrNotFound
+}
+func (m *mockStore) GetReleaseMetadata(_ context.Context, releaseID int64) (store.ReleaseMetadata, error) {
+	if m.metadata != nil {
+		if md, ok := m.metadata[releaseID]; ok {
+			return md, nil
+		}
+	}
+	return store.ReleaseMetadata{}, store.ErrNotFound
 }
 func (m *mockStore) GetReleaseFiles(context.Context, int64) ([]store.ReleaseFile, error) {
 	return m.files, nil

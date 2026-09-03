@@ -111,7 +111,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		EnableBackfill:      enableBackfill,
 	}
 	applyPersistedSchedule(ctx, st, &wopts, logger)
-	wrk := worker.New(st, sc, asm, builder, pp, logger, wopts)
+	wopts.EnrichInterval = cfg.Metadata.Interval
+
+	// Optional metadata enrichment. Disabled by default; when enabled it uses
+	// the keyless TVMaze provider unless another is configured. A nil enricher
+	// leaves the pipeline unchanged.
+	enricher := buildEnricher(st, cfg, logger)
+	wrk := worker.New(st, sc, asm, builder, pp, enricher, logger, wopts)
 
 	// 5. Auth.
 	tokens, err := auth.NewTokenIssuer(cfg.Auth.JWTSecret, cfg.Auth.SessionTTL)

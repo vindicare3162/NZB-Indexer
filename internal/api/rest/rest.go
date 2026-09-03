@@ -27,6 +27,7 @@ type Store interface {
 	SearchReleases(ctx context.Context, f store.SearchFilter) ([]store.Release, int, error)
 	GetReleaseByGUID(ctx context.Context, guid string) (store.Release, error)
 	GetReleaseFiles(ctx context.Context, releaseID int64) ([]store.ReleaseFile, error)
+	GetReleaseMetadata(ctx context.Context, releaseID int64) (store.ReleaseMetadata, error)
 	ListCategories(ctx context.Context) ([]store.Category, error)
 
 	// Pipeline health (admin)
