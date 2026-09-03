@@ -7,6 +7,11 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Structured access logging for all HTTP requests (#66). A middleware wrapping
+  the whole server emits one record per request with `method`, `path`,
+  `status`, `duration_ms`, `bytes`, `remote`, and `user` (when authenticated).
+  5xx responses log at WARN; the `/health` and `/ready` probes log at DEBUG so
+  frequent orchestrator polling doesn't drown out real traffic.
 - Readiness probe `GET /api/v1/ready` (#64), distinct from the liveness probe
   `GET /api/v1/health`. `/ready` pings the database (2s timeout) and returns 503
   when it is unreachable, so orchestrators stop routing traffic to an instance
