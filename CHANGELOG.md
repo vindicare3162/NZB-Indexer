@@ -7,6 +7,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Failed / exhausted-retry post-processing counts in the stats view (#40). The
+  admin Pipeline-depth panel now shows how many releases are pending, done,
+  failed-but-awaiting-retry, and failed with retries exhausted (permanently
+  stuck). `GET /api/v1/admin/stats` gained `releases_failed_exhausted`
+  (`pp_status='failed' AND pp_attempts >= max`), computed via the retry index so
+  it stays cheap.
 - Pipeline backlog/health stats (#26). A new admin endpoint
   `GET /api/v1/admin/stats` reports current pipeline depth: estimated total and
   unassembled parts (the assembler backlog), binary counts (total/complete/

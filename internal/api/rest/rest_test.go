@@ -65,6 +65,7 @@ func (m *mockStore) PipelineStatistics(context.Context) (store.PipelineStats, er
 		PartsTotal: 1000, PartsUnassigned: 200,
 		BinariesTotal: 50, BinariesComplete: 30, BinariesUnreleased: 5,
 		ReleasesTotal: 25, ReleasesByPP: map[string]int64{"pending": 4, "done": 21},
+		ReleasesFailedExhausted: 2,
 	}, nil
 }
 func (m *mockStore) ListGroups(context.Context, bool) ([]store.Group, error)  { return m.groups, nil }
@@ -490,6 +491,9 @@ func TestAdminTriggersAndStatus(t *testing.T) {
 	}
 	if stats.PartsUnassigned != 200 || stats.BinariesUnreleased != 5 || stats.ReleasesByPP["pending"] != 4 {
 		t.Errorf("stats = %+v", stats)
+	}
+	if stats.ReleasesFailedExhausted != 2 {
+		t.Errorf("releases_failed_exhausted = %d, want 2", stats.ReleasesFailedExhausted)
 	}
 }
 

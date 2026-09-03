@@ -21,8 +21,12 @@ type PipelineStats struct {
 	BinariesComplete   int64 `json:"binaries_complete"`
 	BinariesUnreleased int64 `json:"binaries_unreleased"` // complete AND not released
 
-	ReleasesTotal   int64            `json:"releases_total"`
-	ReleasesByPP    map[string]int64 `json:"releases_by_pp_status"`
+	ReleasesTotal int64            `json:"releases_total"`
+	ReleasesByPP  map[string]int64 `json:"releases_by_pp_status"`
+	// ReleasesFailedExhausted is the number of releases that are 'failed' and
+	// have exhausted their post-processing retry budget (pp_attempts >=
+	// MaxPPAttempts), i.e. permanently stuck rather than awaiting another retry.
+	ReleasesFailedExhausted int64 `json:"releases_failed_exhausted"`
 }
 
 // PipelineStatistics returns a cheap snapshot of current pipeline depth.
@@ -78,5 +82,16 @@ FROM binaries`,
 		out.ReleasesByPP[status] = n
 		out.ReleasesTotal += n
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+
+	// Failed releases that have exhausted their retry budget (permanently
+	// stuck). Uses idx_releases_pp_retry, so it stays cheap.
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM releases WHERE pp_status = 'failed' AND pp_attempts >= $1`, MaxPPAttempts,
+	).Scan(&out.ReleasesFailedExhausted); err != nil {
+		return out, fmt.Errorf("count exhausted failed releases: %w", err)
+	}
+	return out, nil
 }

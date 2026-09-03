@@ -308,6 +308,9 @@
         <tr><td>Complete binaries awaiting release</td><td>{fmtCount(stats.binaries_unreleased)}</td></tr>
         <tr><td>Releases (total)</td><td>{fmtCount(stats.releases_total)}</td></tr>
         <tr><td>Releases pending post-processing</td><td>{fmtCount((stats.releases_by_pp_status || {}).pending || 0)}</td></tr>
+        <tr><td>Releases post-processed (done)</td><td>{fmtCount((stats.releases_by_pp_status || {}).done || 0)}</td></tr>
+        <tr><td>Releases failed (awaiting retry)</td><td>{fmtCount(((stats.releases_by_pp_status || {}).failed || 0) - stats.releases_failed_exhausted)}</td></tr>
+        <tr><td>Releases failed (retries exhausted)</td><td>{fmtCount(stats.releases_failed_exhausted)}</td></tr>
       </tbody>
     </table>
     <p class="muted" style="font-size:0.8rem">Parts totals are estimates; binary/release counts are exact.</p>
