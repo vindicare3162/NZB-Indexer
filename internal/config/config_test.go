@@ -53,6 +53,10 @@ func TestEnvOverridesDefaults(t *testing.T) {
 	t.Setenv("GOINDEX_NNTP_MAX_CONNS", "25")
 	t.Setenv("GOINDEX_SCAN_GROUPS", "alt.binaries.foo, alt.binaries.bar ,")
 	t.Setenv("GOINDEX_SCAN_INTERVAL", "5m")
+	t.Setenv("GOINDEX_SCAN_DOWNSTREAM_INTERVAL", "3m")
+	t.Setenv("GOINDEX_SCAN_BUILD_INTERVAL", "90s")
+	t.Setenv("GOINDEX_SCAN_POSTPROCESS_INTERVAL", "7m")
+	t.Setenv("GOINDEX_SCAN_FORWARD_MAX_ARTICLES", "250000")
 	t.Setenv("GOINDEX_DB_NAME", "idx")
 
 	cfg, err := Load("")
@@ -76,6 +80,18 @@ func TestEnvOverridesDefaults(t *testing.T) {
 	}
 	if cfg.Scan.Interval != 5*time.Minute {
 		t.Errorf("Scan.Interval = %s, want 5m", cfg.Scan.Interval)
+	}
+	if cfg.Scan.DownstreamInterval != 3*time.Minute {
+		t.Errorf("Scan.DownstreamInterval = %s, want 3m", cfg.Scan.DownstreamInterval)
+	}
+	if cfg.Scan.BuildInterval != 90*time.Second {
+		t.Errorf("Scan.BuildInterval = %s, want 90s", cfg.Scan.BuildInterval)
+	}
+	if cfg.Scan.PostProcessInterval != 7*time.Minute {
+		t.Errorf("Scan.PostProcessInterval = %s, want 7m", cfg.Scan.PostProcessInterval)
+	}
+	if cfg.Scan.ForwardMaxArticles != 250000 {
+		t.Errorf("Scan.ForwardMaxArticles = %d, want 250000", cfg.Scan.ForwardMaxArticles)
 	}
 }
 
