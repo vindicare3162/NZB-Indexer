@@ -5,6 +5,7 @@
   let users = $state([]);
   let servers = $state([]);
   let status = $state(null);
+  let stats = $state(null);
   let logs = $state([]);
   let logLevel = $state('');
   let logTimer = null;
@@ -25,6 +26,7 @@
     api.users().then((u) => { users = u || []; }).catch((e) => { error = e.message; });
     api.servers().then((s) => { servers = s || []; }).catch((e) => { error = e.message; });
     api.status().then((s) => { status = s; }).catch(() => {});
+    api.stats().then((s) => { stats = s; }).catch(() => {});
     loadLogs();
   }
 
@@ -296,7 +298,24 @@
 </div>
 
 <div class="panel">
-  <h3 style="margin-top:0">Pipeline status</h3>
+  <h3 style="margin-top:0">Pipeline depth</h3>
+  {#if stats}
+    <table>
+      <tbody>
+        <tr><td>Parts (total, est.)</td><td>{fmtCount(stats.parts_total)}</td></tr>
+        <tr><td>Parts awaiting assembly (est.)</td><td>{fmtCount(stats.parts_unassigned)}</td></tr>
+        <tr><td>Binaries (total / complete)</td><td>{fmtCount(stats.binaries_total)} / {fmtCount(stats.binaries_complete)}</td></tr>
+        <tr><td>Complete binaries awaiting release</td><td>{fmtCount(stats.binaries_unreleased)}</td></tr>
+        <tr><td>Releases (total)</td><td>{fmtCount(stats.releases_total)}</td></tr>
+        <tr><td>Releases pending post-processing</td><td>{fmtCount((stats.releases_by_pp_status || {}).pending || 0)}</td></tr>
+      </tbody>
+    </table>
+    <p class="muted" style="font-size:0.8rem">Parts totals are estimates; binary/release counts are exact.</p>
+  {:else}
+    <p class="muted">No stats available.</p>
+  {/if}
+
+  <h3>Pipeline status</h3>
   {#if status}
     <pre style="overflow:auto; font-size:0.8rem">{JSON.stringify(status, null, 2)}</pre>
   {:else}

@@ -7,6 +7,13 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Pipeline backlog/health stats (#26). A new admin endpoint
+  `GET /api/v1/admin/stats` reports current pipeline depth: estimated total and
+  unassembled parts (the assembler backlog), binary counts (total/complete/
+  complete-but-unreleased), and releases by post-processing status. The admin
+  page shows these so an operator can see at a glance whether the pipeline is
+  keeping up. Parts totals use planner estimates so the endpoint stays cheap
+  even with tens of millions of parts.
 - Resolution-aware categorization (#23). Movies and TV releases are now filed
   under their SD/HD/UHD subcategory (Movies 2030/2040/2045, TV 5030/5040/5045)
   based on resolution tags in the name (2160p/4k -> UHD, 1080p/720p -> HD,

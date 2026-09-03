@@ -23,6 +23,9 @@ type Store interface {
 	GetReleaseFiles(ctx context.Context, releaseID int64) ([]store.ReleaseFile, error)
 	ListCategories(ctx context.Context) ([]store.Category, error)
 
+	// Pipeline health (admin)
+	PipelineStatistics(ctx context.Context) (store.PipelineStats, error)
+
 	// Groups (admin)
 	ListGroups(ctx context.Context, activeOnly bool) ([]store.Group, error)
 	UpsertGroup(ctx context.Context, name string, active bool) (store.Group, error)
@@ -167,6 +170,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/v1/admin/backfill", admin(http.HandlerFunc(a.handleTriggerBackfill)))
 	mux.Handle("POST /api/v1/admin/postprocess", admin(http.HandlerFunc(a.handleTriggerPostProcess)))
 	mux.Handle("GET /api/v1/admin/status", admin(http.HandlerFunc(a.handleStatus)))
+	mux.Handle("GET /api/v1/admin/stats", admin(http.HandlerFunc(a.handleStats)))
 	mux.Handle("GET /api/v1/admin/logs", admin(http.HandlerFunc(a.handleLogs)))
 	mux.Handle("GET /api/v1/admin/discover", admin(http.HandlerFunc(a.handleDiscover)))
 

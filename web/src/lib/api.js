@@ -98,6 +98,7 @@ export const api = {
   triggerBackfill: (group) => request('POST', '/admin/backfill', { group }),
   triggerPostProcess: () => request('POST', '/admin/postprocess', {}),
   status: () => request('GET', '/admin/status'),
+  stats: () => request('GET', '/admin/stats'),
   logs: (level = '', limit = 200) => {
     const params = new URLSearchParams();
     if (level) params.set('level', level);

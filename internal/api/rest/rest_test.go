@@ -60,6 +60,13 @@ func (m *mockStore) GetReleaseFiles(context.Context, int64) ([]store.ReleaseFile
 	return m.files, nil
 }
 func (m *mockStore) ListCategories(context.Context) ([]store.Category, error) { return m.cats, nil }
+func (m *mockStore) PipelineStatistics(context.Context) (store.PipelineStats, error) {
+	return store.PipelineStats{
+		PartsTotal: 1000, PartsUnassigned: 200,
+		BinariesTotal: 50, BinariesComplete: 30, BinariesUnreleased: 5,
+		ReleasesTotal: 25, ReleasesByPP: map[string]int64{"pending": 4, "done": 21},
+	}, nil
+}
 func (m *mockStore) ListGroups(context.Context, bool) ([]store.Group, error)  { return m.groups, nil }
 func (m *mockStore) UpsertGroup(_ context.Context, name string, active bool) (store.Group, error) {
 	m.createdGroup = name
@@ -471,6 +478,18 @@ func TestAdminTriggersAndStatus(t *testing.T) {
 	rec = do(t, env, http.MethodGet, "/api/v1/admin/status", env.adminTok, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status endpoint = %d", rec.Code)
+	}
+
+	rec = do(t, env, http.MethodGet, "/api/v1/admin/stats", env.adminTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stats endpoint = %d", rec.Code)
+	}
+	var stats store.PipelineStats
+	if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+	if stats.PartsUnassigned != 200 || stats.BinariesUnreleased != 5 || stats.ReleasesByPP["pending"] != 4 {
+		t.Errorf("stats = %+v", stats)
 	}
 }
 
