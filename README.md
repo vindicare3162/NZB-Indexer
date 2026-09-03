@@ -164,6 +164,10 @@ import the bundled Grafana dashboard. See
 [`docs/monitoring.md`](./docs/monitoring.md) for the metric list, scrape config,
 and dashboard import steps.
 
+For database growth and PostgreSQL tuning guidance (autovacuum on the large
+`parts` table, retention, pool sizing, server settings), see
+[`docs/postgres-tuning.md`](./docs/postgres-tuning.md).
+
 ## Architecture
 
 The pipeline stages are:
