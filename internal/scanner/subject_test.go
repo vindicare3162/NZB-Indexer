@@ -96,3 +96,51 @@ func TestNormalizedGroupsSegments(t *testing.T) {
 		t.Errorf("total = %d, want 500", s1.TotalParts)
 	}
 }
+
+// TestParseCollection verifies that files of a multi-file "[n/total]" post
+// share one collection key (so the assembler folds them into one binary),
+// while single-file posts get no collection key.
+func TestParseCollection(t *testing.T) {
+	// A 113-file obfuscated collection: the PAR2 and every rar volume must
+	// share the same collection key.
+	par2 := ParseSubject(`[001/113] "Ef9UyY9ZpxkXPkQy.par2" yEnc (1/2)`)
+	rar1 := ParseSubject(`[002/113] "Ef9UyY9ZpxkXPkQy.part001.rar" yEnc (1/464)`)
+	rar112 := ParseSubject(`[113/113] "Ef9UyY9ZpxkXPkQy.part112.rar" yEnc (37/464)`)
+
+	if par2.CollectionKey == "" {
+		t.Fatal("PAR2 got no collection key")
+	}
+	if par2.CollectionKey != rar1.CollectionKey || rar1.CollectionKey != rar112.CollectionKey {
+		t.Errorf("collection keys differ:\n par2=%q\n rar1=%q\n rar112=%q",
+			par2.CollectionKey, rar1.CollectionKey, rar112.CollectionKey)
+	}
+	if par2.CollectionFiles != 113 || rar1.CollectionFiles != 113 {
+		t.Errorf("collection files = %d/%d, want 113/113", par2.CollectionFiles, rar1.CollectionFiles)
+	}
+	if par2.FileNumber != 1 || rar1.FileNumber != 2 || rar112.FileNumber != 113 {
+		t.Errorf("file numbers = %d/%d/%d, want 1/2/113", par2.FileNumber, rar1.FileNumber, rar112.FileNumber)
+	}
+	// The segment counter is still parsed independently of the file counter.
+	if rar1.PartNumber != 1 || rar1.TotalParts != 464 {
+		t.Errorf("rar1 segment = %d/%d, want 1/464", rar1.PartNumber, rar1.TotalParts)
+	}
+
+	// A readable multi-file collection groups the same way.
+	a := ParseSubject(`[01/50] "Some.Movie.2024.1080p.BluRay.x264-GRP.part01.rar" yEnc (1/300)`)
+	b := ParseSubject(`[50/50] "Some.Movie.2024.1080p.BluRay.x264-GRP.vol31+32.par2" yEnc (1/40)`)
+	if a.CollectionKey == "" || a.CollectionKey != b.CollectionKey {
+		t.Errorf("readable collection keys differ: a=%q b=%q", a.CollectionKey, b.CollectionKey)
+	}
+
+	// Single-file posts (no leading file counter) get no collection key, so
+	// they continue to group by normalized subject.
+	single := ParseSubject(`"Random.Standalone.File.mkv" yEnc (1/50)`)
+	if single.CollectionKey != "" {
+		t.Errorf("single-file post got a collection key: %q", single.CollectionKey)
+	}
+	// A "[1/1]" is a single file, not a collection.
+	one := ParseSubject(`[1/1] "solo.mkv" yEnc (1/10)`)
+	if one.CollectionKey != "" {
+		t.Errorf("[1/1] treated as collection: %q", one.CollectionKey)
+	}
+}

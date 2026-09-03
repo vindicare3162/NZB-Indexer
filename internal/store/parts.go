@@ -20,6 +20,11 @@ type PartInput struct {
 	PartNumber    int
 	TotalParts    int
 	NormSubject   string
+	// Collection metadata for multi-file posts. CollectionKey is empty for
+	// single-file posts (which group by NormSubject).
+	CollectionKey   string
+	FileNumber      int
+	CollectionFiles int
 }
 
 // InsertParts bulk-inserts parts within a single transaction. Rows conflicting
@@ -38,14 +43,15 @@ func (s *Store) InsertParts(ctx context.Context, parts []PartInput) (int64, erro
 
 	const q = `
 INSERT INTO parts
-    (group_id, article_number, message_id, subject, poster, posted_at, bytes, part_number, total_parts, norm_subject)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    (group_id, article_number, message_id, subject, poster, posted_at, bytes, part_number, total_parts, norm_subject, collection_key, file_number, collection_files)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 ON CONFLICT (group_id, article_number) DO NOTHING`
 
 	batch := &pgx.Batch{}
 	for _, p := range parts {
 		batch.Queue(q, p.GroupID, p.ArticleNumber, p.MessageID, p.Subject,
-			p.Poster, p.PostedAt, p.Bytes, p.PartNumber, p.TotalParts, p.NormSubject)
+			p.Poster, p.PostedAt, p.Bytes, p.PartNumber, p.TotalParts, p.NormSubject,
+			p.CollectionKey, p.FileNumber, p.CollectionFiles)
 	}
 
 	br := tx.SendBatch(ctx, batch)

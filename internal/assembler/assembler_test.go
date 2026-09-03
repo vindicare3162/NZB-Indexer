@@ -160,6 +160,92 @@ func seedParts(t *testing.T, st *store.Store, groupID int64, norm, poster string
 	}
 }
 
+// seedCollectionFile inserts the segments of one file within a multi-file
+// collection. All files of a collection share collectionKey and collectionFiles;
+// fileNum is this file's 1-based position.
+func seedCollectionFile(t *testing.T, st *store.Store, groupID int64, collectionKey string, collectionFiles, fileNum int, fileName, poster string, articleBase int64, segTotal int) {
+	t.Helper()
+	var parts []store.PartInput
+	for seg := 1; seg <= segTotal; seg++ {
+		parts = append(parts, store.PartInput{
+			GroupID:         groupID,
+			ArticleNumber:   articleBase + int64(seg),
+			MessageID:       fmt.Sprintf("m-%s-f%d-s%d@x", collectionKey, fileNum, seg),
+			Subject:         fmt.Sprintf(`[%d/%d] "%s" yEnc (%d/%d)`, fileNum, collectionFiles, fileName, seg, segTotal),
+			Poster:          poster,
+			Bytes:           1000,
+			PartNumber:      seg,
+			TotalParts:      segTotal,
+			NormSubject:     fmt.Sprintf(`[%d/%d] "%s"`, fileNum, collectionFiles, fileName),
+			CollectionKey:   collectionKey,
+			FileNumber:      fileNum,
+			CollectionFiles: collectionFiles,
+		})
+	}
+	if _, err := st.InsertParts(context.Background(), parts); err != nil {
+		t.Fatalf("seed collection file: %v", err)
+	}
+}
+
+// TestAssembleCollectionGroupsIntoOneBinary is the core #18 guarantee: a
+// multi-file "[n/total]" post (rar volumes + PAR2) folds into ONE binary whose
+// completeness is judged by files present, not per-file segment counts. The
+// segments of the whole collection end up under one binary_id so downstream
+// post-processing/NZB see the PAR2 alongside the rar volumes.
+func TestAssembleCollectionGroupsIntoOneBinary(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+	g, _ := st.UpsertGroup(ctx, "alt.binaries.coll", true)
+
+	// A 3-file collection: a PAR2 and two rar volumes, all keyed "Obf/3".
+	const key = "Obf/3"
+	seedCollectionFile(t, st, g.ID, key, 3, 1, "Obf.par2", "p", 1000, 2)
+	seedCollectionFile(t, st, g.ID, key, 3, 2, "Obf.part1.rar", "p", 2000, 5)
+	// Only 2 of 3 files so far -> incomplete.
+	a := New(st, nil, Options{BatchLimit: 100})
+	if _, err := a.Assemble(ctx); err != nil {
+		t.Fatal(err)
+	}
+	complete, _ := st.ListCompleteUnreleasedBinaries(ctx, 100)
+	if len(complete) != 0 {
+		t.Fatalf("collection should be incomplete with 2/3 files, got %d complete", len(complete))
+	}
+
+	// The third file arrives in a later scan; the collection completes.
+	seedCollectionFile(t, st, g.ID, key, 3, 3, "Obf.part2.rar", "p", 3000, 5)
+	if _, err := a.Assemble(ctx); err != nil {
+		t.Fatal(err)
+	}
+	complete, _ = st.ListCompleteUnreleasedBinaries(ctx, 100)
+	if len(complete) != 1 {
+		t.Fatalf("collection should be complete with 3/3 files, got %d", len(complete))
+	}
+	b := complete[0]
+	if b.CollectionKey != key || b.CollectionFiles != 3 {
+		t.Errorf("binary collection = %q/%d, want %q/3", b.CollectionKey, b.CollectionFiles, key)
+	}
+	if b.CollectedParts != 3 {
+		t.Errorf("collected files = %d, want 3", b.CollectedParts)
+	}
+
+	// All 12 segments (2+5+5) of the whole collection share one binary_id.
+	var segs int
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM parts WHERE binary_id = $1`, b.ID).Scan(&segs); err != nil {
+		t.Fatal(err)
+	}
+	if segs != 12 {
+		t.Errorf("segments under collection binary = %d, want 12", segs)
+	}
+
+	// No unassigned parts remain.
+	var unassigned int
+	st.Pool().QueryRow(ctx, `SELECT count(*) FROM parts WHERE binary_id IS NULL`).Scan(&unassigned)
+	if unassigned != 0 {
+		t.Errorf("unassigned parts = %d, want 0", unassigned)
+	}
+}
+
 func TestAssembleGroupsAndCompletion(t *testing.T) {
 	st := freshStore(t)
 	ctx := context.Background()

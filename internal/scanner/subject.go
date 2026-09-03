@@ -22,6 +22,19 @@ type ParsedSubject struct {
 	// suffix stripped, used as a stable grouping key for parts of the same
 	// binary.
 	Normalized string
+	// CollectionKey identifies a multi-file collection (a post spanning many
+	// files, e.g. a rar set plus its PAR2). All files of one collection share
+	// this key so the assembler can group them into a single binary/release.
+	// Empty when the subject is not part of a recognised collection (a plain
+	// single-file post), in which case the assembler falls back to Normalized.
+	CollectionKey string
+	// FileNumber is this file's 1-based position within the collection (from a
+	// leading "[n/total]" counter), or 0 when unknown.
+	FileNumber int
+	// CollectionFiles is the number of files in the collection (the "total" of
+	// a leading "[n/total]" counter), or 0 when the subject is not part of a
+	// recognised multi-file collection.
+	CollectionFiles int
 }
 
 // Part-counter patterns, tried in order. Usenet posters use several
@@ -38,6 +51,15 @@ var (
 	// yEnc marker and trailing size annotations to strip during normalization.
 	reYencMarker = regexp.MustCompile(`(?i)\byenc\b`)
 	reWhitespace = regexp.MustCompile(`\s+`)
+
+	// A LEADING file counter like "[002/113]" or "(002/113)" at the very start
+	// of the subject. This counts files within a multi-file collection, and is
+	// distinct from the trailing yEnc segment counter "(1/464)".
+	reLeadingFileCounter = regexp.MustCompile(`^\s*[\[\(](\d{1,6})\s*/\s*(\d{1,6})[\]\)]`)
+
+	// Trailing archive/volume/parity extensions used to reduce a per-file name
+	// to the collection base name (so all volumes of a set share one key).
+	reCollectionVolExt = regexp.MustCompile(`(?i)(\.part\d{1,5}|\.vol\d{1,6}\+\d{1,6}|\.r\d{2,4}|\.\d{2,4})?\.(rar|par2|zip|7z|sfv|nfo|nzb|001)$`)
 )
 
 // ParseSubject extracts part metadata and a normalized grouping key from an
@@ -74,7 +96,56 @@ func ParseSubject(subject string) ParsedSubject {
 	}
 
 	res.Normalized = normalizeSubject(subject, segLo, segHi)
+
+	parseCollection(subject, &res)
 	return res
+}
+
+// parseCollection detects a multi-file collection from a leading "[n/total]"
+// file counter and derives a stable collection key shared by every file of the
+// post. The key is the collection base name (the quoted filename with its
+// archive/volume/parity extension stripped) combined with the file count, so
+// that e.g. "Foo.par2", "Foo.part001.rar" ... "Foo.part112.rar" all map to the
+// same key while a different post that happens to share a base name but has a
+// different file count does not collide.
+//
+// When no leading file counter is present (a plain single-file post), the key
+// is left empty and the assembler falls back to the normalized subject, so
+// single-file behaviour is unchanged.
+func parseCollection(subject string, res *ParsedSubject) {
+	m := reLeadingFileCounter.FindStringSubmatch(subject)
+	if m == nil {
+		return
+	}
+	fileNum := atoi(m[1])
+	total := atoi(m[2])
+	// A "collection" needs at least two files; a "[1/1]" is a single file.
+	if total < 2 {
+		return
+	}
+	base := collectionBase(res.FileName)
+	if base == "" {
+		// No usable filename to anchor the collection; fall back to grouping
+		// by normalized subject rather than risk merging unrelated posts.
+		return
+	}
+	res.FileNumber = fileNum
+	res.CollectionFiles = total
+	res.CollectionKey = base + "/" + strconv.Itoa(total)
+}
+
+// collectionBase reduces a per-file name to the shared collection base by
+// stripping a trailing archive/volume/parity extension (e.g. ".part001.rar",
+// ".vol01+02.par2", ".r03", ".par2"). Returns "" when there is no filename.
+func collectionBase(fileName string) string {
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" {
+		return ""
+	}
+	if loc := reCollectionVolExt.FindStringIndex(fileName); loc != nil {
+		fileName = fileName[:loc[0]]
+	}
+	return strings.TrimSpace(fileName)
 }
 
 // normalizeSubject builds the stable grouping key. It removes the identified

@@ -293,10 +293,13 @@ func (s *Scanner) ingestRangeTracked(ctx context.Context, g store.Group, begin, 
 			Subject:       ov.Subject,
 			Poster:        ov.From,
 			PostedAt:      postedAt,
-			Bytes:         ov.Bytes,
-			PartNumber:    ps.PartNumber,
-			TotalParts:    ps.TotalParts,
-			NormSubject:   ps.Normalized,
+			Bytes:           ov.Bytes,
+			PartNumber:      ps.PartNumber,
+			TotalParts:      ps.TotalParts,
+			NormSubject:     ps.Normalized,
+			CollectionKey:   ps.CollectionKey,
+			FileNumber:      ps.FileNumber,
+			CollectionFiles: ps.CollectionFiles,
 		})
 	}
 
