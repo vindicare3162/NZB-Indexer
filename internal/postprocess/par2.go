@@ -18,6 +18,13 @@ var (
 
 const par2HeaderLen = 8 + 8 + 16 + 16 + 16 // magic+len+hash+setid+type = 64
 
+// HasPar2Magic reports whether data appears to be (or contain) PAR2 packets by
+// looking for the PAR2 packet magic. Used to identify PAR2 bodies when the
+// article subject gives no filename hint (obfuscated posts).
+func HasPar2Magic(data []byte) bool {
+	return bytes.Contains(data, par2Magic)
+}
+
 // ParsePar2Filenames extracts the set of real filenames declared in PAR2
 // File Description packets. The data may contain many concatenated packets;
 // duplicate filenames (repeated across recovery volumes) are de-duplicated
