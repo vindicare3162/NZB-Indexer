@@ -27,6 +27,12 @@ type Store interface {
 	SetGroupActive(ctx context.Context, id int64, active bool) error
 	DeleteGroup(ctx context.Context, id int64) error
 
+	// News servers (admin)
+	ListServers(ctx context.Context) ([]store.Server, error)
+	CreateServer(ctx context.Context, in store.ServerInput) (store.Server, error)
+	UpdateServer(ctx context.Context, id int64, in store.ServerInput) (store.Server, error)
+	DeleteServer(ctx context.Context, id int64) error
+
 	// Users & API keys (admin / self)
 	ListUsers(ctx context.Context) ([]store.User, error)
 	CreateUser(ctx context.Context, in store.CreateUserInput) (store.User, error)
@@ -40,6 +46,15 @@ type Store interface {
 // NZBGenerator builds an NZB for a release GUID.
 type NZBGenerator interface {
 	ForGUID(ctx context.Context, guid string) (data []byte, filename string, err error)
+}
+
+// ServerManager applies the currently-active news server to the running NNTP
+// pool. The server package implements it; a nil manager means server changes
+// take effect only on restart.
+type ServerManager interface {
+	// ApplyActive reloads the active server from the store and reconfigures the
+	// live NNTP pool.
+	ApplyActive(ctx context.Context) error
 }
 
 // JobController triggers pipeline jobs and reports their status. The worker
@@ -66,16 +81,18 @@ type API struct {
 	nzb     NZBGenerator
 	authn   Authenticator
 	jobs    JobController
+	servers ServerManager
 	session *auth.Service
 	log     *slog.Logger
 }
 
-// New creates a REST API.
-func New(st Store, nzb NZBGenerator, authn Authenticator, session *auth.Service, jobs JobController, log *slog.Logger) *API {
+// New creates a REST API. servers may be nil, in which case news-server changes
+// take effect only on the next restart.
+func New(st Store, nzb NZBGenerator, authn Authenticator, session *auth.Service, jobs JobController, servers ServerManager, log *slog.Logger) *API {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &API{store: st, nzb: nzb, authn: authn, jobs: jobs, session: session, log: log}
+	return &API{store: st, nzb: nzb, authn: authn, jobs: jobs, servers: servers, session: session, log: log}
 }
 
 // Routes returns the REST API mux mounted under /api/v1.
@@ -106,6 +123,10 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("GET /api/v1/admin/users", admin(http.HandlerFunc(a.handleListUsers)))
 	mux.Handle("POST /api/v1/admin/users", admin(http.HandlerFunc(a.handleCreateUser)))
 	mux.Handle("DELETE /api/v1/admin/users/{id}", admin(http.HandlerFunc(a.handleDeleteUser)))
+	mux.Handle("GET /api/v1/admin/servers", admin(http.HandlerFunc(a.handleListServers)))
+	mux.Handle("POST /api/v1/admin/servers", admin(http.HandlerFunc(a.handleCreateServer)))
+	mux.Handle("PUT /api/v1/admin/servers/{id}", admin(http.HandlerFunc(a.handleUpdateServer)))
+	mux.Handle("DELETE /api/v1/admin/servers/{id}", admin(http.HandlerFunc(a.handleDeleteServer)))
 	mux.Handle("POST /api/v1/admin/scan", admin(http.HandlerFunc(a.handleTriggerScan)))
 	mux.Handle("POST /api/v1/admin/backfill", admin(http.HandlerFunc(a.handleTriggerBackfill)))
 	mux.Handle("GET /api/v1/admin/status", admin(http.HandlerFunc(a.handleStatus)))

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ type mockStore struct {
 	groups    []store.Group
 	users     []store.User
 	keys      []store.APIKey
+	servers2  []store.Server
 
 	createdGroup  string
 	deletedGroup  int64
@@ -31,6 +33,9 @@ type mockStore struct {
 	createdUser   string
 	deletedUser   int64
 	createdKeyLbl string
+	createdServer string
+	updatedServer int64
+	deletedServer int64
 }
 
 func (m *mockStore) SearchReleases(_ context.Context, f store.SearchFilter) ([]store.Release, int, error) {
@@ -74,6 +79,16 @@ func (m *mockStore) CreateAPIKey(_ context.Context, userID int64, apiKey, label 
 	return store.APIKey{ID: 9, UserID: userID, APIKey: apiKey, Label: label}, nil
 }
 func (m *mockStore) DeleteAPIKey(context.Context, int64, int64) error { return nil }
+func (m *mockStore) ListServers(context.Context) ([]store.Server, error) { return m.servers2, nil }
+func (m *mockStore) CreateServer(_ context.Context, in store.ServerInput) (store.Server, error) {
+	m.createdServer = in.Host
+	return store.Server{ID: 1, Name: in.Name, Host: in.Host}, nil
+}
+func (m *mockStore) UpdateServer(_ context.Context, id int64, in store.ServerInput) (store.Server, error) {
+	m.updatedServer = id
+	return store.Server{ID: id, Name: in.Name, Host: in.Host}, nil
+}
+func (m *mockStore) DeleteServer(_ context.Context, id int64) error { m.deletedServer = id; return nil }
 
 type mockNZB struct{}
 
@@ -114,7 +129,7 @@ func setup(t *testing.T) testEnv {
 
 	st := &mockStore{}
 	jobs := &mockJobs{}
-	api := New(st, mockNZB{}, svc, svc, jobs, nil)
+	api := New(st, mockNZB{}, svc, svc, jobs, nil, nil)
 
 	adminTok, _, _ := svc.Login(context.Background(), "admin", "password123")
 	userTok, _, _ := svc.Login(context.Background(), "bob", "password123")
@@ -288,6 +303,64 @@ func TestAdminTriggersAndStatus(t *testing.T) {
 	rec = do(t, env, http.MethodGet, "/api/v1/admin/status", env.adminTok, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status endpoint = %d", rec.Code)
+	}
+}
+
+func TestAdminServerCRUD(t *testing.T) {
+	env := setup(t)
+	env.store.servers2 = []store.Server{
+		{ID: 1, Name: "primary", Host: "news.example.com", Port: 563, TLS: true, Username: "u", Password: "secret"},
+	}
+
+	// List must never leak the password, but should flag that one is set.
+	rec := do(t, env, http.MethodGet, "/api/v1/admin/servers", env.adminTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list servers status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "secret") {
+		t.Errorf("server list leaked password:\n%s", body)
+	}
+	if !strings.Contains(body, `"has_password":true`) {
+		t.Errorf("expected has_password flag:\n%s", body)
+	}
+
+	// Create.
+	pw := "newpass"
+	rec = do(t, env, http.MethodPost, "/api/v1/admin/servers", env.adminTok, serverRequest{
+		Name: "block", Host: "block.example.com", Port: 563, TLS: true, Username: "u2", Password: &pw, Enabled: true,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create server status = %d, body=%s", rec.Code, rec.Body)
+	}
+	if env.store.createdServer != "block.example.com" {
+		t.Errorf("created server host = %q", env.store.createdServer)
+	}
+
+	// Update.
+	rec = do(t, env, http.MethodPut, "/api/v1/admin/servers/1", env.adminTok, serverRequest{
+		Name: "primary", Host: "news2.example.com", Port: 563, TLS: true, Enabled: true,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update server status = %d", rec.Code)
+	}
+	if env.store.updatedServer != 1 {
+		t.Errorf("updated server id = %d", env.store.updatedServer)
+	}
+
+	// Delete.
+	rec = do(t, env, http.MethodDelete, "/api/v1/admin/servers/1", env.adminTok, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete server status = %d", rec.Code)
+	}
+	if env.store.deletedServer != 1 {
+		t.Errorf("deleted server id = %d", env.store.deletedServer)
+	}
+
+	// A non-admin cannot manage servers.
+	rec = do(t, env, http.MethodGet, "/api/v1/admin/servers", env.userTok, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("user->servers status = %d, want 403", rec.Code)
 	}
 }
 

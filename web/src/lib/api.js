@@ -71,6 +71,10 @@ export const api = {
   deleteKey: (id) => request('DELETE', `/apikeys/${id}`),
 
   // admin
+  servers: () => request('GET', '/admin/servers'),
+  createServer: (s) => request('POST', '/admin/servers', s),
+  updateServer: (id, s) => request('PUT', `/admin/servers/${id}`, s),
+  deleteServer: (id) => request('DELETE', `/admin/servers/${id}`),
   groups: () => request('GET', '/admin/groups'),
   createGroup: (name) => request('POST', '/admin/groups', { name, active: true }),
   setGroupActive: (id, active) => request('PATCH', `/admin/groups/${id}`, { active }),

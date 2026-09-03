@@ -89,6 +89,125 @@ func (a *API) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// --- news servers ---
+
+func (a *API) handleListServers(w http.ResponseWriter, r *http.Request) {
+	servers, err := a.store.ListServers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list servers")
+		return
+	}
+	if servers == nil {
+		servers = []store.Server{}
+	}
+	// Passwords are never serialised (Server.Password has json:"-"), but signal
+	// whether one is set so the UI can show a placeholder.
+	type serverView struct {
+		store.Server
+		HasPassword bool `json:"has_password"`
+	}
+	views := make([]serverView, 0, len(servers))
+	for _, s := range servers {
+		views = append(views, serverView{Server: s, HasPassword: s.Password != ""})
+	}
+	writeJSON(w, http.StatusOK, views)
+}
+
+type serverRequest struct {
+	Name     string  `json:"name"`
+	Host     string  `json:"host"`
+	Port     int     `json:"port"`
+	TLS      bool    `json:"tls"`
+	Username string  `json:"username"`
+	Password *string `json:"password"` // nil on update = leave unchanged
+	MaxConns int     `json:"max_conns"`
+	Priority int     `json:"priority"`
+	Enabled  bool    `json:"enabled"`
+}
+
+func (req serverRequest) toInput() store.ServerInput {
+	return store.ServerInput{
+		Name:     req.Name,
+		Host:     req.Host,
+		Port:     req.Port,
+		TLS:      req.TLS,
+		Username: req.Username,
+		Password: req.Password,
+		MaxConns: req.MaxConns,
+		Priority: req.Priority,
+		Enabled:  req.Enabled,
+	}
+}
+
+func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
+	var req serverRequest
+	if err := decodeJSON(r, &req); err != nil || req.Host == "" || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name and host are required")
+		return
+	}
+	srv, err := a.store.CreateServer(r.Context(), req.toInput())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create server")
+		return
+	}
+	a.applyActiveServer(r)
+	writeJSON(w, http.StatusCreated, srv)
+}
+
+func (a *API) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid server id")
+		return
+	}
+	var req serverRequest
+	if err := decodeJSON(r, &req); err != nil || req.Host == "" || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name and host are required")
+		return
+	}
+	srv, err := a.store.UpdateServer(r.Context(), id, req.toInput())
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "server not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to update server")
+		return
+	}
+	a.applyActiveServer(r)
+	writeJSON(w, http.StatusOK, srv)
+}
+
+func (a *API) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid server id")
+		return
+	}
+	if err := a.store.DeleteServer(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "server not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to delete server")
+		return
+	}
+	a.applyActiveServer(r)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// applyActiveServer reconfigures the live NNTP pool to the current active
+// server, if a manager is wired. Errors are logged, not surfaced, since the
+// change is already persisted and will take effect on restart regardless.
+func (a *API) applyActiveServer(r *http.Request) {
+	if a.servers == nil {
+		return
+	}
+	if err := a.servers.ApplyActive(r.Context()); err != nil {
+		a.log.Warn("failed to apply active news server to pool", "err", err)
+	}
+}
+
 // --- users ---
 
 func (a *API) handleListUsers(w http.ResponseWriter, r *http.Request) {

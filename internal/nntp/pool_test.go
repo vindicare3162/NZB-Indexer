@@ -280,6 +280,50 @@ func TestUnhealthyIdleConnDiscarded(t *testing.T) {
 	}
 }
 
+func TestReconfigureAppliesNewSettingsAndDropsIdle(t *testing.T) {
+	var dialedHosts []string
+	var mu sync.Mutex
+	d := func(cfg Config) (conn, error) {
+		mu.Lock()
+		dialedHosts = append(dialedHosts, cfg.Host)
+		mu.Unlock()
+		return &fakeConn{groupInfo: GroupInfo{High: 1}}, nil
+	}
+	p := newWithDialer(Config{Host: "old.example.com", MaxConns: 2}, d)
+	defer p.Close()
+	ctx := context.Background()
+
+	// First call dials the old host and leaves an idle connection.
+	if _, err := p.SelectGroupInfo(ctx, "g"); err != nil {
+		t.Fatal(err)
+	}
+	_, idle := p.Stats()
+	if idle != 1 {
+		t.Fatalf("expected 1 idle conn, got %d", idle)
+	}
+
+	// Reconfigure to a new host; idle connections must be dropped.
+	p.Reconfigure(Config{Host: "new.example.com", MaxConns: 999})
+	if _, idle := p.Stats(); idle != 0 {
+		t.Errorf("Reconfigure should drop idle conns, got %d idle", idle)
+	}
+
+	// MaxConns ceiling must be preserved (not raised to 999).
+	if got := p.config().MaxConns; got != 2 {
+		t.Errorf("MaxConns after reconfigure = %d, want 2 (ceiling preserved)", got)
+	}
+
+	// Next call dials the new host.
+	if _, err := p.SelectGroupInfo(ctx, "g"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dialedHosts) != 2 || dialedHosts[0] != "old.example.com" || dialedHosts[1] != "new.example.com" {
+		t.Errorf("dialed hosts = %v, want [old.example.com new.example.com]", dialedHosts)
+	}
+}
+
 func TestConnFatalClassification(t *testing.T) {
 	if isConnFatal(nil) {
 		t.Error("nil should not be fatal")

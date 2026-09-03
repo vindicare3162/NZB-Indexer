@@ -41,8 +41,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	defer st.Close()
 
-	// 2. NNTP connection pool.
-	pool := nntp.New(nntp.Config{
+	// 2. NNTP connection pool. Servers are managed in the database and editable
+	// from the UI. On first run (no servers configured) seed one from the
+	// startup config so existing deployments keep working. The active server
+	// (highest priority, enabled) is applied to the pool.
+	if err := seedServerFromConfig(ctx, st, cfg, logger); err != nil {
+		return fmt.Errorf("seed server: %w", err)
+	}
+	poolCfg := nntp.Config{
 		Host:           cfg.NNTP.Host,
 		Port:           cfg.NNTP.Port,
 		TLS:            cfg.NNTP.TLS,
@@ -52,7 +58,12 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		ConnectTimeout: cfg.NNTP.ConnectTimeout,
 		MaxRetries:     3,
 		RetryBackoff:   500 * time.Millisecond,
-	})
+	}
+	if active, err := st.GetActiveServer(ctx); err == nil {
+		poolCfg = serverToNNTPConfig(active, cfg.NNTP.ConnectTimeout)
+		logger.Info("using configured news server", "name", active.Name, "host", active.Host)
+	}
+	pool := nntp.New(poolCfg)
 	defer pool.Close()
 
 	// 3. Pipeline stages.
@@ -92,7 +103,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		MaxLimit:     100,
 		DefaultLimit: 100,
 	})
-	restAPI := rest.New(st, nzbGen, authSvc, authSvc, wrk, logger)
+	srvMgr := &serverManager{store: st, pool: pool, connectTimeout: cfg.NNTP.ConnectTimeout, log: logger}
+	restAPI := rest.New(st, nzbGen, authSvc, authSvc, wrk, srvMgr, logger)
 
 	spa, err := web.Handler()
 	if err != nil {
@@ -145,5 +157,78 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	cancelWorker()
 	logger.Info("goindex stopped")
+	return nil
+}
+
+// serverToNNTPConfig converts a stored news server into an nntp.Config.
+func serverToNNTPConfig(s store.Server, connectTimeout time.Duration) nntp.Config {
+	return nntp.Config{
+		Host:           s.Host,
+		Port:           s.Port,
+		TLS:            s.TLS,
+		Username:       s.Username,
+		Password:       s.Password,
+		MaxConns:       s.MaxConns,
+		ConnectTimeout: connectTimeout,
+		MaxRetries:     3,
+		RetryBackoff:   500 * time.Millisecond,
+	}
+}
+
+// seedServerFromConfig inserts a news server from the startup NNTP config when
+// none is configured yet, so existing env/YAML-based deployments migrate
+// seamlessly to DB-managed servers.
+func seedServerFromConfig(ctx context.Context, st *store.Store, cfg config.Config, logger *slog.Logger) error {
+	n, err := st.CountServers(ctx)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	if cfg.NNTP.Host == "" {
+		return nil // nothing to seed
+	}
+	pw := cfg.NNTP.Password
+	_, err = st.CreateServer(ctx, store.ServerInput{
+		Name:     "default",
+		Host:     cfg.NNTP.Host,
+		Port:     cfg.NNTP.Port,
+		TLS:      cfg.NNTP.TLS,
+		Username: cfg.NNTP.Username,
+		Password: &pw,
+		MaxConns: cfg.NNTP.MaxConns,
+		Priority: 0,
+		Enabled:  true,
+	})
+	if err != nil {
+		return err
+	}
+	logger.Info("seeded news server from startup config", "host", cfg.NNTP.Host)
+	return nil
+}
+
+// serverManager applies the active news server to the live NNTP pool. It
+// implements rest.ServerManager.
+type serverManager struct {
+	store          *store.Store
+	pool           *nntp.Pool
+	connectTimeout time.Duration
+	log            *slog.Logger
+}
+
+// ApplyActive reloads the active server and reconfigures the pool. When no
+// server is enabled, the pool keeps its current configuration.
+func (m *serverManager) ApplyActive(ctx context.Context) error {
+	active, err := m.store.GetActiveServer(ctx)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			m.log.Warn("no enabled news server configured; pool unchanged")
+			return nil
+		}
+		return err
+	}
+	m.pool.Reconfigure(serverToNNTPConfig(active, m.connectTimeout))
+	m.log.Info("applied news server to pool", "name", active.Name, "host", active.Host)
 	return nil
 }

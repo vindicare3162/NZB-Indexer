@@ -31,6 +31,36 @@ func New(cfg Config) *Pool {
 	return newWithDialer(cfg, dialLib)
 }
 
+// Reconfigure updates the connection parameters (host, port, TLS, credentials,
+// retry settings) used for new connections. Existing idle connections are
+// closed so subsequent dials use the new settings; in-use connections finish
+// their current operation and are recycled on release.
+//
+// The concurrency ceiling (MaxConns) is fixed at construction and is not
+// changed here — adjusting the hard connection limit requires a restart. This
+// keeps runtime reconfiguration safe without resizing the internal semaphore.
+func (p *Pool) Reconfigure(cfg Config) {
+	p.mu.Lock()
+	// Preserve the original MaxConns ceiling regardless of the incoming value.
+	cfg.MaxConns = cap(p.sem)
+	p.cfg = cfg
+	idle := p.idle
+	p.idle = nil
+	p.open -= len(idle)
+	p.mu.Unlock()
+
+	for _, c := range idle {
+		_ = c.close()
+	}
+}
+
+// config returns a snapshot of the current pool configuration.
+func (p *Pool) config() Config {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cfg
+}
+
 // newWithDialer creates a pool with a custom dialer (used by tests).
 func newWithDialer(cfg Config, d dialer) *Pool {
 	if cfg.MaxConns <= 0 {
@@ -74,13 +104,15 @@ func (p *Pool) acquire(ctx context.Context) (conn, error) {
 	}
 	p.mu.Unlock()
 
-	// Need a new connection.
-	c, err := p.dial(p.cfg)
+	// Need a new connection. Snapshot config under the lock to avoid racing
+	// with Reconfigure.
+	cfg := p.config()
+	c, err := p.dial(cfg)
 	if err != nil {
 		<-p.sem
 		return nil, err
 	}
-	if err := c.authenticate(p.cfg.Username, p.cfg.Password); err != nil {
+	if err := c.authenticate(cfg.Username, cfg.Password); err != nil {
 		_ = c.close()
 		<-p.sem
 		return nil, err
@@ -136,7 +168,7 @@ func (p *Pool) Stats() (open, idle int) {
 // transient failures. When fn returns an error deemed connection-fatal, the
 // connection is discarded and (on remaining retries) a fresh one is dialed.
 func (p *Pool) withConn(ctx context.Context, fn func(conn) error) error {
-	attempts := p.cfg.MaxRetries + 1
+	attempts := p.config().MaxRetries + 1
 	if attempts < 1 {
 		attempts = 1
 	}
@@ -181,7 +213,7 @@ func (p *Pool) withConn(ctx context.Context, fn func(conn) error) error {
 
 // backoff returns the delay before the given retry attempt (1-based).
 func (p *Pool) backoff(attempt int) time.Duration {
-	base := p.cfg.RetryBackoff
+	base := p.config().RetryBackoff
 	if base <= 0 {
 		base = 250 * time.Millisecond
 	}
