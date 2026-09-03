@@ -276,6 +276,37 @@ func TestPipelineStatistics(t *testing.T) {
 	if stats.PartsTotal < 0 || stats.PartsUnassigned < 0 {
 		t.Errorf("estimates must be non-negative: %+v", stats)
 	}
+
+	// Seed two failed releases: one still retryable, one that has exhausted its
+	// retry budget. Only the exhausted one should be counted.
+	c := 5000
+	for _, rel := range []struct {
+		guid     string
+		attempts int
+	}{
+		{"stats-fail-retryable", 1},
+		{"stats-fail-exhausted", MaxPPAttempts},
+	} {
+		if _, _, err := st.CreateRelease(ctx, ReleaseInput{
+			GUID: rel.guid, Name: rel.guid, SearchName: rel.guid, CategoryID: &c, ReleaseHash: rel.guid,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.Pool().Exec(ctx,
+			`UPDATE releases SET pp_status='failed', pp_attempts=$2 WHERE guid=$1`, rel.guid, rel.attempts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats2, err := st.PipelineStatistics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats2.ReleasesByPP["failed"] != 2 {
+		t.Errorf("failed = %d, want 2", stats2.ReleasesByPP["failed"])
+	}
+	if stats2.ReleasesFailedExhausted != 1 {
+		t.Errorf("failed exhausted = %d, want 1 (only the attempts>=max one)", stats2.ReleasesFailedExhausted)
+	}
 }
 
 // seedStatsParts inserts `collected` of `total` parts for a single-file binary.
