@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/textproto"
+	"strconv"
+	"strings"
 	"time"
-
-	lib "github.com/chrisfarms/nntp"
 )
 
 // conn is the minimal connection surface the pool depends on. The real
-// implementation wraps github.com/chrisfarms/nntp; tests provide a fake.
+// implementation speaks NNTP over net/textproto; tests provide a fake.
 type conn interface {
 	// authenticate logs in when credentials are configured.
 	authenticate(user, pass string) error
@@ -30,114 +31,262 @@ type conn interface {
 // dialer creates new connections. Swappable in tests.
 type dialer func(cfg Config) (conn, error)
 
-// libConn adapts *lib.Conn to the conn interface.
-type libConn struct {
-	c *lib.Conn
+// netConn is a real NNTP connection implemented directly on net/textproto so
+// we control exactly which commands are sent (notably XOVER, which many
+// providers require in place of the RFC 3977 OVER command).
+type netConn struct {
+	raw  net.Conn
+	tp   *textproto.Conn
+	// overCmd is the header-overview command this server accepts ("XOVER" or
+	// "OVER"), resolved lazily on first use.
+	overCmd string
 }
 
-// dialLib establishes a real connection, optionally over TLS, and switches the
-// server into reader mode. The connect timeout is enforced by racing the dial
-// against a timer, since the underlying library's Dial helpers take no
-// deadline.
+// dialLib establishes a real connection, optionally over TLS, then switches
+// the server into reader mode.
 func dialLib(cfg Config) (conn, error) {
-	addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
+	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	timeout := cfg.ConnectTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	dialer := &net.Dialer{Timeout: timeout}
 
-	type dialResult struct {
-		c   *lib.Conn
+	var (
+		raw net.Conn
 		err error
+	)
+	if cfg.TLS {
+		raw, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+			ServerName:         cfg.Host,
+			InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // operator opt-in for dev/self-signed
+		})
+	} else {
+		raw, err = dialer.Dial("tcp", addr)
 	}
-	done := make(chan dialResult, 1)
-	go func() {
-		var (
-			c   *lib.Conn
-			err error
-		)
-		if cfg.TLS {
-			tlsCfg := &tls.Config{
-				ServerName:         cfg.Host,
-				InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // operator opt-in for dev/self-signed
-			}
-			c, err = lib.DialTLS("tcp", addr, tlsCfg)
-		} else {
-			c, err = lib.Dial("tcp", addr)
-		}
-		done <- dialResult{c: c, err: err}
-	}()
+	if err != nil {
+		return nil, fmt.Errorf("nntp dial %s: %w", addr, err)
+	}
 
-	select {
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("nntp dial %s: timed out after %s", addr, timeout)
-	case res := <-done:
-		if res.err != nil {
-			return nil, fmt.Errorf("nntp dial %s: %w", addr, res.err)
-		}
-		lc := &libConn{c: res.c}
-		// Reader mode is required by many providers before OVER/BODY work.
-		// Not fatal on all servers, so ignore a mode-switch error.
-		_ = res.c.ModeReader()
-		return lc, nil
+	tp := textproto.NewConn(raw)
+	// Read the server greeting (200 posting allowed, or 201 no posting).
+	if _, _, err := tp.ReadCodeLine(20); err != nil {
+		_ = raw.Close()
+		return nil, fmt.Errorf("nntp greeting %s: %w", addr, err)
 	}
+
+	c := &netConn{raw: raw, tp: tp}
+	// Reader mode is required by many providers before OVER/BODY work. Ignore
+	// errors: some servers don't implement MODE READER but still work.
+	_ = c.modeReader()
+	return c, nil
 }
 
-func (l *libConn) authenticate(user, pass string) error {
+// modeReader sends MODE READER, accepting the 200/201 response.
+func (c *netConn) modeReader() error {
+	id, err := c.tp.Cmd("MODE READER")
+	if err != nil {
+		return err
+	}
+	c.tp.StartResponse(id)
+	defer c.tp.EndResponse(id)
+	_, _, err = c.tp.ReadCodeLine(20)
+	return err
+}
+
+func (c *netConn) authenticate(user, pass string) error {
 	if user == "" {
 		return nil
 	}
-	return l.c.Authenticate(user, pass)
+	// AUTHINFO USER expects 381 (more auth required) then AUTHINFO PASS -> 281.
+	code, line, err := c.simpleCmd("AUTHINFO USER %s", user)
+	if err != nil {
+		return err
+	}
+	if code == 281 {
+		return nil // some servers accept user-only auth
+	}
+	if code != 381 {
+		return fmt.Errorf("nntp authinfo user: unexpected %d %s", code, line)
+	}
+	code, line, err = c.simpleCmd("AUTHINFO PASS %s", pass)
+	if err != nil {
+		return err
+	}
+	if code != 281 {
+		return fmt.Errorf("nntp authinfo pass: authentication failed (%d %s)", code, line)
+	}
+	return nil
 }
 
-func (l *libConn) selectGroup(name string) (GroupInfo, error) {
-	count, low, high, err := l.c.Group(name)
+func (c *netConn) selectGroup(name string) (GroupInfo, error) {
+	id, err := c.tp.Cmd("GROUP %s", name)
 	if err != nil {
 		return GroupInfo{}, err
 	}
-	return GroupInfo{
-		Name:  name,
-		Count: int64(count),
-		Low:   int64(low),
-		High:  int64(high),
-	}, nil
+	c.tp.StartResponse(id)
+	defer c.tp.EndResponse(id)
+
+	_, line, err := c.tp.ReadCodeLine(211)
+	if err != nil {
+		return GroupInfo{}, err
+	}
+	// Response: "211 count low high group"
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return GroupInfo{}, fmt.Errorf("nntp group: malformed response %q", line)
+	}
+	count, _ := strconv.ParseInt(fields[0], 10, 64)
+	low, _ := strconv.ParseInt(fields[1], 10, 64)
+	high, _ := strconv.ParseInt(fields[2], 10, 64)
+	return GroupInfo{Name: name, Count: count, Low: low, High: high}, nil
 }
 
-func (l *libConn) overview(begin, end int64) ([]Overview, error) {
-	raw, err := l.c.Overview(int(begin), int(end))
-	if err != nil {
-		return nil, err
+func (c *netConn) overview(begin, end int64) ([]Overview, error) {
+	if c.overCmd == "" {
+		c.overCmd = "XOVER"
 	}
-	out := make([]Overview, 0, len(raw))
-	for _, m := range raw {
-		out = append(out, Overview{
-			ArticleNumber: int64(m.MessageNumber),
-			Subject:       m.Subject,
-			From:          m.From,
-			Date:          m.Date,
-			MessageID:     trimAngle(m.MessageId),
-			Bytes:         int64(m.Bytes),
-		})
+
+	lines, err := c.overviewWith(c.overCmd, begin, end)
+	if err != nil {
+		// If the chosen command is unrecognized, try the alternative once.
+		if isUnrecognized(err) {
+			alt := "OVER"
+			if c.overCmd == "OVER" {
+				alt = "XOVER"
+			}
+			lines, err = c.overviewWith(alt, begin, end)
+			if err != nil {
+				return nil, err
+			}
+			c.overCmd = alt
+		} else {
+			return nil, err
+		}
+	}
+
+	out := make([]Overview, 0, len(lines))
+	for _, line := range lines {
+		ov, ok := parseOverviewLine(line)
+		if ok {
+			out = append(out, ov)
+		}
 	}
 	return out, nil
 }
 
-func (l *libConn) body(messageID string) (io.ReadCloser, error) {
-	r, err := l.c.Body(ensureAngle(messageID))
+// overviewWith runs a specific overview command and returns the raw data lines.
+func (c *netConn) overviewWith(cmd string, begin, end int64) ([]string, error) {
+	id, err := c.tp.Cmd("%s %d-%d", cmd, begin, end)
 	if err != nil {
 		return nil, err
 	}
-	return io.NopCloser(r), nil
+	c.tp.StartResponse(id)
+	defer c.tp.EndResponse(id)
+
+	// 224 = overview follows (a dot-terminated block).
+	if _, _, err := c.tp.ReadCodeLine(224); err != nil {
+		return nil, err
+	}
+	return c.tp.ReadDotLines()
 }
 
-func (l *libConn) ping() error {
-	// Date is a lightweight, always-available command used as a keepalive.
-	_, err := l.c.Date()
+func (c *netConn) body(messageID string) (io.ReadCloser, error) {
+	id, err := c.tp.Cmd("BODY %s", ensureAngle(messageID))
+	if err != nil {
+		return nil, err
+	}
+	c.tp.StartResponse(id)
+	// 222 = body follows.
+	if _, _, err := c.tp.ReadCodeLine(222); err != nil {
+		c.tp.EndResponse(id)
+		return nil, err
+	}
+	lines, err := c.tp.ReadDotLines()
+	c.tp.EndResponse(id)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(strings.NewReader(strings.Join(lines, "\r\n"))), nil
+}
+
+func (c *netConn) ping() error {
+	// DATE is a lightweight, always-available keepalive.
+	_, _, err := c.simpleCmd("DATE")
 	return err
 }
 
-func (l *libConn) close() error {
-	return l.c.Quit()
+func (c *netConn) close() error {
+	// Best-effort QUIT, then close the socket.
+	id, err := c.tp.Cmd("QUIT")
+	if err == nil {
+		c.tp.StartResponse(id)
+		_, _, _ = c.tp.ReadCodeLine(205)
+		c.tp.EndResponse(id)
+	}
+	return c.raw.Close()
+}
+
+// simpleCmd sends a command and reads a single status line, returning its code.
+func (c *netConn) simpleCmd(format string, args ...any) (int, string, error) {
+	id, err := c.tp.Cmd(format, args...)
+	if err != nil {
+		return 0, "", err
+	}
+	c.tp.StartResponse(id)
+	defer c.tp.EndResponse(id)
+	return c.tp.ReadCodeLine(0) // 0 = accept any code, return it
+}
+
+// parseOverviewLine parses a tab-separated XOVER/OVER data line into an
+// Overview. The standard overview format is:
+//
+//	number \t subject \t from \t date \t message-id \t references \t bytes \t lines [\t extra...]
+func parseOverviewLine(line string) (Overview, bool) {
+	fields := strings.Split(line, "\t")
+	if len(fields) < 8 {
+		return Overview{}, false
+	}
+	num, err := strconv.ParseInt(strings.TrimSpace(fields[0]), 10, 64)
+	if err != nil {
+		return Overview{}, false
+	}
+	bytes, _ := strconv.ParseInt(strings.TrimSpace(fields[6]), 10, 64)
+
+	ov := Overview{
+		ArticleNumber: num,
+		Subject:       fields[1],
+		From:          fields[2],
+		MessageID:     trimAngle(strings.TrimSpace(fields[4])),
+		Bytes:         bytes,
+	}
+	if t, err := parseNNTPDate(fields[3]); err == nil {
+		ov.Date = t
+	}
+	return ov, true
+}
+
+// nntpDateLayouts are the date formats seen in overview Date headers.
+var nntpDateLayouts = []string{
+	time.RFC1123Z,
+	time.RFC1123,
+	"Mon, 2 Jan 2006 15:04:05 -0700",
+	"Mon, 2 Jan 2006 15:04:05 MST",
+	"2 Jan 2006 15:04:05 -0700",
+	"2 Jan 2006 15:04:05 MST",
+}
+
+func parseNNTPDate(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	var lastErr error
+	for _, layout := range nntpDateLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		} else {
+			lastErr = err
+		}
+	}
+	return time.Time{}, lastErr
 }
 
 // trimAngle removes surrounding <...> from a message-id if present.

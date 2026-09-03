@@ -4,30 +4,30 @@ import (
 	"errors"
 	"io"
 	"net"
-
-	lib "github.com/chrisfarms/nntp"
+	"net/textproto"
 )
 
 // isConnFatal reports whether an error means the connection is no longer
 // usable and should be discarded (and the operation retried on a fresh
-// connection). Server protocol responses (e.g. "no such group") are NOT
-// connection-fatal: they are returned to the caller as-is.
+// connection). A well-formed NNTP status response (e.g. "no such group") is
+// NOT connection-fatal: the server answered, so the connection is fine and the
+// error is returned to the caller.
 func isConnFatal(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	// A well-formed NNTP status response means the connection is fine; the
-	// server simply rejected the request.
-	var protoErr lib.ProtocolError
+	// A *textproto.Error is a well-formed status response from the server. The
+	// connection is healthy; the command was simply rejected.
+	var protoErr *textproto.Error
 	if errors.As(err, &protoErr) {
-		// A malformed/unexpected protocol response means the stream is out of
-		// sync: treat as fatal so we reconnect.
-		return true
-	}
-	var srvErr lib.Error
-	if errors.As(err, &srvErr) {
 		return false
+	}
+	// A textproto.ProtocolError means the response stream was malformed: the
+	// connection is out of sync and must be discarded.
+	var streamErr textproto.ProtocolError
+	if errors.As(err, &streamErr) {
+		return true
 	}
 
 	// EOF / unexpected EOF: the peer closed the connection.
@@ -48,4 +48,20 @@ func isConnFatal(err error) bool {
 	// Default: assume the connection may be bad and retry on a fresh one. This
 	// is safe for idempotent read operations (OVER/GROUP/BODY).
 	return true
+}
+
+// isUnrecognized reports whether err is a server response indicating the
+// command is not recognized/implemented, so the caller can try an alternative
+// (e.g. OVER when XOVER is rejected). NNTP servers signal this with 500
+// ("command not recognized") or 501 ("syntax error"); some legacy servers use
+// 400.
+func isUnrecognized(err error) bool {
+	var protoErr *textproto.Error
+	if errors.As(err, &protoErr) {
+		switch protoErr.Code {
+		case 400, 500, 501:
+			return true
+		}
+	}
+	return false
 }
