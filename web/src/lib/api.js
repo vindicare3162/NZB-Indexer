@@ -57,12 +57,13 @@ export const api = {
   setup: (username, password) => request('POST', '/setup', { username, password }),
   me: () => request('GET', '/me'),
   categories: () => request('GET', '/categories'),
-  search: ({ q = '', cat = '', limit = 50, offset = 0 } = {}) => {
+  search: ({ q = '', cat = '', limit = 50, offset = 0, includeObfuscated = false } = {}) => {
     const params = new URLSearchParams();
     if (q) params.set('q', q);
     if (cat) params.set('cat', cat);
     params.set('limit', String(limit));
     params.set('offset', String(offset));
+    if (includeObfuscated) params.set('include_obfuscated', '1');
     return request('GET', `/releases?${params.toString()}`);
   },
   release: (guid) => request('GET', `/releases/${encodeURIComponent(guid)}`),

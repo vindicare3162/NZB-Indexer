@@ -7,6 +7,13 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Obfuscated releases are excluded from search by default (#54). Releases whose
+  name is still random hex/base64 (post-processing couldn't recover a real name)
+  are flagged `obfuscated` at build time and cleared when a real name is
+  recovered. Search (JSON + Newznab) hides them by default so real releases are
+  no longer buried; the web UI has an "Include obfuscated" toggle and the JSON
+  API accepts `include_obfuscated=1`. The obfuscation heuristic now lives in one
+  place (`release.IsObfuscated`, shared with post-processing).
 - Rate-limit headers on the Newznab API (#51). Authenticated responses now
   carry `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`, and
   a 429 (rate-limited) response includes a `Retry-After` header (seconds until

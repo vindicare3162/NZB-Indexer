@@ -3,6 +3,7 @@
 
   let q = $state('');
   let cat = $state('');
+  let includeObfuscated = $state(false);
   let categories = $state([]);
   let releases = $state([]);
   let total = $state(0);
@@ -21,7 +22,7 @@
     error = '';
     offset = newOffset;
     try {
-      const res = await api.search({ q, cat, limit, offset });
+      const res = await api.search({ q, cat, limit, offset, includeObfuscated });
       releases = res.releases || [];
       total = res.total || 0;
       searched = true;
@@ -63,6 +64,9 @@
     {/each}
   </select>
   <button type="submit" disabled={loading}>{loading ? 'Searching…' : 'Search'}</button>
+  <label class="muted" style="display:flex; align-items:center; gap:0.3rem">
+    <input type="checkbox" bind:checked={includeObfuscated} /> Include obfuscated
+  </label>
 </form>
 
 {#if error}<p class="error">{error}</p>{/if}

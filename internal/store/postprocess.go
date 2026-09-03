@@ -159,8 +159,10 @@ func (s *Store) ApplyPostProcessing(ctx context.Context, id int64, res ReleasePP
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	if res.Name != "" {
+		// A recovered real name is (by definition of the recovery) readable, so
+		// clear the obfuscated flag as well.
 		if _, err := tx.Exec(ctx,
-			`UPDATE releases SET name = $2, search_name = $3, updated_at = now() WHERE id = $1`,
+			`UPDATE releases SET name = $2, search_name = $3, obfuscated = false, updated_at = now() WHERE id = $1`,
 			id, res.Name, res.SearchName); err != nil {
 			return fmt.Errorf("rename release: %w", err)
 		}

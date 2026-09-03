@@ -9,6 +9,11 @@ import (
 // normalization the release builder uses (lowercased, separators -> spaces).
 func mkRelease(t *testing.T, st *Store, guid, name, searchName string, cat int) {
 	t.Helper()
+	mkReleaseObf(t, st, guid, name, searchName, cat, false)
+}
+
+func mkReleaseObf(t *testing.T, st *Store, guid, name, searchName string, cat int, obfuscated bool) {
+	t.Helper()
 	c := cat
 	_, _, err := st.CreateRelease(context.Background(), ReleaseInput{
 		GUID:        guid,
@@ -16,9 +21,36 @@ func mkRelease(t *testing.T, st *Store, guid, name, searchName string, cat int) 
 		SearchName:  searchName,
 		CategoryID:  &c,
 		ReleaseHash: guid, // unique per release
+		Obfuscated:  obfuscated,
 	})
 	if err != nil {
 		t.Fatalf("create release %q: %v", name, err)
+	}
+}
+
+func TestSearchExcludesObfuscatedByDefault(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+
+	mkReleaseObf(t, st, "ok-1", "Great.Movie.2024.1080p", "great movie 2024 1080p", 2040, false)
+	mkReleaseObf(t, st, "obf-1", "b6534bac9d3149e5bcd657b08345c075", "b6534bac9d3149e5bcd657b08345c075", 8000, true)
+
+	// Default: obfuscated release is hidden.
+	rels, total, err := st.SearchReleases(ctx, SearchFilter{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(rels) != 1 || rels[0].GUID != "ok-1" {
+		t.Errorf("default search should return only the readable release; got total=%d rels=%d", total, len(rels))
+	}
+
+	// Opt-in: both are returned.
+	rels, total, err = st.SearchReleases(ctx, SearchFilter{Limit: 100, IncludeObfuscated: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(rels) != 2 {
+		t.Errorf("IncludeObfuscated should return both; got total=%d rels=%d", total, len(rels))
 	}
 }
 

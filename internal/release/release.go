@@ -86,6 +86,7 @@ func (b *Builder) Build(ctx context.Context) (Result, error) {
 			Name:            name,
 			OriginalSubject: subject,
 			SearchName:      SearchName(name),
+			Obfuscated:      IsObfuscated(name),
 			CategoryID:      &cat,
 			GroupID:         &bin.GroupID,
 			BinaryID:        &bin.ID,
