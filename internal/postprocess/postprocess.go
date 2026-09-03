@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -38,6 +39,11 @@ type Options struct {
 	// NNTP connection cannot block the whole post-processing pass. Zero means a
 	// sensible default.
 	FetchTimeout time.Duration
+	// Concurrency is how many releases are post-processed in parallel. Releases
+	// are independent, so a bounded worker pool lets a pass use the NNTP
+	// connection budget instead of fetching one release at a time. Zero means a
+	// small default; it should not exceed the NNTP pool size.
+	Concurrency int
 }
 
 // Processor recovers real names and NFO text for releases.
@@ -58,6 +64,9 @@ func New(fetch Fetcher, repo Repo, log *slog.Logger, opts Options) *Processor {
 	}
 	if opts.FetchTimeout <= 0 {
 		opts.FetchTimeout = 30 * time.Second
+	}
+	if opts.Concurrency <= 0 {
+		opts.Concurrency = 4
 	}
 	if log == nil {
 		log = slog.Default()
@@ -83,35 +92,103 @@ func (p *Processor) Run(ctx context.Context) (Result, error) {
 		return res, fmt.Errorf("list pending releases: %w", err)
 	}
 
-	for _, pr := range pending {
-		if err := ctx.Err(); err != nil {
-			return res, err
-		}
-		res.Processed++
-		out, err := p.processOne(ctx, pr)
-		if err != nil {
-			res.Failed++
-			// Mark failed so it is not retried forever; log and continue.
-			p.log.Warn("post-processing failed", "release", pr.Release.GUID, "err", err)
-			if serr := p.repo.SetReleasePPStatus(ctx, pr.Release.ID, store.PPFailed); serr != nil {
-				return res, serr
+	// Releases are independent (each fetches and applies its own result), so
+	// process them with a bounded worker pool. This lets a pass use the NNTP
+	// connection budget instead of fetching one release at a time, and a slow
+	// release no longer blocks the rest.
+	workers := p.opts.Concurrency
+	if workers > len(pending) {
+		workers = len(pending)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	var (
+		mu       sync.Mutex
+		fatal    error // first non-per-release error (e.g. DB apply failure)
+		wg       sync.WaitGroup
+		jobs     = make(chan store.PendingRelease)
+		stop     = make(chan struct{}) // closed once when a worker hits a fatal error
+		stopOnce sync.Once
+	)
+	abort := func() { stopOnce.Do(func() { close(stop) }) }
+
+	worker := func() {
+		defer wg.Done()
+		for pr := range jobs {
+			if ctx.Err() != nil {
+				return
 			}
-			continue
+			out, perr := p.processOne(ctx, pr)
+			if perr != nil {
+				// Missing/unfetchable PAR2/NFO is not fatal; mark failed so the
+				// release is not retried forever, and continue.
+				p.log.Warn("post-processing failed", "release", pr.Release.GUID, "err", perr)
+				mu.Lock()
+				res.Processed++
+				res.Failed++
+				mu.Unlock()
+				if serr := p.repo.SetReleasePPStatus(ctx, pr.Release.ID, store.PPFailed); serr != nil {
+					mu.Lock()
+					if fatal == nil {
+						fatal = serr
+					}
+					mu.Unlock()
+					abort()
+					return
+				}
+				continue
+			}
+			if aerr := p.repo.ApplyPostProcessing(ctx, pr.Release.ID, out); aerr != nil {
+				mu.Lock()
+				if fatal == nil {
+					fatal = fmt.Errorf("apply post-processing for %s: %w", pr.Release.GUID, aerr)
+				}
+				mu.Unlock()
+				abort()
+				return
+			}
+			mu.Lock()
+			res.Processed++
+			if out.Name != "" {
+				res.Renamed++
+			}
+			if out.NFO != nil {
+				res.NFOFound++
+			}
+			mu.Unlock()
 		}
-		if out.Name != "" {
-			res.Renamed++
+	}
+
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go worker()
+	}
+sendLoop:
+	for _, pr := range pending {
+		select {
+		case <-ctx.Done():
+			break sendLoop
+		case <-stop: // a worker hit a fatal error; stop dispatching
+			break sendLoop
+		case jobs <- pr:
 		}
-		if out.NFO != nil {
-			res.NFOFound++
-		}
-		if err := p.repo.ApplyPostProcessing(ctx, pr.Release.ID, out); err != nil {
-			return res, fmt.Errorf("apply post-processing for %s: %w", pr.Release.GUID, err)
-		}
+	}
+	close(jobs)
+	wg.Wait()
+
+	if fatal != nil {
+		return res, fatal
+	}
+	if err := ctx.Err(); err != nil {
+		return res, err
 	}
 
 	p.log.Info("post-processing pass complete",
 		"processed", res.Processed, "renamed", res.Renamed,
-		"nfo_found", res.NFOFound, "failed", res.Failed)
+		"nfo_found", res.NFOFound, "failed", res.Failed,
+		"workers", workers)
 	return res, nil
 }
 

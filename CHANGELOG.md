@@ -79,6 +79,11 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   post-processing loop.
 
 ### Changed
+- Post-processing now processes releases concurrently (#33). A pass fans pending
+  releases out to a bounded worker pool (default ~half the NNTP connection
+  budget) instead of handling them one at a time, so a slow PAR2/NFO fetch on
+  one release no longer stalls the rest and the pending backlog drains far
+  faster. Per-release semantics and result counts are unchanged.
 - Release-building runs in its own loop (#18 follow-up). Previously assembly and
   release-building shared a loop (assemble-until-drained, then build), so a
   large parts backlog could keep the assembler busy and complete binaries never

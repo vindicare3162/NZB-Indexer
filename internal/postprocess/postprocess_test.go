@@ -2,6 +2,7 @@ package postprocess
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -365,4 +366,88 @@ type countingFetcher struct{ onFetch func() }
 func (c *countingFetcher) Body(_ context.Context, _ string) ([]byte, error) {
 	c.onFetch()
 	return nil, os.ErrNotExist
+}
+
+// slowFetcher delays each fetch by delay (respecting ctx) to simulate a slow
+// provider, and returns a canned body per message-id.
+type slowFetcher struct {
+	delay  time.Duration
+	bodies map[string][]byte
+}
+
+func (f *slowFetcher) Body(ctx context.Context, messageID string) ([]byte, error) {
+	select {
+	case <-time.After(f.delay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if b, ok := f.bodies[messageID]; ok {
+		return b, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+// TestPostProcessRunsReleasesConcurrently verifies that releases are processed
+// in parallel (a slow fetch on one release does not serialise the others) and
+// that the aggregated counts remain correct (#33).
+func TestPostProcessRunsReleasesConcurrently(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+	g, _ := st.UpsertGroup(ctx, "alt.binaries.conc", true)
+
+	// Seed N independent single-file releases, each with a subject-hinted PAR2
+	// segment whose body recovers a distinct real name.
+	const n = 8
+	bodies := map[string][]byte{}
+	for i := 0; i < n; i++ {
+		base := fmt.Sprintf("obfN%d", i)
+		par2Msg := fmt.Sprintf("conc-par2-%d@x", i)
+		parts := []store.PartInput{
+			{GroupID: g.ID, ArticleNumber: int64(1000 + i*2), MessageID: fmt.Sprintf("conc-data-%d@x", i),
+				Subject: fmt.Sprintf(`"%s.par2" yEnc (1/2)`, base), Poster: "p", Bytes: 500,
+				PartNumber: 1, TotalParts: 2, NormSubject: base},
+			{GroupID: g.ID, ArticleNumber: int64(1001 + i*2), MessageID: par2Msg,
+				Subject: fmt.Sprintf(`"%s.par2" yEnc (2/2)`, base), Poster: "p", Bytes: 500,
+				PartNumber: 2, TotalParts: 2, NormSubject: base},
+		}
+		if _, err := st.InsertParts(ctx, parts); err != nil {
+			t.Fatal(err)
+		}
+		bodies[par2Msg] = encodeYenc(base+".par2",
+			buildFileDescPacket(fmt.Sprintf("Recovered.Show.S01E%02d.1080p.WEB.mkv", i)))
+		bodies[fmt.Sprintf("conc-data-%d@x", i)] = encodeYenc(base, []byte("media"))
+	}
+	if _, err := st.AssembleBinaries(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := release.New(st, nil, release.Options{BatchLimit: 100}).Build(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	const delay = 200 * time.Millisecond
+	fetch := &slowFetcher{delay: delay, bodies: bodies}
+	// 4 workers over 8 releases -> ~2 sequential waves; each release does ~2
+	// fetches. Sequential would be ~n*2*delay = 3.2s; concurrent should be far
+	// less.
+	p := New(fetch, st, nil, Options{BatchLimit: 100, MaxFetchPerRelease: 3, Concurrency: 4})
+
+	start := time.Now()
+	res, err := p.Run(ctx)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if res.Processed != n {
+		t.Errorf("processed = %d, want %d", res.Processed, n)
+	}
+	if res.Renamed != n {
+		t.Errorf("renamed = %d, want %d (each release recovers a name)", res.Renamed, n)
+	}
+	// Sequential lower bound would be ~n*delay (one fetch each, at minimum).
+	// With 4 workers it must be well under that; allow generous slack for CI.
+	if elapsed >= time.Duration(n)*delay {
+		t.Errorf("elapsed %v >= sequential lower bound %v: releases were not processed concurrently",
+			elapsed, time.Duration(n)*delay)
+	}
 }

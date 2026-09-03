@@ -83,6 +83,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		BatchLimit:         200,
 		MaxFetchPerRelease: 4,
 		FetchTimeout:       30 * time.Second,
+		// Process releases in parallel, using up to half the NNTP connection
+		// budget so scanning/assembly still have connections available.
+		Concurrency: ppConcurrency(cfg.NNTP.MaxConns),
 	})
 	nzbGen := nzb.NewGenerator(st)
 
@@ -174,6 +177,20 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	cancelWorker()
 	logger.Info("goindex stopped")
 	return nil
+}
+
+// ppConcurrency chooses how many releases to post-process in parallel: about
+// half the NNTP connection budget, bounded to [1, 4], so scanning and assembly
+// still have connections available.
+func ppConcurrency(maxConns int) int {
+	n := maxConns / 2
+	if n < 1 {
+		n = 1
+	}
+	if n > 4 {
+		n = 4
+	}
+	return n
 }
 
 // serverToNNTPConfig converts a stored news server into an nntp.Config.
