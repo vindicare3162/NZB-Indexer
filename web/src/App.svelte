@@ -1,5 +1,5 @@
 <script>
-  import { session, logout, isAdmin } from './lib/session.svelte.js';
+  import { session, logout, isAdmin, hydrate } from './lib/session.svelte.js';
   import { route, navigate } from './lib/router.svelte.js';
   import { api } from './lib/api.js';
   import Login from './routes/Login.svelte';
@@ -18,6 +18,10 @@
       api.setupStatus()
         .then((s) => { setupRequired = !!(s && s.setup_required); })
         .catch(() => { setupRequired = false; });
+    } else if (!session.role) {
+      // Authenticated from a stored token but role not yet known (e.g. after a
+      // page reload): restore it so the Admin nav doesn't disappear.
+      hydrate();
     }
   });
 
