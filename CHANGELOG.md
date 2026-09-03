@@ -6,6 +6,15 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Added
+- Database backup and recovery scripts (#76): `scripts/backup.sh` produces a
+  compressed, restore-friendly `pg_dump` (custom format) from the running
+  Compose stack with optional retention pruning, and `scripts/restore.sh`
+  restores a dump (`pg_restore --clean --if-exists`) with a confirmation
+  prompt. The README documents manual use, cron scheduling, retention, and the
+  destructive-restore caveat. The dump/restore round-trip is verified against
+  PostgreSQL 18.
+
 ### Changed
 - Upgraded the bundled database image from PostgreSQL 16 to **18**
   (`postgres:18-alpine`) for the newer major's performance work, notably the
