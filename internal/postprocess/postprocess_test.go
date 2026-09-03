@@ -153,32 +153,108 @@ func TestPostProcessRenamesFromPar2AndStoresNFO(t *testing.T) {
 	}
 }
 
-func TestPostProcessMarksFailedOnFetchError(t *testing.T) {
+func TestPostProcessMarksFailedForRetryOnFetchError(t *testing.T) {
 	st := freshStore(t)
 	ctx := context.Background()
 	guid, par2MsgID, nfoMsgID := seedObfuscatedRelease(t, st)
 
-	// Fetch always errors -> no name, no NFO. This is not a hard failure (the
-	// processor treats missing PAR2/NFO as "nothing to recover"), so the
-	// release should end up 'done' with no rename. Verify graceful handling.
+	// Every needed fetch errors and nothing is recovered: this is treated as a
+	// transient failure, so the release is marked 'failed' (retryable) rather
+	// than 'done' — otherwise a transient blip would permanently lose the name.
 	fetch := &fakeFetcher{err: map[string]error{
 		par2MsgID: os.ErrDeadlineExceeded,
 		nfoMsgID:  os.ErrDeadlineExceeded,
 	}}
 	p := New(fetch, st, nil, Options{BatchLimit: 100})
-	if _, err := p.Run(ctx); err != nil {
+	res, err := p.Run(ctx)
+	if err != nil {
 		t.Fatalf("run: %v", err)
+	}
+	if res.Failed != 1 {
+		t.Errorf("Failed = %d, want 1", res.Failed)
 	}
 	rel, err := st.GetReleaseByGUID(ctx, guid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No PAR2/NFO recovered, but processing completed cleanly.
-	if rel.PPStatus != store.PPDone {
-		t.Errorf("pp_status = %q, want done (missing PAR2/NFO is not fatal)", rel.PPStatus)
+	if rel.PPStatus != store.PPFailed {
+		t.Errorf("pp_status = %q, want failed (retryable)", rel.PPStatus)
 	}
-	if rel.NFO != nil {
-		t.Errorf("expected no NFO, got %q", *rel.NFO)
+}
+
+// TestPostProcessRetriesTransientFailureThenRecovers verifies the retry path:
+// a release whose PAR2 fetch fails on the first pass is retried on a later pass
+// and, once the fetch succeeds, recovers its name.
+func TestPostProcessRetriesTransientFailureThenRecovers(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+	guid, par2MsgID, _ := seedObfuscatedRelease(t, st)
+
+	par2Body := encodeYenc("abc.par2", buildFileDescPacket("Recovered.Name.2024.1080p.BluRay.x264-GRP.mkv"))
+
+	// First pass: the PAR2 fetch errors -> release marked failed (retryable).
+	failing := &fakeFetcher{err: map[string]error{par2MsgID: os.ErrDeadlineExceeded}}
+	p1 := New(failing, st, nil, Options{BatchLimit: 100})
+	if _, err := p1.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rel, _ := st.GetReleaseByGUID(ctx, guid)
+	if rel.PPStatus != store.PPFailed {
+		t.Fatalf("after first pass pp_status = %q, want failed", rel.PPStatus)
+	}
+
+	// Second pass: the same PAR2 now fetches successfully. The failed release
+	// must be re-queued and recover its name.
+	working := &fakeFetcher{bodies: map[string][]byte{par2MsgID: par2Body}}
+	p2 := New(working, st, nil, Options{BatchLimit: 100, MaxFetchPerRelease: 5})
+	res, err := p2.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 1 {
+		t.Errorf("second pass Renamed = %d, want 1 (retry should recover)", res.Renamed)
+	}
+	rel, _ = st.GetReleaseByGUID(ctx, guid)
+	if rel.PPStatus != store.PPDone {
+		t.Errorf("after retry pp_status = %q, want done", rel.PPStatus)
+	}
+	if rel.Name != "Recovered.Name.2024.1080p.BluRay.x264-GRP" {
+		t.Errorf("recovered name = %q", rel.Name)
+	}
+}
+
+// TestPostProcessStopsRetryingAfterMaxAttempts verifies retries are bounded: a
+// release whose fetch always fails is retried up to MaxPPAttempts and then no
+// longer re-queued.
+func TestPostProcessStopsRetryingAfterMaxAttempts(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+	guid, par2MsgID, nfoMsgID := seedObfuscatedRelease(t, st)
+
+	failing := &fakeFetcher{err: map[string]error{
+		par2MsgID: os.ErrDeadlineExceeded,
+		nfoMsgID:  os.ErrDeadlineExceeded,
+	}}
+	p := New(failing, st, nil, Options{BatchLimit: 100})
+
+	// Run enough passes to exhaust the retry budget.
+	for i := 0; i < store.MaxPPAttempts+2; i++ {
+		if _, err := p.Run(ctx); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+	// Once attempts reach the cap the release is no longer re-queued: a further
+	// pass processes nothing.
+	res, err := p.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Processed != 0 {
+		t.Errorf("processed = %d after exhausting retries, want 0 (not re-queued)", res.Processed)
+	}
+	rel, _ := st.GetReleaseByGUID(ctx, guid)
+	if rel.PPStatus != store.PPFailed {
+		t.Errorf("pp_status = %q, want failed (exhausted)", rel.PPStatus)
 	}
 }
 
@@ -227,8 +303,11 @@ func TestPostProcessBoundsHungFetch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rel.PPStatus != store.PPDone {
-		t.Errorf("pp_status = %q, want done", rel.PPStatus)
+	// The hung fetch times out (an error), so nothing is recovered and the
+	// release is marked failed (retryable) rather than done. The point of this
+	// test is that the pass completed promptly despite the hang.
+	if rel.PPStatus != store.PPFailed {
+		t.Errorf("pp_status = %q, want failed (retryable after a timed-out fetch)", rel.PPStatus)
 	}
 }
 

@@ -13,21 +13,42 @@ type PendingRelease struct {
 	Segments []PartSegment
 }
 
-// ListPendingReleases returns releases whose post-processing status is
-// 'pending', newest first, up to limit, each with its part segments attached
-// so the post-processor can locate PAR2/NFO articles.
+// MaxPPAttempts bounds how many times a release is retried through
+// post-processing before it is left failed. It covers transient fetch failures
+// without retrying genuinely-unrecoverable releases forever.
+const MaxPPAttempts = 3
+
+// ListPendingReleases returns releases due for post-processing: those still
+// 'pending', plus 'failed' releases that have not yet exhausted their retry
+// budget (a previous pass hit a transient fetch failure). It atomically
+// increments pp_attempts for each release it returns, so concurrent workers and
+// overlapping passes do not process the same release repeatedly, and a release
+// that keeps failing eventually stops being retried. Each release comes with
+// its part segments attached so the post-processor can locate PAR2/NFO articles.
 func (s *Store) ListPendingReleases(ctx context.Context, limit int) ([]PendingRelease, error) {
 	if limit <= 0 {
 		limit = 100
 	}
+	// Claim a batch of due releases and bump their attempt counter in one
+	// statement. 'pending' releases are always due; 'failed' ones are retried
+	// until they reach MaxPPAttempts.
 	rows, err := s.pool.Query(ctx, `
-SELECT id, guid, name, original_subject, search_name, category_id, group_id, binary_id,
-       poster, total_parts, size_bytes, posted_at, release_hash, pp_status,
-       nfo, grabs, created_at, updated_at
-FROM releases
-WHERE pp_status = 'pending'
-ORDER BY created_at DESC
-LIMIT $1`, limit)
+WITH due AS (
+    SELECT id
+    FROM releases
+    WHERE pp_status = 'pending'
+       OR (pp_status = 'failed' AND pp_attempts < $2)
+    ORDER BY (pp_status = 'pending') DESC, created_at DESC
+    LIMIT $1
+)
+UPDATE releases r
+SET pp_attempts = r.pp_attempts + 1, updated_at = now()
+FROM due
+WHERE r.id = due.id
+RETURNING r.id, r.guid, r.name, r.original_subject, r.search_name, r.category_id,
+          r.group_id, r.binary_id, r.poster, r.total_parts, r.size_bytes,
+          r.posted_at, r.release_hash, r.pp_status, r.nfo, r.grabs,
+          r.created_at, r.updated_at`, limit, MaxPPAttempts)
 	if err != nil {
 		return nil, fmt.Errorf("list pending releases: %w", err)
 	}

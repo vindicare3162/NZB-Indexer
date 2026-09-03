@@ -120,11 +120,12 @@ func (p *Processor) Run(ctx context.Context) (Result, error) {
 			if ctx.Err() != nil {
 				return
 			}
-			out, perr := p.processOne(ctx, pr)
-			if perr != nil {
-				// Missing/unfetchable PAR2/NFO is not fatal; mark failed so the
-				// release is not retried forever, and continue.
-				p.log.Warn("post-processing failed", "release", pr.Release.GUID, "err", perr)
+			out, retry := p.processOne(ctx, pr)
+			if retry {
+				// A needed fetch errored and nothing was recovered — likely a
+				// transient failure. Mark failed; it will be retried on a later
+				// pass until MaxPPAttempts is reached (tracked in the store).
+				p.log.Warn("post-processing fetch failed; will retry", "release", pr.Release.GUID)
 				mu.Lock()
 				res.Processed++
 				res.Failed++
@@ -201,13 +202,14 @@ sendLoop:
 //     base64 with no real words) and PAR2 was not already recovered, probe the
 //     remaining segments and identify PAR2 by its file magic rather than the
 //     subject. This is what recovers real names for obfuscated releases.
-func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (store.ReleasePPResult, error) {
+func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (store.ReleasePPResult, bool) {
 	var res store.ReleasePPResult
 
 	par2Segs, nfoSegs, otherSegs := classifySegments(pr.Segments)
 
 	fetched := 0
 	budget := p.opts.MaxFetchPerRelease
+	fetchErr := false // a fetch we attempted actually errored (transient/retryable)
 
 	fetchDecoded := func(messageID string) ([]byte, bool) {
 		if fetched >= budget {
@@ -219,6 +221,7 @@ func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (st
 		body, err := p.fetch.Body(fctx, messageID)
 		cancel()
 		if err != nil {
+			fetchErr = true
 			return nil, false
 		}
 		decoded, err := DecodeYenc(body)
@@ -288,7 +291,11 @@ func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (st
 		}
 	}
 
-	return res, nil
+	// Report a retry signal: nothing was recovered but a fetch we attempted
+	// errored, so this is likely a transient failure worth retrying rather than
+	// a release with nothing to recover.
+	retry := fetchErr && res.Name == "" && res.NFO == nil
+	return res, retry
 }
 
 // namefromPar2 parses PAR2 filenames from a decoded body and returns the best

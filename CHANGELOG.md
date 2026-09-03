@@ -54,6 +54,13 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   page shows a live, auto-refreshing log view.
 
 ### Fixed
+- Post-processing retries transient fetch failures instead of silently giving
+  up (#35). Previously a failed PAR2/NFO article fetch (timeout, connection
+  blip) was treated the same as "nothing to recover": the release was marked
+  `done` and never retried, silently losing recoverable names/NFOs on a busy
+  provider. A needed fetch that errors now marks the release retryable and it is
+  re-queued on later passes, bounded to a few attempts (tracked by a new
+  `pp_attempts` column) so genuinely-unrecoverable releases don't retry forever.
 - PAR2-recovered names no longer keep a volume suffix (#31). When recovering a
   name from PAR2, a part filename like `Show.S03E10.HDTV.XviD.part1.rar` was
   reduced only to `Show.S03E10.HDTV.XviD.part1` (the `.part1` was left behind),
