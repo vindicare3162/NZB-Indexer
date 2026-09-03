@@ -99,11 +99,11 @@ func TestBuildCreatesReleasesWithCategoryAndDedup(t *testing.T) {
 			got[name] = *cat
 		}
 	}
-	if got["Great.Movie.2024.1080p.BluRay.x264-GRP"] != CatMovies {
-		t.Errorf("movie category = %d, want %d", got["Great.Movie.2024.1080p.BluRay.x264-GRP"], CatMovies)
+	if got["Great.Movie.2024.1080p.BluRay.x264-GRP"] != CatMoviesHD {
+		t.Errorf("movie category = %d, want %d (Movies HD)", got["Great.Movie.2024.1080p.BluRay.x264-GRP"], CatMoviesHD)
 	}
-	if got["Some.Show.S01E01.1080p.WEB.x264-GRP"] != CatTV {
-		t.Errorf("tv category = %d, want %d", got["Some.Show.S01E01.1080p.WEB.x264-GRP"], CatTV)
+	if got["Some.Show.S01E01.1080p.WEB.x264-GRP"] != CatTVHD {
+		t.Errorf("tv category = %d, want %d (TV HD)", got["Some.Show.S01E01.1080p.WEB.x264-GRP"], CatTVHD)
 	}
 
 	// Binaries should now be marked released.

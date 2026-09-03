@@ -96,6 +96,10 @@ type ReleasePPResult struct {
 	Name string
 	// SearchName is the normalized search form of Name.
 	SearchName string
+	// CategoryID, when non-nil, replaces the release category. Post-processing
+	// sets this when a recovered name yields a better categorization than the
+	// (possibly obfuscated) name the release was built with.
+	CategoryID *int
 	// NFO, when non-nil, is stored as the release NFO text.
 	NFO *string
 	// Files, when non-empty, are stored as release_files.
@@ -124,6 +128,13 @@ func (s *Store) ApplyPostProcessing(ctx context.Context, id int64, res ReleasePP
 			`UPDATE releases SET name = $2, search_name = $3, updated_at = now() WHERE id = $1`,
 			id, res.Name, res.SearchName); err != nil {
 			return fmt.Errorf("rename release: %w", err)
+		}
+	}
+	if res.CategoryID != nil {
+		if _, err := tx.Exec(ctx,
+			`UPDATE releases SET category_id = $2, updated_at = now() WHERE id = $1`,
+			id, *res.CategoryID); err != nil {
+			return fmt.Errorf("recategorize release: %w", err)
 		}
 	}
 	if res.NFO != nil {

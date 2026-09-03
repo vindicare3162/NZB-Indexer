@@ -7,11 +7,16 @@ func TestCategorize(t *testing.T) {
 		name string
 		want int
 	}{
-		{"Some.Show.S01E01.1080p.WEB.x264-GRP", CatTV},
-		{"Another Show 2x05 HDTV XviD", CatTV},
-		{"Cool.Series.Season.2.Complete.720p", CatTV},
-		{"Great.Movie.2024.1080p.BluRay.x264-GRP", CatMovies},
-		{"Old Film 1998 DVDRip XviD", CatMovies},
+		// TV, refined to SD/HD/UHD by resolution.
+		{"Some.Show.S01E01.1080p.WEB.x264-GRP", CatTVHD},
+		{"Some.Show.S01E01.2160p.WEB.x265-GRP", CatTVUHD},
+		{"Another Show 2x05 HDTV XviD", CatTVSD},
+		{"Cool.Series.Season.2.Complete.720p", CatTVHD},
+		{"Plain.Show.S03E04-GRP", CatTVHD}, // no resolution -> HD default
+		// Movies, refined to SD/HD/UHD by resolution.
+		{"Great.Movie.2024.1080p.BluRay.x264-GRP", CatMoviesHD},
+		{"Huge.Movie.2024.2160p.UHD.BluRay.x265", CatMoviesUHD},
+		{"Old Film 1998 DVDRip XviD", CatMoviesSD},
 		{"Artist - Album (2021) [FLAC]", CatAudioLoss},
 		{"Various - Hits 2020 MP3 320kbps", CatAudioMP3},
 		{"Some Author - Novel Title (epub)", CatBooksEbook},
