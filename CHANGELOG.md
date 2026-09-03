@@ -7,6 +7,13 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Resolution-aware categorization (#23). Movies and TV releases are now filed
+  under their SD/HD/UHD subcategory (Movies 2030/2040/2045, TV 5030/5040/5045)
+  based on resolution tags in the name (2160p/4k -> UHD, 1080p/720p -> HD,
+  480p/DVDRip/SD -> SD; HD when unspecified), so Newznab clients can filter by
+  quality. Releases are also re-categorized when post-processing recovers a real
+  name, so an obfuscated release that started as "Other" gets the correct
+  category once its name is known.
 - Collection grouping for multi-file posts (#18). Multi-file Usenet posts of the
   form `[n/total] "name.partNN.rar"` (rar sets plus their PAR2) are now indexed
   as a single release containing every file's segments, instead of one bogus

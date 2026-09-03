@@ -74,14 +74,72 @@ var rules = []rule{
 	mustRule(`\b(ps[3-5]|playstation|xbox|xbox360|nintendo|switch|wii|nds|psp)\b`, CatConsole),
 }
 
+// Resolution tiers used to refine video categories.
+const (
+	resSD = iota
+	resHD
+	resUHD
+)
+
+var (
+	reResUHD = regexp.MustCompile(`(?i)\b(2160p|4320p|4k|8k|uhd)\b`)
+	reResHD  = regexp.MustCompile(`(?i)\b(1080p|1080i|720p|hd)\b`)
+	reResSD  = regexp.MustCompile(`(?i)\b(480p|576p|360p|sd|dvdrip|dvd|vhs|xvid|divx)\b`)
+)
+
+// resolutionTier classifies the resolution implied by a normalized name. When
+// no explicit resolution is present it defaults to HD, which is the most common
+// modern posting and the least surprising default for clients.
+func resolutionTier(s string) int {
+	switch {
+	case reResUHD.MatchString(s):
+		return resUHD
+	case reResHD.MatchString(s):
+		return resHD
+	case reResSD.MatchString(s):
+		return resSD
+	default:
+		return resHD
+	}
+}
+
+// refineVideoCategory maps a parent video category (Movies/TV) to its SD/HD/UHD
+// child based on the resolution tier. Non-video and already-specific categories
+// are returned unchanged.
+func refineVideoCategory(parent int, s string) int {
+	switch parent {
+	case CatMovies:
+		switch resolutionTier(s) {
+		case resUHD:
+			return CatMoviesUHD
+		case resSD:
+			return CatMoviesSD
+		default:
+			return CatMoviesHD
+		}
+	case CatTV:
+		switch resolutionTier(s) {
+		case resUHD:
+			return CatTVUHD
+		case resSD:
+			return CatTVSD
+		default:
+			return CatTVHD
+		}
+	default:
+		return parent
+	}
+}
+
 // Categorize returns the best-matching Newznab category ID for a release name.
-// The name is normalized via SearchName before matching. When nothing matches
-// it returns CatOther.
+// The name is normalized via SearchName before matching. A Movies or TV match
+// is refined to its SD/HD/UHD subcategory using resolution tags. When nothing
+// matches it returns CatOther.
 func Categorize(name string) int {
 	s := SearchName(name)
 	for _, r := range rules {
 		if r.re.MatchString(s) {
-			return r.cat
+			return refineVideoCategory(r.cat, s)
 		}
 	}
 	return CatOther

@@ -178,6 +178,13 @@ func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (st
 		}
 	}
 
+	// When a real name was recovered, re-categorize from it: the release may
+	// have been built (and categorized) from an obfuscated name.
+	if res.Name != "" {
+		cat := release.Categorize(res.Name)
+		res.CategoryID = &cat
+	}
+
 	// (3) NFO text.
 	for _, seg := range nfoSegs {
 		if fetched >= budget {

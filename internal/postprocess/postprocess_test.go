@@ -132,6 +132,15 @@ func TestPostProcessRenamesFromPar2AndStoresNFO(t *testing.T) {
 	if rel.NFO == nil || *rel.NFO == "" {
 		t.Error("expected NFO text to be stored")
 	}
+	// The recovered name ("...2024.1080p.BluRay.x264...") must re-categorize
+	// the release to Movies HD, rather than staying whatever it was built with.
+	if rel.CategoryID == nil || *rel.CategoryID != release.CatMoviesHD {
+		got := 0
+		if rel.CategoryID != nil {
+			got = *rel.CategoryID
+		}
+		t.Errorf("category after recovery = %d, want %d (Movies HD)", got, release.CatMoviesHD)
+	}
 
 	// Re-running should find nothing pending.
 	res2, err := p.Run(ctx)
