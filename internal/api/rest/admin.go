@@ -2,10 +2,13 @@ package rest
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/vindicare/goindex/internal/auth"
+	"github.com/vindicare/goindex/internal/logbuf"
 	"github.com/vindicare/goindex/internal/store"
 )
 
@@ -315,4 +318,38 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, a.jobs.Status())
+}
+
+func (a *API) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if a.logs == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	q := r.URL.Query()
+	limit := parseIntDefault(q.Get("limit"), 200)
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	var minLevel *slog.Level
+	switch strings.ToLower(q.Get("level")) {
+	case "debug":
+		l := slog.LevelDebug
+		minLevel = &l
+	case "info":
+		l := slog.LevelInfo
+		minLevel = &l
+	case "warn", "warning":
+		l := slog.LevelWarn
+		minLevel = &l
+	case "error":
+		l := slog.LevelError
+		minLevel = &l
+	}
+
+	entries := a.logs.Recent(limit, minLevel)
+	if entries == nil {
+		entries = []logbuf.Entry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
 }

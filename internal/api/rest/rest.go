@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/vindicare/goindex/internal/auth"
+	"github.com/vindicare/goindex/internal/logbuf"
 	"github.com/vindicare/goindex/internal/store"
 )
 
@@ -48,6 +49,14 @@ type NZBGenerator interface {
 	ForGUID(ctx context.Context, guid string) (data []byte, filename string, err error)
 }
 
+// LogSource exposes recent captured log entries for the admin log view. A nil
+// source disables the logs endpoint.
+type LogSource interface {
+	// Recent returns up to limit newest-first entries at or above minLevel
+	// (minLevel nil = all levels).
+	Recent(limit int, minLevel *slog.Level) []logbuf.Entry
+}
+
 // ServerManager applies the currently-active news server to the running NNTP
 // pool. The server package implements it; a nil manager means server changes
 // take effect only on restart.
@@ -82,17 +91,19 @@ type API struct {
 	authn   Authenticator
 	jobs    JobController
 	servers ServerManager
+	logs    LogSource
 	session *auth.Service
 	log     *slog.Logger
 }
 
-// New creates a REST API. servers may be nil, in which case news-server changes
-// take effect only on the next restart.
-func New(st Store, nzb NZBGenerator, authn Authenticator, session *auth.Service, jobs JobController, servers ServerManager, log *slog.Logger) *API {
+// New creates a REST API. servers and logs may be nil, disabling their
+// respective endpoints (server changes then apply only on restart; the log
+// view returns empty).
+func New(st Store, nzb NZBGenerator, authn Authenticator, session *auth.Service, jobs JobController, servers ServerManager, logs LogSource, log *slog.Logger) *API {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &API{store: st, nzb: nzb, authn: authn, jobs: jobs, servers: servers, session: session, log: log}
+	return &API{store: st, nzb: nzb, authn: authn, jobs: jobs, servers: servers, logs: logs, session: session, log: log}
 }
 
 // Routes returns the REST API mux mounted under /api/v1.
@@ -130,6 +141,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/v1/admin/scan", admin(http.HandlerFunc(a.handleTriggerScan)))
 	mux.Handle("POST /api/v1/admin/backfill", admin(http.HandlerFunc(a.handleTriggerBackfill)))
 	mux.Handle("GET /api/v1/admin/status", admin(http.HandlerFunc(a.handleStatus)))
+	mux.Handle("GET /api/v1/admin/logs", admin(http.HandlerFunc(a.handleLogs)))
 
 	return mux
 }

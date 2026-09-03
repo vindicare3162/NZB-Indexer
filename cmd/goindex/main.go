@@ -17,6 +17,7 @@ import (
 
 	"github.com/vindicare/goindex/internal/auth"
 	"github.com/vindicare/goindex/internal/config"
+	"github.com/vindicare/goindex/internal/logbuf"
 	"github.com/vindicare/goindex/internal/nntp"
 	"github.com/vindicare/goindex/internal/server"
 	"github.com/vindicare/goindex/internal/store"
@@ -91,7 +92,10 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	logger := newLogger(cfg.LogLevel)
+	// A bounded in-memory log buffer captures recent entries for the admin UI,
+	// alongside the usual stderr output.
+	logs := logbuf.New(2000)
+	logger := newLoggerWithBuffer(cfg.LogLevel, logs)
 	logger.Info("goindex starting", "version", version)
 	for _, line := range strings.Split(cfg.Summary(), "\n") {
 		logger.Info(line)
@@ -101,7 +105,7 @@ func runServe(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return server.Run(ctx, cfg, logger)
+	return server.Run(ctx, cfg, logger, logs)
 }
 
 // newLogger builds a slog logger at the configured level, writing text to
@@ -120,6 +124,25 @@ func newLogger(level string) *slog.Logger {
 	}
 	h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl})
 	return slog.New(h)
+}
+
+// newLoggerWithBuffer builds a logger that writes to stderr and also captures
+// records into the given in-memory buffer for the admin log view.
+func newLoggerWithBuffer(level string, buf *logbuf.Buffer) *slog.Logger {
+	var lvl slog.Level
+	switch level {
+	case "debug":
+		lvl = slog.LevelDebug
+	case "warn":
+		lvl = slog.LevelWarn
+	case "error":
+		lvl = slog.LevelError
+	default:
+		lvl = slog.LevelInfo
+	}
+	stderr := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl})
+	multi := logbuf.NewMultiHandler(stderr, buf.NewHandler())
+	return slog.New(multi)
 }
 
 // runMigrate applies or rolls back database migrations.

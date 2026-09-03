@@ -5,6 +5,9 @@
   let users = $state([]);
   let servers = $state([]);
   let status = $state(null);
+  let logs = $state([]);
+  let logLevel = $state('');
+  let logTimer = null;
   let newGroup = $state('');
   let newUser = $state({ username: '', password: '', admin: false });
   let newServer = $state({ name: '', host: '', port: 563, tls: true, username: '', password: '', max_conns: 10, priority: 0, enabled: true });
@@ -16,6 +19,27 @@
     api.users().then((u) => { users = u || []; }).catch((e) => { error = e.message; });
     api.servers().then((s) => { servers = s || []; }).catch((e) => { error = e.message; });
     api.status().then((s) => { status = s; }).catch(() => {});
+    loadLogs();
+  }
+
+  function loadLogs() {
+    api.logs(logLevel, 200).then((l) => { logs = l || []; }).catch(() => {});
+  }
+
+  // Auto-refresh logs every 5s while the admin page is mounted.
+  $effect(() => {
+    logTimer = setInterval(loadLogs, 5000);
+    return () => clearInterval(logTimer);
+  });
+
+  function fmtTime(s) {
+    if (!s) return '';
+    return new Date(s).toLocaleTimeString();
+  }
+  function levelClass(lvl) {
+    if (lvl && lvl.startsWith('ERROR')) return 'error';
+    if (lvl && lvl.startsWith('WARN')) return 'muted';
+    return '';
   }
 
   async function addServer() {
@@ -185,5 +209,38 @@
     <pre style="overflow:auto; font-size:0.8rem">{JSON.stringify(status, null, 2)}</pre>
   {:else}
     <p class="muted">No status available.</p>
+  {/if}
+</div>
+
+<div class="panel">
+  <div class="row" style="justify-content:space-between">
+    <h3 style="margin:0">Logs</h3>
+    <div class="row">
+      <select bind:value={logLevel} onchange={loadLogs}>
+        <option value="">All levels</option>
+        <option value="info">Info+</option>
+        <option value="warn">Warn+</option>
+        <option value="error">Error only</option>
+      </select>
+      <button class="secondary" onclick={loadLogs}>Refresh</button>
+    </div>
+  </div>
+  {#if logs.length === 0}
+    <p class="muted" style="margin-bottom:0">No log entries.</p>
+  {:else}
+    <div style="max-height:360px; overflow:auto; font-family:monospace; font-size:0.78rem; margin-top:0.6rem">
+      {#each logs as e}
+        <div class={levelClass(e.level)} style="padding:0.15rem 0; border-bottom:1px solid var(--border)">
+          <span class="muted">{fmtTime(e.time)}</span>
+          <span style="display:inline-block; width:52px">{e.level}</span>
+          {e.message}
+          {#if e.attrs}
+            {#each Object.entries(e.attrs) as [k, v]}
+              <span class="muted"> {k}={v}</span>
+            {/each}
+          {/if}
+        </div>
+      {/each}
+    </div>
   {/if}
 </div>

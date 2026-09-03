@@ -16,6 +16,7 @@ import (
 	"github.com/vindicare/goindex/internal/assembler"
 	"github.com/vindicare/goindex/internal/auth"
 	"github.com/vindicare/goindex/internal/config"
+	"github.com/vindicare/goindex/internal/logbuf"
 	"github.com/vindicare/goindex/internal/nntp"
 	"github.com/vindicare/goindex/internal/postprocess"
 	"github.com/vindicare/goindex/internal/release"
@@ -28,7 +29,7 @@ import (
 
 // Run builds and runs the full server until ctx is cancelled, then shuts down
 // gracefully. It applies migrations on startup.
-func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logbuf.Buffer) error {
 	// 1. Database: migrate then open a pool.
 	dsn := cfg.Database.DSNString()
 	logger.Info("applying database migrations")
@@ -104,7 +105,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		DefaultLimit: 100,
 	})
 	srvMgr := &serverManager{store: st, pool: pool, connectTimeout: cfg.NNTP.ConnectTimeout, log: logger}
-	restAPI := rest.New(st, nzbGen, authSvc, authSvc, wrk, srvMgr, logger)
+	restAPI := rest.New(st, nzbGen, authSvc, authSvc, wrk, srvMgr, logs, logger)
 
 	spa, err := web.Handler()
 	if err != nil {
