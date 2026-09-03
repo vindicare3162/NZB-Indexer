@@ -53,6 +53,8 @@ export class ApiError extends Error {
 
 export const api = {
   login: (username, password) => request('POST', '/login', { username, password }),
+  setupStatus: () => request('GET', '/setup/status'),
+  setup: (username, password) => request('POST', '/setup', { username, password }),
   me: () => request('GET', '/me'),
   categories: () => request('GET', '/categories'),
   search: ({ q = '', cat = '', limit = 50, offset = 0 } = {}) => {

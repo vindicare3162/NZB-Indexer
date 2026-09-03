@@ -27,6 +27,7 @@ type mockStore struct {
 	users     []store.User
 	keys      []store.APIKey
 	servers2  []store.Server
+	userCount int64
 
 	createdGroup  string
 	deletedGroup  int64
@@ -75,6 +76,7 @@ func (m *mockStore) SetGroupBackfillTarget(_ context.Context, id int64, days *in
 	m.backfillArticles = articles
 	return nil
 }
+func (m *mockStore) CountUsers(context.Context) (int64, error) { return m.userCount, nil }
 func (m *mockStore) ListUsers(context.Context) ([]store.User, error) { return m.users, nil }
 func (m *mockStore) CreateUser(_ context.Context, in store.CreateUserInput) (store.User, error) {
 	m.createdUser = in.Username
@@ -236,6 +238,69 @@ func TestLogin(t *testing.T) {
 	rec = do(t, env, http.MethodPost, "/api/v1/login", "", loginRequest{Username: "admin", Password: "nope"})
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("bad login status = %d, want 401", rec.Code)
+	}
+}
+
+func TestSetupStatus(t *testing.T) {
+	env := setup(t)
+
+	// With no users, setup is required.
+	env.store.userCount = 0
+	rec := do(t, env, http.MethodGet, "/api/v1/setup/status", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var resp map[string]bool
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if !resp["setup_required"] {
+		t.Error("expected setup_required=true when no users")
+	}
+
+	// With users, setup is not required.
+	env.store.userCount = 1
+	rec = do(t, env, http.MethodGet, "/api/v1/setup/status", "", nil)
+	resp = nil
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["setup_required"] {
+		t.Error("expected setup_required=false when users exist")
+	}
+}
+
+func TestSetupCreatesFirstAdmin(t *testing.T) {
+	env := setup(t)
+	env.store.userCount = 0 // fresh instance
+
+	rec := do(t, env, http.MethodPost, "/api/v1/setup", "",
+		loginRequest{Username: "firstadmin", Password: "password123"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup status = %d, body=%s", rec.Code, rec.Body)
+	}
+	if env.store.createdUser != "firstadmin" {
+		t.Errorf("created user = %q, want firstadmin", env.store.createdUser)
+	}
+}
+
+func TestSetupRejectedOnceUsersExist(t *testing.T) {
+	env := setup(t)
+	env.store.userCount = 1 // already set up
+
+	rec := do(t, env, http.MethodPost, "/api/v1/setup", "",
+		loginRequest{Username: "sneaky", Password: "password123"})
+	if rec.Code != http.StatusConflict {
+		t.Errorf("setup status = %d, want 409 when users already exist", rec.Code)
+	}
+	if env.store.createdUser == "sneaky" {
+		t.Error("must not create a user when setup already completed (privilege escalation)")
+	}
+}
+
+func TestSetupRejectsShortPassword(t *testing.T) {
+	env := setup(t)
+	env.store.userCount = 0
+	rec := do(t, env, http.MethodPost, "/api/v1/setup", "",
+		loginRequest{Username: "admin", Password: "short"})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for short password", rec.Code)
 	}
 }
 
