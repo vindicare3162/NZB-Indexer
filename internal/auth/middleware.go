@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // ctxKey is the private type for context values set by this package.
@@ -67,12 +69,32 @@ func (s *Service) RequireAPIKey(next http.Handler) http.Handler {
 		p, err := s.AuthenticateAPIKey(r.Context(), apiKey)
 		switch {
 		case errors.Is(err, ErrRateLimited):
+			// Tell the client when to retry so it backs off instead of hammering.
+			var rle *RateLimitedError
+			if errors.As(err, &rle) && !rle.ResetAt.IsZero() {
+				secs := int(time.Until(rle.ResetAt).Seconds())
+				if secs < 1 {
+					secs = 1
+				}
+				w.Header().Set("Retry-After", strconv.Itoa(secs))
+				w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(rle.ResetAt.Unix(), 10))
+			}
 			writeAuthError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		case err != nil:
 			// Newznab clients expect a 401 for a bad key.
 			writeAuthError(w, http.StatusUnauthorized, "invalid api key")
 			return
+		}
+		// Standard rate-limit headers on successful authenticated responses.
+		if p.RateLimit > 0 {
+			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(p.RateLimit))
+			if p.RateLimitRemaining >= 0 {
+				w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(p.RateLimitRemaining))
+			}
+			if !p.RateLimitReset.IsZero() {
+				w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(p.RateLimitReset.Unix(), 10))
+			}
 		}
 		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 	})

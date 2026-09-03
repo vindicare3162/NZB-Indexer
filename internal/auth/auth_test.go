@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -190,7 +192,7 @@ func TestServiceAuthenticateAPIKeyAndRateLimit(t *testing.T) {
 		}
 	}
 	// Third exceeds the limit.
-	if _, err := svc.AuthenticateAPIKey(ctx, "goodkey"); err != ErrRateLimited {
+	if _, err := svc.AuthenticateAPIKey(ctx, "goodkey"); !errors.Is(err, ErrRateLimited) {
 		t.Errorf("expected ErrRateLimited, got %v", err)
 	}
 	// Bad key.
@@ -276,6 +278,11 @@ func TestRequireAPIKeyMiddleware(t *testing.T) {
 			Key:  store.APIKey{ID: 5, Active: true},
 			User: store.User{ID: 9, Username: "svc", Role: store.RoleUser, Active: true},
 		},
+		// A key with a tiny per-key limit so we can trip the limiter.
+		"limitedkey": {
+			Key:  store.APIKey{ID: 6, Active: true},
+			User: store.User{ID: 10, Username: "lil", Role: store.RoleUser, RateLimit: 1, Active: true},
+		},
 	}}
 	rl := NewRateLimiter(time.Minute)
 	svc := newTestService(t, repo, rl, 100)
@@ -284,16 +291,37 @@ func TestRequireAPIKeyMiddleware(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// Valid key.
+	// Valid key -> 200 with rate-limit headers.
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?apikey=validkey&t=caps", nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("valid key: status = %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("X-RateLimit-Limit") != "100" {
+		t.Errorf("X-RateLimit-Limit = %q, want 100", rec.Header().Get("X-RateLimit-Limit"))
+	}
+	if rec.Header().Get("X-RateLimit-Remaining") == "" {
+		t.Error("expected X-RateLimit-Remaining header on success")
 	}
 	// Bad key -> 401.
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?apikey=nope", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("bad key: status = %d, want 401", rec.Code)
+	}
+
+	// Limited key: first request OK, second exceeds limit -> 429 with Retry-After.
+	req := httptest.NewRequest(http.MethodGet, "/api?apikey=limitedkey&t=caps", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?apikey=limitedkey&t=caps", nil))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("rate-limited: status = %d, want 429", rec.Code)
+	}
+	ra := rec.Header().Get("Retry-After")
+	if ra == "" {
+		t.Error("expected Retry-After header on 429")
+	} else if n, err := strconv.Atoi(ra); err != nil || n < 1 {
+		t.Errorf("Retry-After = %q, want a positive integer", ra)
 	}
 }
