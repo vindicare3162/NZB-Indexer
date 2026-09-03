@@ -54,6 +54,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   page shows a live, auto-refreshing log view.
 
 ### Fixed
+- Search now matches multi-word and tvsearch season/episode queries (#37).
+  Search matched the whole query as one contiguous substring, so a Sonarr
+  episode search (`q=<series>&season=S&ep=E`, sent to the store as e.g.
+  `saving s03e10`) never matched a real release name like
+  `saving grace s03e10 hdtv xvid`. The query is now tokenized and every token
+  must appear in the name (order-independent AND), so episode searches work.
 - Post-processing retries transient fetch failures instead of silently giving
   up (#35). Previously a failed PAR2/NFO article fetch (timeout, connection
   blip) was treated the same as "nothing to recover": the release was marked
