@@ -25,6 +25,14 @@ func TestCategorize(t *testing.T) {
 		{"Utility.Suite.v3.2.x64.Keygen", CatPC},
 		{"Racing.Game.PS5", CatConsole},
 		{"Totally Random Junk Post", CatOther},
+		// New subcategory coverage.
+		{"Stephen King - The Stand (Audiobook) m4b", CatAudiobook},
+		{"UFC 300 Main Card 1080p WEB h264", CatTVSport},
+		{"Formula 1 2024 Monaco Grand Prix 1080p", CatTVSport},
+		{"Planet Earth II Documentary 2016 1080p BluRay", CatTVDoc},
+		{"Attack.on.Titan.S04E28.1080p.Anime", CatTVAnime},
+		{"Batman - Detective Comics 001 (2023) cbr", CatBooksComics},
+		{"Great.Movie.2024.1080p.BluRay.x264.FRENCH-GRP", CatMoviesForeign},
 	}
 	for _, tt := range tests {
 		if got := Categorize(tt.name); got != tt.want {

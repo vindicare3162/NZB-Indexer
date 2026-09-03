@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/vindicare/goindex/internal/auth"
 	"github.com/vindicare/goindex/internal/store"
@@ -124,10 +125,13 @@ func (a *API) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := parseIntDefault(q.Get("offset"), 0)
 
+	// cat accepts a comma-separated list (e.g. "5030,5040"), matching the
+	// newznab handler, so clients like Sonarr/Radarr that request several
+	// categories are honoured. Invalid entries are ignored.
 	var cats []int
-	if c := q.Get("cat"); c != "" {
-		if n, err := strconv.Atoi(c); err == nil {
-			cats = []int{n}
+	for _, part := range strings.Split(q.Get("cat"), ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(part)); err == nil {
+			cats = append(cats, n)
 		}
 	}
 

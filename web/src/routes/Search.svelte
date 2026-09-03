@@ -17,6 +17,15 @@
     api.categories().then((c) => { categories = c || []; }).catch(() => {});
   });
 
+  // id -> name lookup so each result row can show its category without an
+  // extra request per row.
+  const catNames = $derived(new Map(categories.map((c) => [c.id, c.name])));
+
+  function catName(id) {
+    if (id == null) return '—';
+    return catNames.get(id) || `#${id}`;
+  }
+
   async function runSearch(newOffset = 0) {
     loading = true;
     error = '';
@@ -78,12 +87,13 @@
     {:else}
       <table>
         <thead>
-          <tr><th>Name</th><th>Size</th><th>Posted</th><th></th></tr>
+          <tr><th>Name</th><th>Category</th><th>Size</th><th>Posted</th><th></th></tr>
         </thead>
         <tbody>
           {#each releases as r}
             <tr>
               <td><a href={`#/release/${encodeURIComponent(r.guid)}`}>{r.name}</a></td>
+              <td class="muted">{catName(r.category_id)}</td>
               <td>{fmtSize(r.size_bytes)}</td>
               <td>{fmtDate(r.posted_at)}</td>
               <td><a href={api.nzbUrl(r.guid)}>NZB</a></td>
