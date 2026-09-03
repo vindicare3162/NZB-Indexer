@@ -119,6 +119,43 @@ tools are needed in the image.
 An Unraid Community Applications template is provided at
 [`docker/goindex.unraid.xml`](./docker/goindex.unraid.xml).
 
+## Backup and recovery
+
+Two helper scripts back up and restore the PostgreSQL database from the running
+Compose stack. Backups use `pg_dump` custom format (compressed and
+restore-friendly).
+
+Create a backup (written to `./backups` by default):
+
+```sh
+scripts/backup.sh
+# or choose a directory and keep 14 days of dumps:
+RETENTION_DAYS=14 scripts/backup.sh /var/backups/goindex
+```
+
+Schedule daily backups with cron (adjust paths):
+
+```cron
+0 3 * * * cd /opt/goindex && RETENTION_DAYS=14 scripts/backup.sh /var/backups/goindex >> /var/log/goindex-backup.log 2>&1
+```
+
+Restore a backup (**destructive** — overwrites the current database; stop the
+app first):
+
+```sh
+docker compose stop goindex
+scripts/restore.sh backups/goindex-goindex-20260101-030000.dump
+docker compose start goindex
+```
+
+Notes:
+- Dumps contain all indexed data and are not encrypted; store them somewhere
+  appropriate and secure the destination directory.
+- Restore drops and recreates the objects in the dump (`pg_restore --clean
+  --if-exists`); run it against a stopped app to avoid concurrent writes.
+- Both scripts honour `DB_SERVICE`, `DB_NAME`, `DB_USER`, and `COMPOSE`
+  overrides if your setup differs from the defaults.
+
 ## Architecture
 
 The pipeline stages are:
