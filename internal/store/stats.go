@@ -27,6 +27,17 @@ type PipelineStats struct {
 	// have exhausted their post-processing retry budget (pp_attempts >=
 	// MaxPPAttempts), i.e. permanently stuck rather than awaiting another retry.
 	ReleasesFailedExhausted int64 `json:"releases_failed_exhausted"`
+
+	// Groups is a per-group release breakdown (only groups that have releases),
+	// ordered by release count descending.
+	Groups []GroupReleaseStats `json:"groups"`
+}
+
+// GroupReleaseStats summarises one group's release counts.
+type GroupReleaseStats struct {
+	Name             string `json:"name"`
+	ReleasesTotal    int64  `json:"releases_total"`
+	ReleasesPending  int64  `json:"releases_pending"`
 }
 
 // PipelineStatistics returns a cheap snapshot of current pipeline depth.
@@ -93,5 +104,27 @@ FROM binaries`,
 	).Scan(&out.ReleasesFailedExhausted); err != nil {
 		return out, fmt.Errorf("count exhausted failed releases: %w", err)
 	}
-	return out, nil
+
+	// Per-group release breakdown from the (small) releases table joined to
+	// group names. A single grouped scan; cheap relative to the parts table.
+	grows, err := s.pool.Query(ctx, `
+SELECT g.name,
+       count(r.*)                                        AS total,
+       count(r.*) FILTER (WHERE r.pp_status = 'pending') AS pending
+FROM releases r
+JOIN groups g ON g.id = r.group_id
+GROUP BY g.name
+ORDER BY total DESC`)
+	if err != nil {
+		return out, fmt.Errorf("per-group release stats: %w", err)
+	}
+	defer grows.Close()
+	for grows.Next() {
+		var gs GroupReleaseStats
+		if err := grows.Scan(&gs.Name, &gs.ReleasesTotal, &gs.ReleasesPending); err != nil {
+			return out, fmt.Errorf("scan group stats: %w", err)
+		}
+		out.Groups = append(out.Groups, gs)
+	}
+	return out, grows.Err()
 }

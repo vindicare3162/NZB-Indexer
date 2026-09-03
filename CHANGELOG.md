@@ -7,6 +7,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Per-group release breakdown in the stats view (#47). `GET /api/v1/admin/stats`
+  now includes a `groups` array (per group: name, total releases, releases
+  pending post-processing), and the admin Pipeline-depth panel shows a
+  "Releases by group" table. Computed from the releases table (a single grouped
+  scan), so it stays cheap; raw per-group part backlog is intentionally excluded
+  as too expensive to poll.
 - "Retry failed post-processing" admin action (#45). Releases whose PAR2/NFO
   fetch exhausted the retry budget stay `failed`; an operator can now requeue
   all of them (reset to `pending`, `pp_attempts=0`) from the admin UI or

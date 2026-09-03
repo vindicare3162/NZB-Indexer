@@ -334,6 +334,37 @@ func TestPipelineStatistics(t *testing.T) {
 	if attempts != 0 {
 		t.Errorf("pp_attempts after requeue = %d, want 0", attempts)
 	}
+
+	// Per-group breakdown: create two releases in group g (one pending) and
+	// verify the Groups slice reflects them.
+	gid := g.ID
+	for i, st2 := range []string{"pending", "done"} {
+		guid := fmt.Sprintf("grp-rel-%d", i)
+		if _, _, err := st.CreateRelease(ctx, ReleaseInput{
+			GUID: guid, Name: guid, SearchName: guid, GroupID: &gid, CategoryID: &c, ReleaseHash: guid,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.Pool().Exec(ctx, `UPDATE releases SET pp_status=$2 WHERE guid=$1`, guid, st2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats4, err := st.PipelineStatistics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *GroupReleaseStats
+	for i := range stats4.Groups {
+		if stats4.Groups[i].Name == "alt.binaries.stats" {
+			found = &stats4.Groups[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("expected per-group stats for alt.binaries.stats")
+	}
+	if found.ReleasesTotal != 2 || found.ReleasesPending != 1 {
+		t.Errorf("group stats = %+v, want total=2 pending=1", *found)
+	}
 }
 
 // seedStatsParts inserts `collected` of `total` parts for a single-file binary.
