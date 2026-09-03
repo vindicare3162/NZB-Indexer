@@ -91,6 +91,10 @@ type ScanConfig struct {
 	// independently of scanning so a long scan cannot starve it. Zero defaults
 	// to Interval.
 	DownstreamInterval time.Duration `yaml:"downstream_interval"`
+	// BuildInterval is how often the release-build loop runs, independently of
+	// assembly so a large parts backlog cannot starve release promotion. Zero
+	// defaults to DownstreamInterval.
+	BuildInterval time.Duration `yaml:"build_interval"`
 	// PostProcessInterval is how often the post-process loop (obfuscated-name
 	// recovery, NFO capture) runs. It runs independently of both scanning and
 	// assemble/build, so a large parts backlog cannot starve name recovery.
@@ -149,6 +153,7 @@ func Default() Config {
 			BatchSize:           10000,
 			Interval:            15 * time.Minute,
 			DownstreamInterval:  5 * time.Minute,
+			BuildInterval:       2 * time.Minute,
 			PostProcessInterval: 5 * time.Minute,
 			ForwardMaxArticles:  1000000,
 			BackfillDays:        0,

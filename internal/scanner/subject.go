@@ -97,7 +97,7 @@ func ParseSubject(subject string) ParsedSubject {
 
 	res.Normalized = normalizeSubject(subject, segLo, segHi)
 
-	parseCollection(subject, &res)
+	parseCollection(subject, segLo, segHi, &res)
 	return res
 }
 
@@ -112,21 +112,38 @@ func ParseSubject(subject string) ParsedSubject {
 // When no leading file counter is present (a plain single-file post), the key
 // is left empty and the assembler falls back to the normalized subject, so
 // single-file behaviour is unchanged.
-func parseCollection(subject string, res *ParsedSubject) {
-	m := reLeadingFileCounter.FindStringSubmatch(subject)
-	if m == nil {
+func parseCollection(subject string, segLo, segHi int, res *ParsedSubject) {
+	loc := reLeadingFileCounter.FindStringSubmatchIndex(subject)
+	if loc == nil {
 		return
 	}
-	fileNum := atoi(m[1])
-	total := atoi(m[2])
+	fileNum := atoi(subject[loc[2]:loc[3]])
+	total := atoi(subject[loc[4]:loc[5]])
 	// A "collection" needs at least two files; a "[1/1]" is a single file.
 	if total < 2 {
 		return
 	}
+	// Guard against a single multi-segment file whose subject repeats the same
+	// counter in both the leading and trailing positions, e.g.
+	// `[1/445] "blob" yEnc (1/445)`. That is one 445-segment file, not a
+	// 445-file collection. When the leading file counter IS the trailing yEnc
+	// segment counter (same span) or declares the same total, it is not a
+	// collection.
+	if segLo == loc[0] && segHi == loc[1] {
+		return
+	}
+	if res.TotalParts == total {
+		return
+	}
+	// A true multi-file collection has files that are volumes/parts of an
+	// archive set (rar/par2/etc.). Require the per-file name to carry such an
+	// extension; a bare obfuscated blob with no archive extension is treated
+	// as a single file so unrelated posts are never merged.
+	if res.FileName == "" || !reCollectionVolExt.MatchString(res.FileName) {
+		return
+	}
 	base := collectionBase(res.FileName)
 	if base == "" {
-		// No usable filename to anchor the collection; fall back to grouping
-		// by normalized subject rather than risk merging unrelated posts.
 		return
 	}
 	res.FileNumber = fileNum

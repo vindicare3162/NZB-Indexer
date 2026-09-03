@@ -40,6 +40,18 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   page shows a live, auto-refreshing log view.
 
 ### Changed
+- Release-building runs in its own loop (#18 follow-up). Previously assembly and
+  release-building shared a loop (assemble-until-drained, then build), so a
+  large parts backlog could keep the assembler busy and complete binaries never
+  became releases. Building now runs on its own goroutine/interval
+  (`build_interval`, default 2m), independent of assembly. The assembler's
+  grouping queries also dropped an unnecessary `ORDER BY`, and a partial index
+  was added so grouping stays cheap at scale instead of sequentially scanning
+  the whole unassigned backlog each pass.
+- Collection detection is stricter (#18 follow-up): a single multi-segment file
+  whose subject repeats the same counter in the leading and trailing positions
+  (e.g. `[1/445] "blob" (1/445)`), or an obfuscated blob with no archive/parity
+  extension, is no longer mis-detected as a multi-file collection.
 - Pipeline throughput at scale: neither scanning nor a large assemble backlog
   can starve post-processing (#15). The worker now runs three independent loops
   on separate goroutines and intervals: scan, assemble/build, and post-process
