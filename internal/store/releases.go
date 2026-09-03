@@ -204,9 +204,15 @@ func buildSearchWhere(f SearchFilter) (string, []any) {
 	var clauses []string
 	var args []any
 
+	// Tokenise the query and require every token to appear somewhere in the
+	// search_name (order-independent AND). A single substring match would fail
+	// for multi-word / tvsearch queries whose words aren't adjacent in the
+	// release name (e.g. "saving s03e10" vs "saving grace s03e10 hdtv xvid").
 	if q := trimLower(f.Query); q != "" {
-		args = append(args, "%"+q+"%")
-		clauses = append(clauses, fmt.Sprintf("search_name LIKE $%d", len(args)))
+		for _, tok := range strings.Fields(q) {
+			args = append(args, "%"+tok+"%")
+			clauses = append(clauses, fmt.Sprintf("search_name LIKE $%d", len(args)))
+		}
 	}
 
 	if len(f.Categories) > 0 {
