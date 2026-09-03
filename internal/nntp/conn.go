@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // conn is the minimal connection surface the pool depends on. The real
@@ -311,11 +312,15 @@ func parseOverviewLine(line string) (Overview, bool) {
 	}
 	bytes, _ := strconv.ParseInt(strings.TrimSpace(fields[6]), 10, 64)
 
+	// Overview lines are byte streams; subjects/posters routinely carry
+	// non-UTF-8 (Latin-1 / CP437) bytes. PostgreSQL TEXT columns reject invalid
+	// UTF-8, so sanitize here (replacing invalid sequences) to keep every
+	// Overview field valid UTF-8 before it reaches the store.
 	ov := Overview{
 		ArticleNumber: num,
-		Subject:       fields[1],
-		From:          fields[2],
-		MessageID:     trimAngle(strings.TrimSpace(fields[4])),
+		Subject:       toValidUTF8(fields[1]),
+		From:          toValidUTF8(fields[2]),
+		MessageID:     toValidUTF8(trimAngle(strings.TrimSpace(fields[4]))),
 		Bytes:         bytes,
 	}
 	if t, err := parseNNTPDate(fields[3]); err == nil {
@@ -345,6 +350,16 @@ func parseNNTPDate(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, lastErr
+}
+
+// toValidUTF8 returns s with any invalid UTF-8 byte sequences replaced by the
+// Unicode replacement character, so the value is safe to store in a UTF-8
+// TEXT column. Valid UTF-8 (the common case) is returned unchanged.
+func toValidUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	return strings.ToValidUTF8(s, "\uFFFD")
 }
 
 // trimAngle removes surrounding <...> from a message-id if present.

@@ -71,6 +71,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   page shows a live, auto-refreshing log view.
 
 ### Fixed
+- Parts with non-UTF-8 bytes in their subject/poster are now stored (#49).
+  NNTP overview lines are byte streams and subjects/posters routinely carry
+  Latin-1/CP437 bytes; PostgreSQL `TEXT` rejected them, failing the insert (and
+  potentially the whole batch) and silently dropping parts. Overview fields are
+  now sanitized to valid UTF-8 (invalid sequences replaced) at the NNTP parse
+  boundary before reaching the store.
 - Newznab external-id searches behave correctly (#43). `imdbid` is now
   normalized (bare or `tt`-prefixed) and added as a search token for
   `t=movie`. Critically, an id-based search (`imdbid`/`tvdbid`/`rid`/...) that a
