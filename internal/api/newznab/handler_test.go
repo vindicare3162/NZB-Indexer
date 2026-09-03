@@ -225,3 +225,70 @@ func TestUnknownFunction(t *testing.T) {
 		t.Errorf("expected 'No such function' error, got:\n%s", rec.Body.String())
 	}
 }
+
+func TestMovieSearchIMDBToken(t *testing.T) {
+	repo := &mockRepo{releases: nil, total: 0}
+	h := newTestHandler(repo, &mockNZB{})
+
+	// q + imdbid: the id is normalized to tt<digits> and added as a token.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?t=movie&q=Some.Movie.2024&imdbid=tt0111161", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(repo.lastFilt.Query, "tt0111161") {
+		t.Errorf("query = %q, want it to contain tt0111161", repo.lastFilt.Query)
+	}
+	if !strings.Contains(repo.lastFilt.Query, "Some.Movie.2024") {
+		t.Errorf("query = %q, want it to contain the q text", repo.lastFilt.Query)
+	}
+
+	// Bare imdbid (no tt prefix) normalizes the same way.
+	repo.lastFilt = store.SearchFilter{}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?t=movie&imdbid=0111161", nil))
+	if repo.lastFilt.Query != "tt0111161" {
+		t.Errorf("bare imdbid query = %q, want tt0111161", repo.lastFilt.Query)
+	}
+}
+
+func TestIDOnlySearchReturnsEmptyNotEverything(t *testing.T) {
+	// An id-only search with no resolvable token must NOT hit SearchReleases
+	// (which would browse-all); it returns an empty feed.
+	repo := &mockRepo{releases: []store.Release{{GUID: "x", Name: "Should.Not.Appear"}}, total: 999}
+	h := newTestHandler(repo, &mockNZB{})
+
+	rec := httptest.NewRecorder()
+	// tvdbid can't be resolved by a header indexer and there's no q.
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?t=tvsearch&tvdbid=12345", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `total="0"`) {
+		t.Errorf("expected empty feed (total=0), got: %s", body)
+	}
+	if strings.Contains(body, "Should.Not.Appear") {
+		t.Error("id-only search returned catalogue items; must return nothing")
+	}
+	// SearchReleases should not have been called (Limit would be non-zero if it had).
+	if repo.lastFilt.Limit != 0 || repo.lastFilt.Query != "" {
+		t.Errorf("SearchReleases should not have been called for an unresolved id-only search, got filter %+v", repo.lastFilt)
+	}
+}
+
+func TestBareBrowseSearchStillReturnsResults(t *testing.T) {
+	// A plain t=search with no q and no id is a browse feed: it should still
+	// query (return recent releases), unlike an id-only search.
+	repo := &mockRepo{releases: []store.Release{{GUID: "a", Name: "Recent.Release"}}, total: 1}
+	h := newTestHandler(repo, &mockNZB{})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?t=search", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Recent.Release") {
+		t.Error("bare browse search should return recent releases")
+	}
+}

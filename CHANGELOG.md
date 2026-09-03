@@ -60,6 +60,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   page shows a live, auto-refreshing log view.
 
 ### Fixed
+- Newznab external-id searches behave correctly (#43). `imdbid` is now
+  normalized (bare or `tt`-prefixed) and added as a search token for
+  `t=movie`. Critically, an id-based search (`imdbid`/`tvdbid`/`rid`/...) that a
+  header-only indexer can't resolve now returns an empty feed instead of the
+  entire catalogue, so clients no longer treat every release as a match. Bare
+  browse (`t=search` with no query) still returns recent releases.
 - Search now matches multi-word and tvsearch season/episode queries (#37).
   Search matched the whole query as one contiguous substring, so a Sonarr
   episode search (`q=<series>&season=S&ep=E`, sent to the store as e.g.

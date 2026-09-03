@@ -30,7 +30,43 @@ func buildQuery(q url.Values) string {
 			base = strings.TrimSpace(base + " " + token)
 		}
 	}
+
+	// An IMDB id, when supplied, is added as a search token. Some scene names
+	// embed the id (e.g. "...imdb-tt0111161..."), so this can match; when it
+	// does not, the id still constrains the search rather than matching all.
+	if id := normalizeIMDB(q.Get("imdbid")); id != "" {
+		base = strings.TrimSpace(base + " " + id)
+	}
 	return base
+}
+
+// normalizeIMDB reduces an imdbid parameter to its digit form. Clients send it
+// either bare ("0111161") or prefixed ("tt0111161"); returns "" when there is
+// no usable id.
+func normalizeIMDB(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.TrimPrefix(s, "tt")
+	if s == "" {
+		return ""
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return "tt" + s // canonical "tt<digits>" form used as the search token
+}
+
+// hasIDParam reports whether the request carries an external-id search
+// parameter (imdbid/tvdbid/rid/rageid/tvmazeid). Such an id-based search that
+// yields no query tokens must return no results rather than the whole catalogue.
+func hasIDParam(q url.Values) bool {
+	for _, k := range []string{"imdbid", "tvdbid", "rid", "rageid", "tvmazeid"} {
+		if strings.TrimSpace(q.Get(k)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // pad2 zero-pads a small integer to at least two digits.
