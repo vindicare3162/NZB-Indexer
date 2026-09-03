@@ -136,6 +136,8 @@ func (a *API) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Categories: cats,
 		Limit:      limit,
 		Offset:     offset,
+		// Obfuscated (unusable) releases are hidden unless explicitly requested.
+		IncludeObfuscated: q.Get("include_obfuscated") == "1" || q.Get("include_obfuscated") == "true",
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "search failed")

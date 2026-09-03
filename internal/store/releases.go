@@ -29,6 +29,9 @@ type ReleaseInput struct {
 	SizeBytes       int64
 	PostedAt        *time.Time
 	ReleaseHash     string
+	// Obfuscated marks a release whose name looks like random hex/base64 (no
+	// real words); such releases are excluded from default search results.
+	Obfuscated bool
 }
 
 // CreateRelease inserts a release. When a release with the same release_hash
@@ -38,8 +41,8 @@ func (s *Store) CreateRelease(ctx context.Context, in ReleaseInput) (Release, bo
 	const ins = `
 INSERT INTO releases
     (guid, name, original_subject, search_name, category_id, group_id, binary_id, poster,
-     total_parts, size_bytes, posted_at, release_hash, pp_status)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending')
+     total_parts, size_bytes, posted_at, release_hash, pp_status, obfuscated)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13)
 ON CONFLICT (release_hash) DO NOTHING
 RETURNING id, guid, name, original_subject, search_name, category_id, group_id, binary_id,
           poster, total_parts, size_bytes, posted_at, release_hash, pp_status,
@@ -49,6 +52,7 @@ RETURNING id, guid, name, original_subject, search_name, category_id, group_id, 
 	err := s.pool.QueryRow(ctx, ins,
 		in.GUID, in.Name, in.OriginalSubject, in.SearchName, in.CategoryID,
 		in.GroupID, in.BinaryID, in.Poster, in.TotalParts, in.SizeBytes, in.PostedAt, in.ReleaseHash,
+		in.Obfuscated,
 	).Scan(&r.ID, &r.GUID, &r.Name, &r.OriginalSubject, &r.SearchName,
 		&r.CategoryID, &r.GroupID, &r.BinaryID, &r.Poster, &r.TotalParts, &r.SizeBytes,
 		&r.PostedAt, &r.ReleaseHash, &r.PPStatus, &r.NFO, &r.Grabs,
@@ -151,6 +155,9 @@ type SearchFilter struct {
 	Limit int
 	// Offset is the pagination offset.
 	Offset int
+	// IncludeObfuscated includes releases whose name is still obfuscated. By
+	// default (false) these unusable releases are excluded from results.
+	IncludeObfuscated bool
 }
 
 // SearchReleases returns releases matching the filter (newest first) plus the
@@ -213,6 +220,10 @@ func buildSearchWhere(f SearchFilter) (string, []any) {
 			args = append(args, "%"+tok+"%")
 			clauses = append(clauses, fmt.Sprintf("search_name LIKE $%d", len(args)))
 		}
+	}
+
+	if !f.IncludeObfuscated {
+		clauses = append(clauses, "obfuscated = false")
 	}
 
 	if len(f.Categories) > 0 {
