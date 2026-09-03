@@ -88,6 +88,8 @@ export const api = {
   },
   groups: () => request('GET', '/admin/groups'),
   createGroup: (name) => request('POST', '/admin/groups', { name, active: true }),
+  bulkGroups: (names, backfillDays = 0, active = true) =>
+    request('POST', '/admin/groups/bulk', { names, backfill_days: backfillDays, active }),
   setGroupActive: (id, active) => request('PATCH', `/admin/groups/${id}`, { active }),
   setGroupBackfill: (id, days, articles) => request('PUT', `/admin/groups/${id}/backfill`, { days, articles }),
   deleteGroup: (id) => request('DELETE', `/admin/groups/${id}`),

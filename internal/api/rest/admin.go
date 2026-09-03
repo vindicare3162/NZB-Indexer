@@ -50,6 +50,130 @@ func (a *API) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, g)
 }
 
+type bulkGroupsRequest struct {
+	// Names is the list of newsgroup names to add/enable. Newline- or
+	// comma-separated input from the UI is split client-side; here it is a
+	// clean list. Blank and clearly-invalid tokens are skipped.
+	Names []string `json:"names"`
+	// Active sets whether the added groups are enabled (default true).
+	Active *bool `json:"active"`
+	// BackfillDays, when > 0, sets a per-group backfill window on each group so
+	// a scan backfills that many days of history (e.g. 7 for one week).
+	BackfillDays int `json:"backfill_days"`
+}
+
+type bulkGroupResult struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // added | existing | error
+	Error  string `json:"error,omitempty"`
+}
+
+type bulkGroupsResponse struct {
+	Added    int               `json:"added"`
+	Existing int               `json:"existing"`
+	Errors   int               `json:"errors"`
+	Results  []bulkGroupResult `json:"results"`
+}
+
+// handleBulkGroups adds/enables many groups in one request, optionally applying
+// a backfill window to each. It is idempotent: names that already exist are
+// reported as "existing" (and still have the backfill window applied).
+func (a *API) handleBulkGroups(w http.ResponseWriter, r *http.Request) {
+	var req bulkGroupsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.BackfillDays < 0 {
+		writeError(w, http.StatusBadRequest, "backfill_days must not be negative")
+		return
+	}
+	active := true
+	if req.Active != nil {
+		active = *req.Active
+	}
+
+	// Normalise + de-duplicate the requested names.
+	seen := map[string]bool{}
+	var names []string
+	for _, n := range req.Names {
+		n = strings.TrimSpace(strings.ToLower(n))
+		if !isValidGroupName(n) || seen[n] {
+			continue
+		}
+		seen[n] = true
+		names = append(names, n)
+	}
+	if len(names) == 0 {
+		writeError(w, http.StatusBadRequest, "no valid group names provided")
+		return
+	}
+
+	var days *int
+	if req.BackfillDays > 0 {
+		d := req.BackfillDays
+		days = &d
+	}
+
+	resp := bulkGroupsResponse{}
+	for _, name := range names {
+		res := bulkGroupResult{Name: name}
+
+		// Determine new-vs-existing before the upsert so the report is accurate.
+		existed := true
+		if _, err := a.store.GetGroupByName(r.Context(), name); errors.Is(err, store.ErrNotFound) {
+			existed = false
+		}
+
+		g, err := a.store.UpsertGroup(r.Context(), name, active)
+		if err != nil {
+			res.Status = "error"
+			res.Error = "failed to add"
+			resp.Errors++
+			resp.Results = append(resp.Results, res)
+			continue
+		}
+		if days != nil {
+			if err := a.store.SetGroupBackfillTarget(r.Context(), g.ID, days, nil); err != nil {
+				res.Status = "error"
+				res.Error = "added but failed to set backfill"
+				resp.Errors++
+				resp.Results = append(resp.Results, res)
+				continue
+			}
+		}
+		if existed {
+			res.Status = "existing"
+			resp.Existing++
+		} else {
+			res.Status = "added"
+			resp.Added++
+		}
+		resp.Results = append(resp.Results, res)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// isValidGroupName does a light sanity check on a newsgroup name: non-empty,
+// dotted hierarchy, no whitespace, reasonable characters. This screens out
+// stray tokens from pasted input without being overly strict.
+func isValidGroupName(n string) bool {
+	if n == "" || len(n) > 512 || !strings.Contains(n, ".") {
+		return false
+	}
+	for _, r := range n {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_' || r == '+':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 type updateGroupRequest struct {
 	Active *bool `json:"active"`
 }

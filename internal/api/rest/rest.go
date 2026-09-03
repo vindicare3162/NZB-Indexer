@@ -36,6 +36,7 @@ type Store interface {
 
 	// Groups (admin)
 	ListGroups(ctx context.Context, activeOnly bool) ([]store.Group, error)
+	GetGroupByName(ctx context.Context, name string) (store.Group, error)
 	UpsertGroup(ctx context.Context, name string, active bool) (store.Group, error)
 	SetGroupActive(ctx context.Context, id int64, active bool) error
 	SetGroupBackfillTarget(ctx context.Context, id int64, days *int, articles *int64) error
@@ -180,6 +181,7 @@ func (a *API) Routes() http.Handler {
 	admin := a.session.RequireAdmin
 	mux.Handle("GET /api/v1/admin/groups", admin(http.HandlerFunc(a.handleListGroups)))
 	mux.Handle("POST /api/v1/admin/groups", admin(http.HandlerFunc(a.handleCreateGroup)))
+	mux.Handle("POST /api/v1/admin/groups/bulk", admin(http.HandlerFunc(a.handleBulkGroups)))
 	mux.Handle("PATCH /api/v1/admin/groups/{id}", admin(http.HandlerFunc(a.handleUpdateGroup)))
 	mux.Handle("PUT /api/v1/admin/groups/{id}/backfill", admin(http.HandlerFunc(a.handleSetGroupBackfill)))
 	mux.Handle("DELETE /api/v1/admin/groups/{id}", admin(http.HandlerFunc(a.handleDeleteGroup)))

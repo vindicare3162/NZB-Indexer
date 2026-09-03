@@ -10,6 +10,9 @@
   let logLevel = $state('');
   let logTimer = null;
   let newGroup = $state('');
+  let bulkNames = $state('');
+  let bulkBackfillDays = $state(7);
+  let bulkBusy = $state(false);
   let newUser = $state({ username: '', password: '', admin: false });
   let newServer = $state({ name: '', host: '', port: 563, tls: true, username: '', password: '', max_conns: 10, priority: 0, enabled: true });
   let discoverQuery = $state('');
@@ -107,6 +110,21 @@
     error = '';
     try { await api.createGroup(newGroup); newGroup = ''; loadAll(); }
     catch (e) { error = e.message; }
+  }
+
+  async function addBulk() {
+    error = '';
+    notice = '';
+    const names = bulkNames.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+    if (names.length === 0) { error = 'Enter one or more newsgroup names'; return; }
+    bulkBusy = true;
+    try {
+      const res = await api.bulkGroups(names, Number(bulkBackfillDays) || 0);
+      notice = `Bulk add: ${res.added} added, ${res.existing} existing, ${res.errors} error(s)`;
+      bulkNames = '';
+      loadAll();
+    } catch (e) { error = e.message; }
+    finally { bulkBusy = false; }
   }
 
   async function runDiscover(offset = 0, refresh = false) {
@@ -281,6 +299,15 @@
     <input placeholder="alt.binaries.example" bind:value={newGroup} style="flex:1" />
     <button onclick={addGroup}>Add group</button>
   </div>
+  <details style="margin-top:0.6rem">
+    <summary>Bulk add</summary>
+    <p class="muted">Paste multiple newsgroup names (one per line, or comma/space separated). A backfill window of N days is applied to each.</p>
+    <textarea placeholder="alt.binaries.movies&#10;alt.binaries.tv&#10;alt.binaries.sounds.flac" bind:value={bulkNames} rows="5" style="width:100%"></textarea>
+    <div class="row" style="margin-top:0.5rem; align-items:center; gap:0.6rem">
+      <label>Backfill days <input type="number" min="0" bind:value={bulkBackfillDays} style="width:5rem" /></label>
+      <button onclick={addBulk} disabled={bulkBusy}>{bulkBusy ? 'Adding…' : 'Add all'}</button>
+    </div>
+  </details>
   {#if groups.length > 0}
     <table style="margin-top:0.8rem">
       <thead><tr><th>Group</th><th>Active</th><th>Fwd pos</th><th>Backfill</th><th>Target</th><th></th></tr></thead>

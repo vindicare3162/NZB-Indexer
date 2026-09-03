@@ -7,6 +7,11 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Bulk newsgroup add/enable (#70). A new admin action adds/enables many groups
+  at once with an optional backfill window (e.g. 7 days), via
+  `POST /api/v1/admin/groups/bulk` and a "Bulk add" panel on the Admin page
+  (paste newline/comma-separated names). It's idempotent — existing groups are
+  reported as such — and the backfill target is applied to each group.
 - The pipeline schedule is now editable at runtime from the admin UI (#68),
   building on the env/YAML config from #52. A new Schedule panel sets the scan,
   assemble, build and post-process intervals; changes apply to the running
