@@ -39,6 +39,13 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   destructive-restore caveat. The dump/restore round-trip is verified against
   PostgreSQL 18.
 
+### Fixed
+- Compose: mount the database volume at `/var/lib/postgresql` (not
+  `/var/lib/postgresql/data`) so `postgres:18-alpine` starts — the PG18 image
+  changed its data-directory layout and refused to start with the old mount,
+  leaving `db` unhealthy on a fresh `docker compose up` (#86, regression from
+  the PG18 bump in #74).
+
 ### Changed
 - Upgraded the bundled database image from PostgreSQL 16 to **18**
   (`postgres:18-alpine`) for the newer major's performance work, notably the
