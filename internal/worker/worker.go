@@ -48,10 +48,15 @@ type Options struct {
 	// ScanInterval is how often the scan loop runs (forward, plus backfill when
 	// enabled).
 	ScanInterval time.Duration
-	// DownstreamInterval is how often the downstream loop runs (assemble ->
-	// build -> post-process), independently of scanning so a long scan cannot
-	// starve post-processing. Zero defaults to ScanInterval.
+	// DownstreamInterval is how often the assemble loop runs (assemble ->
+	// build), independently of scanning so a long scan cannot starve it. Zero
+	// defaults to ScanInterval.
 	DownstreamInterval time.Duration
+	// PostProcessInterval is how often the post-process loop runs. It runs on
+	// its own goroutine, independent of both scanning and assemble/build, so a
+	// large parts backlog (slow assemble) cannot starve name recovery. Zero
+	// defaults to DownstreamInterval.
+	PostProcessInterval time.Duration
 	// EnableBackfill runs a backfill pass alongside forward scans.
 	EnableBackfill bool
 }
@@ -84,14 +89,15 @@ type Worker struct {
 	log    *slog.Logger
 	opts   Options
 
-	// scanTriggers / downTriggers carry manual job requests into their loops.
+	// Manual job requests are delivered into their respective loops.
 	scanTriggers chan scanTrigger
-	downTriggers chan downTrigger
+	ppTriggers   chan struct{}
 
-	// scanMu serialises scan passes; downMu serialises downstream passes. They
-	// are independent, so scan and downstream can run concurrently.
+	// Each loop has its own mutex so scan, assemble/build, and post-process run
+	// concurrently while each is serialised internally.
 	scanMu sync.Mutex
-	downMu sync.Mutex
+	asmMu  sync.Mutex
+	ppMu   sync.Mutex
 
 	mu      sync.Mutex
 	metrics Metrics
@@ -103,16 +109,6 @@ type scanTrigger struct {
 	backfill bool
 }
 
-// downKind selects which downstream stages a manual trigger runs.
-type downKind int
-
-const (
-	downAll         downKind = iota // assemble -> build -> post-process
-	downPostProcess                 // post-process only
-)
-
-type downTrigger struct{ kind downKind }
-
 // New creates a Worker.
 func New(groups GroupLister, scan Scanner, asm Assembler, build ReleaseBuilder, pp PostProcessor, log *slog.Logger, opts Options) *Worker {
 	if opts.ScanInterval <= 0 {
@@ -120,6 +116,9 @@ func New(groups GroupLister, scan Scanner, asm Assembler, build ReleaseBuilder, 
 	}
 	if opts.DownstreamInterval <= 0 {
 		opts.DownstreamInterval = opts.ScanInterval
+	}
+	if opts.PostProcessInterval <= 0 {
+		opts.PostProcessInterval = opts.DownstreamInterval
 	}
 	if log == nil {
 		log = slog.Default()
@@ -133,23 +132,26 @@ func New(groups GroupLister, scan Scanner, asm Assembler, build ReleaseBuilder, 
 		log:          log,
 		opts:         opts,
 		scanTriggers: make(chan scanTrigger, 16),
-		downTriggers: make(chan downTrigger, 16),
+		ppTriggers:   make(chan struct{}, 16),
 	}
 }
 
-// Run drives the scan and downstream loops as independent goroutines until ctx
-// is cancelled, then blocks until both have stopped. Because the loops are
-// independent, a long-running scan does not delay assemble/build/post-process.
+// Run drives the scan, assemble/build, and post-process loops as independent
+// goroutines until ctx is cancelled, then blocks until all have stopped.
+// Because the loops are independent, neither a long-running scan nor a large
+// assemble backlog can starve post-processing (name recovery).
 func (w *Worker) Run(ctx context.Context) {
 	w.log.Info("worker started",
 		"scan_interval", w.opts.ScanInterval,
 		"downstream_interval", w.opts.DownstreamInterval,
+		"postprocess_interval", w.opts.PostProcessInterval,
 		"backfill", w.opts.EnableBackfill)
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); w.scanLoop(ctx) }()
-	go func() { defer wg.Done(); w.downstreamLoop(ctx) }()
+	go func() { defer wg.Done(); w.assembleLoop(ctx) }()
+	go func() { defer wg.Done(); w.postProcessLoop(ctx) }()
 	wg.Wait()
 	w.log.Info("worker stopped")
 }
@@ -179,26 +181,43 @@ func (w *Worker) scanLoop(ctx context.Context) {
 	}
 }
 
-// downstreamLoop runs an initial downstream pass, then on DownstreamInterval
-// and on manual triggers. It runs independently of scanning.
-func (w *Worker) downstreamLoop(ctx context.Context) {
+// assembleLoop runs an initial assemble/build pass, then on DownstreamInterval
+// and on manual triggers. It runs independently of scanning and of
+// post-processing.
+func (w *Worker) assembleLoop(ctx context.Context) {
 	ticker := time.NewTicker(w.opts.DownstreamInterval)
 	defer ticker.Stop()
 
-	w.runDownstream(ctx)
+	w.runAssemble(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.runDownstream(ctx)
-		case t := <-w.downTriggers:
-			if t.kind == downPostProcess {
-				w.runPostProcess(ctx)
-			} else {
-				w.runDownstream(ctx)
-			}
+			w.runAssemble(ctx)
+		}
+	}
+}
+
+// postProcessLoop runs an initial post-process pass, then on
+// PostProcessInterval and on manual triggers. It runs independently of both
+// scanning and assemble/build, so a large parts backlog cannot starve name
+// recovery.
+func (w *Worker) postProcessLoop(ctx context.Context) {
+	ticker := time.NewTicker(w.opts.PostProcessInterval)
+	defer ticker.Stop()
+
+	w.runPostProcess(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.runPostProcess(ctx)
+		case <-w.ppTriggers:
+			w.runPostProcess(ctx)
 		}
 	}
 }
@@ -248,26 +267,16 @@ func (w *Worker) runScan(ctx context.Context, group string, backfill bool) {
 	}
 }
 
-// runDownstream runs assemble -> build -> post-process under the downstream
-// mutex, so a scheduled pass and a manual trigger cannot overlap.
-func (w *Worker) runDownstream(ctx context.Context) {
-	w.downMu.Lock()
-	defer w.downMu.Unlock()
+// runAssemble runs assemble -> build under the assemble mutex, so a scheduled
+// pass and a manual trigger cannot overlap. It is independent of the
+// post-process loop.
+func (w *Worker) runAssemble(ctx context.Context) {
+	w.asmMu.Lock()
+	defer w.asmMu.Unlock()
 
 	if ctx.Err() != nil {
 		return
 	}
-	start := time.Now()
-	w.mu.Lock()
-	w.metrics.Running = true
-	w.metrics.LastCycleStart = &start
-	w.mu.Unlock()
-	defer func() {
-		w.mu.Lock()
-		w.metrics.Running = false
-		w.mu.Unlock()
-	}()
-
 	w.setStage("assemble")
 	asmRes, err := w.asm.Assemble(ctx)
 	if err != nil {
@@ -290,32 +299,31 @@ func (w *Worker) runDownstream(ctx context.Context) {
 		w.metrics.ReleasesCreated += int64(buildRes.Created)
 		w.mu.Unlock()
 	}
-
-	w.postProcess(ctx)
-
-	w.mu.Lock()
-	w.metrics.Cycles++
-	end := time.Now()
-	w.metrics.LastCycleEnd = &end
-	w.metrics.CurrentStage = "idle"
-	w.mu.Unlock()
-}
-
-// runPostProcess runs only the post-processing stage under the downstream
-// mutex (used by the manual "post-process now" trigger).
-func (w *Worker) runPostProcess(ctx context.Context) {
-	w.downMu.Lock()
-	defer w.downMu.Unlock()
-	w.postProcess(ctx)
 	w.setStage("idle")
 }
 
-// postProcess runs the post-processing stage and records metrics. The caller
-// must hold downMu.
-func (w *Worker) postProcess(ctx context.Context) {
+// runPostProcess runs one post-processing pass under the post-process mutex,
+// independently of scanning and assemble/build. It records metrics and counts
+// a completed pass as a cycle.
+func (w *Worker) runPostProcess(ctx context.Context) {
+	w.ppMu.Lock()
+	defer w.ppMu.Unlock()
+
 	if ctx.Err() != nil {
 		return
 	}
+	start := time.Now()
+	w.mu.Lock()
+	w.metrics.Running = true
+	w.metrics.LastCycleStart = &start
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		w.metrics.Running = false
+		w.metrics.CurrentStage = "idle"
+		w.mu.Unlock()
+	}()
+
 	w.setStage("postprocess")
 	ppRes, err := w.pp.Run(ctx)
 	if err != nil {
@@ -325,6 +333,9 @@ func (w *Worker) postProcess(ctx context.Context) {
 	w.mu.Lock()
 	w.metrics.ReleasesRenamed += int64(ppRes.Renamed)
 	w.metrics.NFOsFound += int64(ppRes.NFOFound)
+	w.metrics.Cycles++
+	end := time.Now()
+	w.metrics.LastCycleEnd = &end
 	w.mu.Unlock()
 }
 
@@ -360,13 +371,14 @@ func (w *Worker) TriggerBackfill(group string) error {
 
 // TriggerPostProcess requests an immediate post-processing pass (non-blocking).
 // This lets an operator recover names for pending releases without waiting for
-// a scan or the downstream interval.
+// a scan or the post-process interval. It contends only with the post-process
+// loop, so it runs even while a large assemble backlog is being worked.
 func (w *Worker) TriggerPostProcess() error {
 	select {
-	case w.downTriggers <- downTrigger{kind: downPostProcess}:
+	case w.ppTriggers <- struct{}{}:
 		return nil
 	default:
-		return fmt.Errorf("worker busy: downstream trigger queue full")
+		return fmt.Errorf("worker busy: post-process trigger queue full")
 	}
 }
 

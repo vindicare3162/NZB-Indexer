@@ -96,9 +96,10 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		}
 	}
 	wrk := worker.New(st, sc, asm, builder, pp, logger, worker.Options{
-		ScanInterval:       cfg.Scan.Interval,
-		DownstreamInterval: cfg.Scan.DownstreamInterval,
-		EnableBackfill:     enableBackfill,
+		ScanInterval:        cfg.Scan.Interval,
+		DownstreamInterval:  cfg.Scan.DownstreamInterval,
+		PostProcessInterval: cfg.Scan.PostProcessInterval,
+		EnableBackfill:      enableBackfill,
 	})
 
 	// 5. Auth.

@@ -87,10 +87,15 @@ type ScanConfig struct {
 	BatchSize int `yaml:"batch_size"`
 	// Interval is how often forward scans run.
 	Interval time.Duration `yaml:"interval"`
-	// DownstreamInterval is how often the downstream loop (assemble -> build ->
-	// post-process) runs, independently of scanning so a long scan cannot
-	// starve post-processing. Zero defaults to Interval.
+	// DownstreamInterval is how often the assemble/build loop runs,
+	// independently of scanning so a long scan cannot starve it. Zero defaults
+	// to Interval.
 	DownstreamInterval time.Duration `yaml:"downstream_interval"`
+	// PostProcessInterval is how often the post-process loop (obfuscated-name
+	// recovery, NFO capture) runs. It runs independently of both scanning and
+	// assemble/build, so a large parts backlog cannot starve name recovery.
+	// Zero defaults to DownstreamInterval.
+	PostProcessInterval time.Duration `yaml:"postprocess_interval"`
 	// ForwardMaxArticles caps how many articles a single forward-scan pass
 	// ingests per group before yielding, so a firehose group cannot monopolise
 	// a cycle. The watermark is persisted so the next pass resumes. Zero means
@@ -144,6 +149,7 @@ func Default() Config {
 			BatchSize:           10000,
 			Interval:            15 * time.Minute,
 			DownstreamInterval:  5 * time.Minute,
+			PostProcessInterval: 5 * time.Minute,
 			ForwardMaxArticles:  1000000,
 			BackfillDays:        0,
 			BackfillMaxArticles: 0,

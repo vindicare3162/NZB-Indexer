@@ -70,7 +70,8 @@ func TestScanAndDownstreamUpdateMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	w.doScan(ctx, "", false)
-	w.runDownstream(ctx)
+	w.runAssemble(ctx)
+	w.runPostProcess(ctx)
 
 	// Two groups scanned forward once each.
 	if got := atomic.LoadInt32(&s.forward); got != 2 {
@@ -82,7 +83,7 @@ func TestScanAndDownstreamUpdateMetrics(t *testing.T) {
 
 	m := w.Status().(Metrics)
 	if m.Cycles != 1 {
-		t.Errorf("cycles = %d, want 1", m.Cycles)
+		t.Errorf("cycles = %d, want 1 (one completed post-process pass)", m.Cycles)
 	}
 	if m.ArticlesPulled != 20 || m.PartsInserted != 16 {
 		t.Errorf("scan metrics = pulled %d parts %d, want 20/16", m.ArticlesPulled, m.PartsInserted)
@@ -91,7 +92,7 @@ func TestScanAndDownstreamUpdateMetrics(t *testing.T) {
 		t.Errorf("release metrics = %+v", m)
 	}
 	if m.CurrentStage != "idle" {
-		t.Errorf("stage = %q, want idle after downstream", m.CurrentStage)
+		t.Errorf("stage = %q, want idle after post-process", m.CurrentStage)
 	}
 }
 
@@ -113,8 +114,12 @@ func TestDownstreamRunsWhileScanBlocked(t *testing.T) {
 	a := &mockAsm{}
 	b := &mockBuild{}
 	p := &mockPP{}
-	// Short intervals so both loops tick quickly.
-	w := New(g, s, a, b, p, nil, Options{ScanInterval: 10 * time.Millisecond, DownstreamInterval: 10 * time.Millisecond})
+	// Short intervals so all loops tick quickly.
+	w := New(g, s, a, b, p, nil, Options{
+		ScanInterval:        10 * time.Millisecond,
+		DownstreamInterval:  10 * time.Millisecond,
+		PostProcessInterval: 10 * time.Millisecond,
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -127,7 +132,7 @@ func TestDownstreamRunsWhileScanBlocked(t *testing.T) {
 		t.Fatal("scan did not start")
 	}
 
-	// While the scan is blocked, the downstream loop must still run post-process.
+	// While the scan is blocked, the post-process loop must still run.
 	deadline := time.After(2 * time.Second)
 	for atomic.LoadInt32(&p.calls) == 0 {
 		select {
@@ -138,6 +143,63 @@ func TestDownstreamRunsWhileScanBlocked(t *testing.T) {
 	}
 
 	close(releaseScan) // let the scan finish
+}
+
+// TestPostProcessRunsWhileAssembleBlocked is the #15 follow-up guarantee: a
+// large/slow assemble backlog must not prevent post-processing (name recovery)
+// from running. This is the gap the live test exposed.
+func TestPostProcessRunsWhileAssembleBlocked(t *testing.T) {
+	g := &mockGroups{groups: []store.Group{{Name: "g1"}}}
+	s := &mockScanner{}
+	asmStarted := make(chan struct{})
+	releaseAsm := make(chan struct{})
+	a := &blockingAsm{started: asmStarted, release: releaseAsm}
+	b := &mockBuild{}
+	p := &mockPP{}
+	w := New(g, s, a, b, p, nil, Options{
+		ScanInterval:        time.Hour, // keep scan out of the way
+		DownstreamInterval:  10 * time.Millisecond,
+		PostProcessInterval: 10 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	// Wait until assemble is in progress and blocked.
+	select {
+	case <-asmStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("assemble did not start")
+	}
+
+	// While assemble is blocked, post-processing must still run.
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&p.calls) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("post-processing did not run while assemble was blocked (starvation)")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	close(releaseAsm) // let assemble finish
+}
+
+// blockingAsm blocks in Assemble until released, to simulate a slow assemble.
+type blockingAsm struct {
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
+}
+
+func (ba *blockingAsm) Assemble(ctx context.Context) (assembler.Result, error) {
+	ba.startOnce.Do(func() { close(ba.started) })
+	select {
+	case <-ba.release:
+	case <-ctx.Done():
+	}
+	return assembler.Result{}, nil
 }
 
 // blockingScanner blocks in ScanForward until released, to simulate a slow scan.
