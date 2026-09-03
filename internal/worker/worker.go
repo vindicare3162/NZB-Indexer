@@ -48,10 +48,13 @@ type Options struct {
 	// ScanInterval is how often the scan loop runs (forward, plus backfill when
 	// enabled).
 	ScanInterval time.Duration
-	// DownstreamInterval is how often the assemble loop runs (assemble ->
-	// build), independently of scanning so a long scan cannot starve it. Zero
-	// defaults to ScanInterval.
+	// DownstreamInterval is how often the assemble loop runs, independently of
+	// scanning so a long scan cannot starve it. Zero defaults to ScanInterval.
 	DownstreamInterval time.Duration
+	// BuildInterval is how often the release-build loop runs, independently of
+	// assembly so a large parts backlog cannot starve release promotion. Zero
+	// defaults to DownstreamInterval.
+	BuildInterval time.Duration
 	// PostProcessInterval is how often the post-process loop runs. It runs on
 	// its own goroutine, independent of both scanning and assemble/build, so a
 	// large parts backlog (slow assemble) cannot starve name recovery. Zero
@@ -95,9 +98,10 @@ type Worker struct {
 
 	// Each loop has its own mutex so scan, assemble/build, and post-process run
 	// concurrently while each is serialised internally.
-	scanMu sync.Mutex
-	asmMu  sync.Mutex
-	ppMu   sync.Mutex
+	scanMu  sync.Mutex
+	asmMu   sync.Mutex
+	buildMu sync.Mutex
+	ppMu    sync.Mutex
 
 	mu      sync.Mutex
 	metrics Metrics
@@ -116,6 +120,9 @@ func New(groups GroupLister, scan Scanner, asm Assembler, build ReleaseBuilder, 
 	}
 	if opts.DownstreamInterval <= 0 {
 		opts.DownstreamInterval = opts.ScanInterval
+	}
+	if opts.BuildInterval <= 0 {
+		opts.BuildInterval = opts.DownstreamInterval
 	}
 	if opts.PostProcessInterval <= 0 {
 		opts.PostProcessInterval = opts.DownstreamInterval
@@ -144,13 +151,15 @@ func (w *Worker) Run(ctx context.Context) {
 	w.log.Info("worker started",
 		"scan_interval", w.opts.ScanInterval,
 		"downstream_interval", w.opts.DownstreamInterval,
+		"build_interval", w.opts.BuildInterval,
 		"postprocess_interval", w.opts.PostProcessInterval,
 		"backfill", w.opts.EnableBackfill)
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); w.scanLoop(ctx) }()
 	go func() { defer wg.Done(); w.assembleLoop(ctx) }()
+	go func() { defer wg.Done(); w.buildLoop(ctx) }()
 	go func() { defer wg.Done(); w.postProcessLoop(ctx) }()
 	wg.Wait()
 	w.log.Info("worker stopped")
@@ -181,8 +190,8 @@ func (w *Worker) scanLoop(ctx context.Context) {
 	}
 }
 
-// assembleLoop runs an initial assemble/build pass, then on DownstreamInterval
-// and on manual triggers. It runs independently of scanning and of
+// assembleLoop runs an initial assemble pass, then on DownstreamInterval. It
+// folds parts into binaries independently of scanning, building, and
 // post-processing.
 func (w *Worker) assembleLoop(ctx context.Context) {
 	ticker := time.NewTicker(w.opts.DownstreamInterval)
@@ -196,6 +205,26 @@ func (w *Worker) assembleLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			w.runAssemble(ctx)
+		}
+	}
+}
+
+// buildLoop promotes complete binaries into releases on BuildInterval,
+// independently of assembly. This matters at scale: a large parts backlog can
+// keep the assemble loop busy for a long time, but complete binaries must still
+// become releases promptly instead of waiting for assembly to fully drain.
+func (w *Worker) buildLoop(ctx context.Context) {
+	ticker := time.NewTicker(w.opts.BuildInterval)
+	defer ticker.Stop()
+
+	w.runBuild(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.runBuild(ctx)
 		}
 	}
 }
@@ -267,9 +296,9 @@ func (w *Worker) runScan(ctx context.Context, group string, backfill bool) {
 	}
 }
 
-// runAssemble runs assemble -> build under the assemble mutex, so a scheduled
-// pass and a manual trigger cannot overlap. It is independent of the
-// post-process loop.
+// runAssemble folds parts into binaries under the assemble mutex, so a
+// scheduled pass and a manual trigger cannot overlap. It runs independently of
+// building and post-processing.
 func (w *Worker) runAssemble(ctx context.Context) {
 	w.asmMu.Lock()
 	defer w.asmMu.Unlock()
@@ -286,6 +315,15 @@ func (w *Worker) runAssemble(ctx context.Context) {
 		w.metrics.BinariesTouched += int64(asmRes.BinariesTouched)
 		w.mu.Unlock()
 	}
+	w.setStage("idle")
+}
+
+// runBuild promotes complete binaries into releases under the build mutex. It
+// runs independently of assembly, so complete binaries become releases
+// promptly even while a large parts backlog keeps the assemble loop busy.
+func (w *Worker) runBuild(ctx context.Context) {
+	w.buildMu.Lock()
+	defer w.buildMu.Unlock()
 
 	if ctx.Err() != nil {
 		return

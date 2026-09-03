@@ -39,12 +39,15 @@ func (s *Store) AssembleBinaries(ctx context.Context, limit int) (int, error) {
 
 	// (1) Collection groupings: parts sharing a collection_key belong to one
 	// multi-file post (rar volumes + PAR2 etc.) and fold into a single binary.
+	// No ORDER BY: ordering the groupings is unnecessary for correctness, and
+	// an "ORDER BY max(created_at)" would force a full aggregate+sort over the
+	// entire unassigned backlog every pass. Without it the partial index
+	// idx_parts_collection can satisfy the grouped scan cheaply.
 	const selectCollections = `
 SELECT group_id, collection_key, poster
 FROM parts
 WHERE binary_id IS NULL AND collection_key <> ''
 GROUP BY group_id, collection_key, poster
-ORDER BY max(created_at) DESC
 LIMIT $1`
 	crows, err := tx.Query(ctx, selectCollections, limit)
 	if err != nil {
@@ -70,7 +73,6 @@ SELECT group_id, norm_subject, poster
 FROM parts
 WHERE binary_id IS NULL AND collection_key = '' AND norm_subject <> ''
 GROUP BY group_id, norm_subject, poster
-ORDER BY max(created_at) DESC
 LIMIT $1`
 	srows, err := tx.Query(ctx, selectSingles, limit)
 	if err != nil {

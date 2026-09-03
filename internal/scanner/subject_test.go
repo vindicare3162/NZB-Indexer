@@ -143,4 +143,23 @@ func TestParseCollection(t *testing.T) {
 	if one.CollectionKey != "" {
 		t.Errorf("[1/1] treated as collection: %q", one.CollectionKey)
 	}
+
+	// A single multi-segment file that repeats the same counter in both
+	// positions must NOT be treated as a collection (regression from live
+	// data: `[1/445] "blob" yEnc (1/445)` is one 445-segment file).
+	blob := ParseSubject(`[1/445] - "e17a881978b12c92" yEnc (1/445)`)
+	if blob.CollectionKey != "" {
+		t.Errorf("single multi-segment blob treated as collection: key=%q files=%d", blob.CollectionKey, blob.CollectionFiles)
+	}
+	// It should still parse as a normal 445-segment file.
+	if blob.PartNumber != 1 || blob.TotalParts != 445 {
+		t.Errorf("blob segment = %d/%d, want 1/445", blob.PartNumber, blob.TotalParts)
+	}
+
+	// An obfuscated blob with a leading counter but NO archive extension in the
+	// filename is treated as a single file (avoid merging unrelated posts).
+	bare := ParseSubject(`[2/20] "NSV6gyBkS9rHcooOonLqQV89OqtlE" yEnc (1/50)`)
+	if bare.CollectionKey != "" {
+		t.Errorf("bare no-extension blob treated as collection: %q", bare.CollectionKey)
+	}
 }

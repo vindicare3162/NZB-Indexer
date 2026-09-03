@@ -71,6 +71,7 @@ func TestScanAndDownstreamUpdateMetrics(t *testing.T) {
 
 	w.doScan(ctx, "", false)
 	w.runAssemble(ctx)
+	w.runBuild(ctx)
 	w.runPostProcess(ctx)
 
 	// Two groups scanned forward once each.
@@ -184,6 +185,48 @@ func TestPostProcessRunsWhileAssembleBlocked(t *testing.T) {
 	}
 
 	close(releaseAsm) // let assemble finish
+}
+
+// TestBuildRunsWhileAssembleBlocked verifies that release-building is not
+// starved by a slow/long assemble pass (the gap found via live testing: a huge
+// parts backlog kept the assemble loop busy so complete binaries never became
+// releases).
+func TestBuildRunsWhileAssembleBlocked(t *testing.T) {
+	g := &mockGroups{groups: []store.Group{{Name: "g1"}}}
+	s := &mockScanner{}
+	asmStarted := make(chan struct{})
+	releaseAsm := make(chan struct{})
+	a := &blockingAsm{started: asmStarted, release: releaseAsm}
+	b := &mockBuild{}
+	p := &mockPP{}
+	w := New(g, s, a, b, p, nil, Options{
+		ScanInterval:        time.Hour,
+		DownstreamInterval:  10 * time.Millisecond,
+		BuildInterval:       10 * time.Millisecond,
+		PostProcessInterval: time.Hour,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	select {
+	case <-asmStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("assemble did not start")
+	}
+
+	// While assemble is blocked, the build loop must still promote releases.
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&b.calls) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("release-build did not run while assemble was blocked (starvation)")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	close(releaseAsm)
 }
 
 // blockingAsm blocks in Assemble until released, to simulate a slow assemble.
