@@ -322,3 +322,64 @@ func TestTriggerQueueFull(t *testing.T) {
 		t.Error("expected a 'queue full' error once buffer is saturated")
 	}
 }
+
+func TestReconfigureUpdatesSchedule(t *testing.T) {
+	w, _, _, _, _ := newTestWorker(Options{
+		ScanInterval:        time.Hour,
+		DownstreamInterval:  time.Hour,
+		BuildInterval:       time.Hour,
+		PostProcessInterval: time.Hour,
+	})
+
+	// A zero/negative field leaves the existing value unchanged.
+	w.Reconfigure(Schedule{ScanInterval: 5 * time.Minute, BuildInterval: 0})
+	got := w.CurrentSchedule()
+	if got.ScanInterval != 5*time.Minute {
+		t.Errorf("ScanInterval = %s, want 5m", got.ScanInterval)
+	}
+	if got.BuildInterval != time.Hour {
+		t.Errorf("BuildInterval = %s, want unchanged 1h", got.BuildInterval)
+	}
+}
+
+// TestReconfigureAppliesLive verifies a running loop adopts a shorter interval
+// without a restart: with the post-process loop initially on a long interval,
+// reconfiguring to a short one should drive additional passes.
+func TestReconfigureAppliesLive(t *testing.T) {
+	g := &mockGroups{groups: []store.Group{{Name: "g1"}}}
+	s := &mockScanner{}
+	a := &mockAsm{}
+	b := &mockBuild{}
+	p := &mockPP{}
+	w := New(g, s, a, b, p, nil, Options{
+		ScanInterval:        time.Hour,
+		DownstreamInterval:  time.Hour,
+		BuildInterval:       time.Hour,
+		PostProcessInterval: time.Hour, // effectively never on its own
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	// Wait for the initial post-process pass (each loop runs once at startup).
+	waitForAtLeast(t, &p.calls, 1)
+
+	// Now shorten the post-process interval; the loop should reset its ticker
+	// and fire repeatedly.
+	w.Reconfigure(Schedule{PostProcessInterval: 10 * time.Millisecond})
+	waitForAtLeast(t, &p.calls, 4)
+}
+
+// waitForAtLeast polls an atomic counter until it reaches n or times out.
+func waitForAtLeast(t *testing.T, counter *int32, n int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(counter) >= n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("counter reached %d, want >= %d", atomic.LoadInt32(counter), n)
+}

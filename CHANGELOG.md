@@ -7,6 +7,13 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- The pipeline schedule is now editable at runtime from the admin UI (#68),
+  building on the env/YAML config from #52. A new Schedule panel sets the scan,
+  assemble, build and post-process intervals; changes apply to the running
+  worker immediately (each loop resets its ticker, no restart) and persist
+  across restarts in a new `settings` table (migration 0010). Persisted values
+  take precedence over env/YAML defaults on startup. New admin endpoints
+  `GET/PUT /api/v1/admin/schedule` accept Go duration strings (e.g. `5m`).
 - Structured access logging for all HTTP requests (#66). A middleware wrapping
   the whole server emits one record per request with `method`, `path`,
   `status`, `duration_ms`, `bytes`, `remote`, and `user` (when authenticated).

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vindicare/goindex/internal/auth"
 	"github.com/vindicare/goindex/internal/logbuf"
@@ -407,6 +408,113 @@ func (a *API) handleRetryFailed(w http.ResponseWriter, r *http.Request) {
 		_ = a.jobs.TriggerPostProcess()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "failed releases requeued", "requeued": n})
+}
+
+// --- schedule ---
+
+// scheduleKeys maps the JSON/setting field to its settings-table key.
+const (
+	settingScanInterval    = "schedule.scan_interval"
+	settingDownstream      = "schedule.downstream_interval"
+	settingBuildInterval   = "schedule.build_interval"
+	settingPostProcInterval = "schedule.postprocess_interval"
+)
+
+// scheduleResponse reports intervals both as human duration strings (e.g.
+// "5m0s") and as seconds, so the UI can render either.
+type scheduleResponse struct {
+	ScanInterval           string `json:"scan_interval"`
+	DownstreamInterval     string `json:"downstream_interval"`
+	BuildInterval          string `json:"build_interval"`
+	PostProcessInterval    string `json:"postprocess_interval"`
+	ScanIntervalSec        int64  `json:"scan_interval_sec"`
+	DownstreamIntervalSec  int64  `json:"downstream_interval_sec"`
+	BuildIntervalSec       int64  `json:"build_interval_sec"`
+	PostProcessIntervalSec int64  `json:"postprocess_interval_sec"`
+}
+
+func (a *API) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
+	if a.jobs == nil {
+		writeError(w, http.StatusServiceUnavailable, "job controller not available")
+		return
+	}
+	s := a.jobs.CurrentSchedule()
+	writeJSON(w, http.StatusOK, scheduleResponse{
+		ScanInterval:           s.ScanInterval.String(),
+		DownstreamInterval:     s.DownstreamInterval.String(),
+		BuildInterval:          s.BuildInterval.String(),
+		PostProcessInterval:    s.PostProcessInterval.String(),
+		ScanIntervalSec:        int64(s.ScanInterval.Seconds()),
+		DownstreamIntervalSec:  int64(s.DownstreamInterval.Seconds()),
+		BuildIntervalSec:       int64(s.BuildInterval.Seconds()),
+		PostProcessIntervalSec: int64(s.PostProcessInterval.Seconds()),
+	})
+}
+
+// updateScheduleRequest accepts each interval as a Go duration string (e.g.
+// "5m", "30s", "1h"). Omitted/empty fields are left unchanged.
+type updateScheduleRequest struct {
+	ScanInterval        string `json:"scan_interval"`
+	DownstreamInterval  string `json:"downstream_interval"`
+	BuildInterval       string `json:"build_interval"`
+	PostProcessInterval string `json:"postprocess_interval"`
+}
+
+func (a *API) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
+	if a.jobs == nil {
+		writeError(w, http.StatusServiceUnavailable, "job controller not available")
+		return
+	}
+	var req updateScheduleRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// Parse each provided field; a field must be a positive duration.
+	var sched Schedule
+	persist := map[string]string{}
+	parse := func(raw, settingKey string, dst *time.Duration) bool {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return true // unchanged
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid duration for "+settingKey+" (use e.g. 30s, 5m, 1h)")
+			return false
+		}
+		*dst = d
+		persist[settingKey] = d.String()
+		return true
+	}
+	if !parse(req.ScanInterval, settingScanInterval, &sched.ScanInterval) {
+		return
+	}
+	if !parse(req.DownstreamInterval, settingDownstream, &sched.DownstreamInterval) {
+		return
+	}
+	if !parse(req.BuildInterval, settingBuildInterval, &sched.BuildInterval) {
+		return
+	}
+	if !parse(req.PostProcessInterval, settingPostProcInterval, &sched.PostProcessInterval) {
+		return
+	}
+
+	if len(persist) == 0 {
+		writeError(w, http.StatusBadRequest, "no schedule fields provided")
+		return
+	}
+
+	// Persist first so the change survives a restart, then apply live.
+	if err := a.store.SetSettings(r.Context(), persist); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist schedule")
+		return
+	}
+	a.jobs.Reconfigure(sched)
+
+	// Return the new effective schedule.
+	a.handleGetSchedule(w, r)
 }
 
 func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
