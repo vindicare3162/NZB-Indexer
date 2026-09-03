@@ -6,6 +6,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Docs
+- Added `docs/redis-caching-analysis.md` (#72): a decision record recommending
+  in-process caching (categories/caps + API-key auth) now and deferring Redis
+  to the multi-instance scaling boundary, where a shared rate limiter/cache
+  actually requires it.
+
 ### Added
 - Bulk newsgroup add/enable (#70). A new admin action adds/enables many groups
   at once with an optional backfill window (e.g. 7 days), via
