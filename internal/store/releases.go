@@ -282,51 +282,161 @@ type SearchFilter struct {
 	// Identifiers restricts results to releases carrying ALL of the given
 	// normalized external identifiers (e.g. an imdb id). Empty matches all.
 	Identifiers []ReleaseIdentifier
+	// CountCap bounds the exact count (#120): the total is computed by counting
+	// at most CountCap+1 matching rows, so a broad search never scans the whole
+	// catalogue just to produce a total. 0 means "use the default cap"; a
+	// negative value forces an exact (uncapped) count. When the cap is hit the
+	// result's Total is the cap and Approximate is true.
+	CountCap int
+	// Cursor enables keyset pagination (#120): when set, results start strictly
+	// after this position in the recency ordering, so deep pages don't scan and
+	// discard preceding rows. When set, Offset is ignored.
+	Cursor *SearchCursor
+}
+
+// SearchCursor is a keyset-pagination position in the release recency ordering
+// (coalesce(posted_at, created_at) DESC, id DESC). It points at the last row of
+// the previous page; the next page returns rows strictly older than it.
+type SearchCursor struct {
+	// Sort is coalesce(posted_at, created_at) of the last row on the page.
+	Sort time.Time
+	// ID is the id of the last row on the page (tiebreaker for equal Sort).
+	ID int64
+}
+
+// defaultCountCap bounds count cost for broad searches. Result sets larger than
+// this report Total == cap and Approximate == true.
+const defaultCountCap = 10000
+
+// SearchResult is the outcome of a paginated release search.
+type SearchResult struct {
+	// Releases is the page of matches (newest first).
+	Releases []Release
+	// Total is the number of matches ignoring limit/offset, capped at CountCap
+	// (see Approximate).
+	Total int
+	// Approximate is true when Total was capped (the real total is >= Total).
+	Approximate bool
+	// NextCursor points just past the last returned row for keyset pagination.
+	// Nil when the page is empty.
+	NextCursor *SearchCursor
+	// HasMore indicates another page likely exists (a full page was returned).
+	HasMore bool
 }
 
 // SearchReleases returns releases matching the filter (newest first) plus the
 // total count of matches (ignoring limit/offset) for pagination.
 func (s *Store) SearchReleases(ctx context.Context, f SearchFilter) ([]Release, int, error) {
+	res, err := s.SearchReleasesPage(ctx, f)
+	if err != nil {
+		return nil, 0, err
+	}
+	return res.Releases, res.Total, nil
+}
+
+// SearchReleasesPage runs a paginated release search with a bounded count and
+// optional keyset pagination (#120). It returns the page plus pagination
+// metadata (capped total, approximate flag, next cursor, has-more).
+func (s *Store) SearchReleasesPage(ctx context.Context, f SearchFilter) (SearchResult, error) {
+	var res SearchResult
+
 	where, args := buildSearchWhere(f)
 
-	// Total count for pagination.
-	var total int
-	countQ := `SELECT count(*) FROM releases` + where
-	if err := s.pool.QueryRow(ctx, countQ, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count search: %w", err)
+	// Bounded total: count at most cap+1 matching rows so a broad search never
+	// scans the whole catalogue. A negative cap forces an exact count.
+	countCap := f.CountCap
+	if countCap == 0 {
+		countCap = defaultCountCap
+	}
+	if countCap < 0 {
+		countQ := `SELECT count(*) FROM releases` + where
+		if err := s.pool.QueryRow(ctx, countQ, args...).Scan(&res.Total); err != nil {
+			return res, fmt.Errorf("count search: %w", err)
+		}
+	} else {
+		capArgs := append(append([]any{}, args...), countCap+1)
+		countQ := fmt.Sprintf(
+			`SELECT count(*) FROM (SELECT 1 FROM releases%s LIMIT $%d) capped`,
+			where, len(capArgs))
+		var n int
+		if err := s.pool.QueryRow(ctx, countQ, capArgs...).Scan(&n); err != nil {
+			return res, fmt.Errorf("capped count search: %w", err)
+		}
+		if n > countCap {
+			res.Total = countCap
+			res.Approximate = true
+		} else {
+			res.Total = n
+		}
 	}
 
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 100
 	}
-	args = append(args, limit, f.Offset)
+
+	// Keyset pagination: when a cursor is supplied, page by (sort, id) < cursor
+	// instead of OFFSET, so deep pages don't scan and discard preceding rows.
+	listArgs := append([]any{}, args...)
+	keyClause := where
+	if f.Cursor != nil {
+		listArgs = append(listArgs, f.Cursor.Sort, f.Cursor.ID)
+		cond := fmt.Sprintf("(coalesce(posted_at, created_at), id) < ($%d, $%d)",
+			len(listArgs)-1, len(listArgs))
+		if keyClause == "" {
+			keyClause = " WHERE " + cond
+		} else {
+			keyClause += " AND " + cond
+		}
+	}
+	listArgs = append(listArgs, limit)
 	listQ := fmt.Sprintf(`
 SELECT id, guid, name, original_subject, search_name, category_id, group_id, binary_id,
        poster, total_parts, size_bytes, posted_at, release_hash, pp_status,
        nfo, grabs, created_at, updated_at
 FROM releases%s
 ORDER BY coalesce(posted_at, created_at) DESC, id DESC
-LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args))
+LIMIT $%d`, keyClause, len(listArgs))
+	// OFFSET only applies to the legacy (cursorless) path.
+	if f.Cursor == nil {
+		listArgs = append(listArgs, f.Offset)
+		listQ += fmt.Sprintf(" OFFSET $%d", len(listArgs))
+	}
 
-	rows, err := s.pool.Query(ctx, listQ, args...)
+	rows, err := s.pool.Query(ctx, listQ, listArgs...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("search releases: %w", err)
+		return res, fmt.Errorf("search releases: %w", err)
 	}
 	defer rows.Close()
 
-	var out []Release
 	for rows.Next() {
 		var r Release
 		if err := rows.Scan(&r.ID, &r.GUID, &r.Name, &r.OriginalSubject, &r.SearchName,
 			&r.CategoryID, &r.GroupID, &r.BinaryID, &r.Poster, &r.TotalParts, &r.SizeBytes,
 			&r.PostedAt, &r.ReleaseHash, &r.PPStatus, &r.NFO, &r.Grabs,
 			&r.CreatedAt, &r.UpdatedAt); err != nil {
-			return nil, 0, fmt.Errorf("scan release: %w", err)
+			return res, fmt.Errorf("scan release: %w", err)
 		}
-		out = append(out, r)
+		res.Releases = append(res.Releases, r)
 	}
-	return out, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return res, err
+	}
+
+	// Pagination metadata: a full page implies more may follow, and the last
+	// row becomes the next cursor.
+	if len(res.Releases) == limit {
+		res.HasMore = true
+	}
+	if n := len(res.Releases); n > 0 {
+		last := res.Releases[n-1]
+		sortKey := last.CreatedAt
+		if last.PostedAt != nil {
+			sortKey = *last.PostedAt
+		}
+		res.NextCursor = &SearchCursor{Sort: sortKey, ID: last.ID}
+	}
+	return res, nil
 }
 
 // buildSearchWhere assembles the WHERE clause and positional args shared by the

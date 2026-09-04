@@ -7,6 +7,21 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Efficient release-search pagination (#120). Release search now supports
+  **keyset (cursor) pagination** for the JSON API: passing the `next_cursor`
+  token from a response fetches the next page by predicate
+  (`(posted_at,id) < cursor`) instead of a growing `OFFSET`, so deep pages no
+  longer scan and discard all preceding rows. Exact counts are now **capped**:
+  a broad search counts at most a bounded number of matches and returns
+  `approximate: true` with a capped `total` rather than scanning the whole
+  catalogue on every request (configurable via `SearchFilter.CountCap`; a
+  negative value forces an exact count). The search response adds `next_cursor`,
+  `has_more`, and `approximate`; the SPA uses `has_more` so navigation works
+  with capped totals and shows `N+` for approximate results. Newznab
+  `limit`/`offset`/`total` behaviour is unchanged for client compatibility.
+  Ordering is stable across concurrent inserts and duplicate timestamps (id
+  tiebreaker). Store tests cover keyset/offset equivalence, capped/exact counts,
+  and a query-plan assertion that the keyset page carries no OFFSET.
 - Configurable raw-part retention with a dry-run mode (#118). Raw article rows
   for released items that are fully post-processed and reconstructable from
   durable NZB segments (from #105) can now be pruned after a retention window,
