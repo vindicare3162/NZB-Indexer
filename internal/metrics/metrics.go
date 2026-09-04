@@ -44,8 +44,17 @@ type WorkerSnapshot struct {
 // Providers supply the current snapshots at scrape time. Either may be nil,
 // in which case that family of metrics is omitted.
 type Providers struct {
-	Pipeline func(ctx context.Context) (PipelineSnapshot, error)
-	Worker   func() WorkerSnapshot
+	Pipeline  func(ctx context.Context) (PipelineSnapshot, error)
+	Worker    func() WorkerSnapshot
+	AuthCache func() AuthCacheSnapshot
+}
+
+// AuthCacheSnapshot reports API-key auth cache activity.
+type AuthCacheSnapshot struct {
+	Hits      float64
+	Misses    float64
+	Evictions float64
+	Size      float64
 }
 
 // Metrics bundles the registry, HTTP instruments, and the scrape handler.
@@ -77,7 +86,7 @@ func New(p Providers) *Metrics {
 	}
 	reg.MustRegister(m.httpRequests, m.httpDuration)
 
-	if p.Pipeline != nil || p.Worker != nil {
+	if p.Pipeline != nil || p.Worker != nil || p.AuthCache != nil {
 		reg.MustRegister(newPipelineCollector(p))
 	}
 	return m

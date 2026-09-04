@@ -168,6 +168,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		Worker: func() metrics.WorkerSnapshot {
 			return workerSnapshot(wrk.MetricsSnapshot())
 		},
+		AuthCache: func() metrics.AuthCacheSnapshot {
+			s := authSvc.APIKeyCacheStats()
+			return metrics.AuthCacheSnapshot{
+				Hits: float64(s.Hits), Misses: float64(s.Misses),
+				Evictions: float64(s.Evictions), Size: float64(s.Size),
+			}
+		},
 	})
 
 	mux := http.NewServeMux()

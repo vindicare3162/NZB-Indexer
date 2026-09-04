@@ -471,6 +471,8 @@ func (a *API) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete user")
 		return
 	}
+	// The deleted user's keys must stop authenticating immediately.
+	a.session.InvalidateAPIKeyCache()
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -275,6 +275,8 @@ func (a *API) handleDeleteMyKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete key")
 		return
 	}
+	// Drop cached auth so the deleted key stops authenticating immediately.
+	a.session.InvalidateAPIKeyCache()
 	w.WriteHeader(http.StatusNoContent)
 }
 
