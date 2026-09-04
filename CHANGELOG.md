@@ -7,6 +7,18 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Changed
+- Binary assembly is now set-based, cutting database round trips (#116).
+  `AssembleBinaries` previously issued three statements (aggregate, upsert, link)
+  per grouping inside a Go loop — roughly `2 + 3N` round trips per batch. It now
+  folds an entire batch with two single-statement CTE pipelines (one for
+  multi-file collections, one for single-file posts): each aggregates the
+  selected unassigned groupings, bulk-upserts the binaries with the same
+  additive-accumulation and completeness semantics via `ON CONFLICT DO UPDATE`,
+  and bulk-links the parts by joining on the grouping key — a small constant
+  number of round trips regardless of how many groupings a batch contains.
+  Behaviour is unchanged: out-of-order and across-scan accumulation,
+  single-article completeness, and collection distinct-file completeness all
+  hold.
 - Release search now has shareable URL state and a richer UX (#124). The query,
   category, page, page size, and include-obfuscated toggle are encoded in the
   URL hash (e.g. `#/?q=movie&cat=2000&page=2`), so a search is deep-linkable and

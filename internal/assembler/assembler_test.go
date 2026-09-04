@@ -380,3 +380,99 @@ func TestAgeOutStaleBinaries(t *testing.T) {
 		t.Errorf("stale parts remaining = %d, want 0", staleParts)
 	}
 }
+
+// TestAssembleSetBasedBatchFoldsManyGroupings is the core #116 guarantee: a
+// single AssembleBinaries batch containing many distinct single-file AND
+// collection groupings folds them all correctly in one set-based pass — one
+// binary per grouping, correct completeness, and every part linked — without a
+// per-grouping Go loop.
+func TestAssembleSetBasedBatchFoldsManyGroupings(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+	g, _ := st.UpsertGroup(ctx, "alt.binaries.batch", true)
+
+	const nSingles = 25
+	// Distinct single-file groupings: alternate complete (full parts) and
+	// incomplete (missing the last part) so we can assert completeness per row.
+	for i := 0; i < nSingles; i++ {
+		norm := fmt.Sprintf("Batch.Single.%02d.mkv", i)
+		base := int64(1_000_000 + i*1000)
+		if i%2 == 0 {
+			seedParts(t, st, g.ID, norm, "poster", base, []int{1, 2, 3}, 3) // complete 3/3
+		} else {
+			seedParts(t, st, g.ID, norm, "poster", base, []int{1, 2}, 3) // incomplete 2/3
+		}
+	}
+	// A single-article file (total_parts=0) must also be complete.
+	seedParts(t, st, g.ID, "Batch.SingleArticle", "poster", 2_000_000, []int{1}, 0)
+
+	// Distinct collections: some complete (all files present), some not.
+	const nColls = 10
+	for i := 0; i < nColls; i++ {
+		key := fmt.Sprintf("Coll%02d/2", i)
+		base := int64(3_000_000 + i*1000)
+		seedCollectionFile(t, st, g.ID, key, 2, 1, fmt.Sprintf("c%02d.part1.rar", i), "cposter", base, 3)
+		if i%2 == 0 {
+			// second file present -> complete 2/2
+			seedCollectionFile(t, st, g.ID, key, 2, 2, fmt.Sprintf("c%02d.part2.rar", i), "cposter", base+500, 3)
+		}
+	}
+
+	a := New(st, nil, Options{BatchLimit: 1000})
+	res, err := a.Assemble(ctx)
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	// 25 singles + 1 single-article + 10 collections = 36 binaries touched.
+	if res.BinariesTouched != nSingles+1+nColls {
+		t.Errorf("BinariesTouched = %d, want %d", res.BinariesTouched, nSingles+1+nColls)
+	}
+	// A large batch folded in a single db batch, not many.
+	if res.Batches != 1 {
+		t.Errorf("Batches = %d, want 1 (whole backlog fits one batch)", res.Batches)
+	}
+
+	// No parts left unassigned.
+	var unassigned int
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM parts WHERE binary_id IS NULL`).Scan(&unassigned); err != nil {
+		t.Fatal(err)
+	}
+	if unassigned != 0 {
+		t.Errorf("unassigned parts = %d, want 0", unassigned)
+	}
+
+	// Completeness: 13 complete singles (even indices 0..24) + 1 single-article
+	// + 5 complete collections (even indices 0..9) = 19.
+	complete, err := st.ListCompleteUnreleasedBinaries(ctx, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantComplete := (nSingles+1)/2 + 1 + (nColls+1)/2
+	if len(complete) != wantComplete {
+		t.Fatalf("complete binaries = %d, want %d", len(complete), wantComplete)
+	}
+
+	// Spot-check a specific grouping's collected count and linkage.
+	byName := map[string]store.Binary{}
+	for _, b := range complete {
+		byName[b.NormSubject] = b
+	}
+	full := byName["Batch.Single.00.mkv"]
+	if full.CollectedParts != 3 || full.TotalParts != 3 {
+		t.Errorf("Batch.Single.00 parts = %d/%d, want 3/3", full.CollectedParts, full.TotalParts)
+	}
+	coll := byName["Coll00/2"]
+	if coll.CollectionFiles != 2 || coll.CollectedParts != 2 {
+		t.Errorf("Coll00 = files %d collected %d, want files 2 collected 2", coll.CollectionFiles, coll.CollectedParts)
+	}
+	// The complete collection's 6 segments (3+3) all share its binary_id.
+	var segs int
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM parts WHERE binary_id = $1`, coll.ID).Scan(&segs); err != nil {
+		t.Fatal(err)
+	}
+	if segs != 6 {
+		t.Errorf("segments under Coll00 binary = %d, want 6", segs)
+	}
+}
