@@ -199,6 +199,16 @@ func (a *API) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {
 	if md, err := a.store.GetReleaseMetadata(r.Context(), rel.ID); err == nil && md.Matched {
 		resp["metadata"] = md
 	}
+	// Include normalized external identifiers (imdb/tvdb/tmdb) when present.
+	ids, err := a.store.GetReleaseIdentifiers(r.Context(), rel.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load release identifiers")
+		return
+	}
+	if ids == nil {
+		ids = []store.ReleaseIdentifier{}
+	}
+	resp["identifiers"] = ids
 	writeJSON(w, http.StatusOK, resp)
 }
 

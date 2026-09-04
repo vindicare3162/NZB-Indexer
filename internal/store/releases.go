@@ -279,6 +279,9 @@ type SearchFilter struct {
 	// IncludeObfuscated includes releases whose name is still obfuscated. By
 	// default (false) these unusable releases are excluded from results.
 	IncludeObfuscated bool
+	// Identifiers restricts results to releases carrying ALL of the given
+	// normalized external identifiers (e.g. an imdb id). Empty matches all.
+	Identifiers []ReleaseIdentifier
 }
 
 // SearchReleases returns releases matching the filter (newest first) plus the
@@ -362,6 +365,15 @@ func buildSearchWhere(f SearchFilter) (string, []any) {
 			}
 		}
 		clauses = append(clauses, "("+strings.Join(catClauses, " OR ")+")")
+	}
+
+	// External-identifier filter: require the release to carry each given
+	// (source, identifier). One EXISTS per identifier so multiple ids are ANDed.
+	for _, id := range f.Identifiers {
+		args = append(args, id.Source, id.Identifier)
+		clauses = append(clauses, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM release_identifiers ri WHERE ri.release_id = releases.id AND ri.source = $%d AND ri.identifier = $%d)",
+			len(args)-1, len(args)))
 	}
 
 	if len(clauses) == 0 {

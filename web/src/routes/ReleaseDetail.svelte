@@ -6,6 +6,7 @@
   let release = $state(null);
   let files = $state([]);
   let metadata = $state(null);
+  let identifiers = $state([]);
   let error = $state('');
   let loading = $state(true);
 
@@ -17,6 +18,7 @@
         release = res.release;
         files = res.files || [];
         metadata = res.metadata || null;
+        identifiers = res.identifiers || [];
       })
       .catch((err) => { error = err.message || 'Failed to load release'; })
       .finally(() => { loading = false; });
@@ -67,6 +69,26 @@
           {#if metadata.overview}<p>{metadata.overview}</p>{/if}
           <p class="muted" style="font-size:0.8rem">Source: {metadata.source}</p>
         </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if identifiers.length > 0}
+    <div class="panel">
+      <h3 style="margin-top:0">External IDs</h3>
+      <div class="row" style="gap:0.6rem; flex-wrap:wrap">
+        {#each identifiers as id}
+          {@const tagStyle = 'display:inline-block; padding:0.2rem 0.6rem; border:1px solid var(--border, #444); border-radius:999px; font-size:0.8rem; text-decoration:none'}
+          {#if id.source === 'imdb'}
+            <a style={tagStyle} href={`https://www.imdb.com/title/${id.identifier}/`} target="_blank" rel="noopener noreferrer">IMDb: {id.identifier}</a>
+          {:else if id.source === 'tvdb'}
+            <a style={tagStyle} href={`https://thetvdb.com/dereferrer/series/${id.identifier}`} target="_blank" rel="noopener noreferrer">TVDB: {id.identifier}</a>
+          {:else if id.source === 'tmdb'}
+            <a style={tagStyle} href={`https://www.themoviedb.org/movie/${id.identifier}`} target="_blank" rel="noopener noreferrer">TMDB: {id.identifier}</a>
+          {:else}
+            <span style={tagStyle}>{id.source}: {id.identifier}</span>
+          {/if}
+        {/each}
       </div>
     </div>
   {/if}

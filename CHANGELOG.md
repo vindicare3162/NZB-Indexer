@@ -7,6 +7,18 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Normalized external release identifiers (#108). A new `release_identifiers`
+  table (migration 0014) stores per-release `(source, identifier)` pairs for
+  supported providers (imdb, tvdb, tmdb), normalized to canonical form (IMDb
+  `tt<digits>`; TVDB/TMDB decimal digits) and de-duplicated per release. The
+  REST release detail now returns an `identifiers` array (surfaced in the SPA
+  as linked External-ID tags), and both the internal and Newznab search filters
+  can match releases by identifier. Newznab `imdbid`/`tvdbid`/`tmdbid` params
+  are now matched against these stored identifiers instead of being folded into
+  the release-name text query, and the capabilities response advertises them on
+  the relevant search types. Identifiers are populated by metadata enrichment
+  (a later change); until then, id searches match only releases that already
+  carry the identifier.
 - API-key authentication is now cached in-process with a short TTL, and
   `last_used_at` writes are throttled (#107). Repeated Newznab polling within
   the TTL avoids the per-request key/user lookup and per-request last-used

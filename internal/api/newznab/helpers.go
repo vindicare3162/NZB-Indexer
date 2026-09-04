@@ -31,30 +31,11 @@ func buildQuery(q url.Values) string {
 		}
 	}
 
-	// An IMDB id, when supplied, is added as a search token. Some scene names
-	// embed the id (e.g. "...imdb-tt0111161..."), so this can match; when it
-	// does not, the id still constrains the search rather than matching all.
-	if id := normalizeIMDB(q.Get("imdbid")); id != "" {
-		base = strings.TrimSpace(base + " " + id)
-	}
+	// imdbid/tvdbid/tmdbid are no longer folded into the text query; they are
+	// matched against stored normalized release identifiers (see
+	// parseIdentifiers + SearchFilter.Identifiers), which is precise rather
+	// than hoping the id appears in the release name.
 	return base
-}
-
-// normalizeIMDB reduces an imdbid parameter to its digit form. Clients send it
-// either bare ("0111161") or prefixed ("tt0111161"); returns "" when there is
-// no usable id.
-func normalizeIMDB(s string) string {
-	s = strings.TrimSpace(strings.ToLower(s))
-	s = strings.TrimPrefix(s, "tt")
-	if s == "" {
-		return ""
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return ""
-		}
-	}
-	return "tt" + s // canonical "tt<digits>" form used as the search token
 }
 
 // hasIDParam reports whether the request carries an external-id search
@@ -67,6 +48,24 @@ func hasIDParam(q url.Values) bool {
 		}
 	}
 	return false
+}
+
+// parseIdentifiers maps supported Newznab id params to normalized store
+// identifiers for filtering. Only sources we can actually match are mapped
+// (imdbid, tvdbid, tmdbid); unrecognised/invalid values are skipped.
+func parseIdentifiers(q url.Values) []store.ReleaseIdentifier {
+	var out []store.ReleaseIdentifier
+	add := func(param, source string) {
+		if v := strings.TrimSpace(q.Get(param)); v != "" {
+			if id, ok := store.NormalizeIdentifier(source, v); ok {
+				out = append(out, id)
+			}
+		}
+	}
+	add("imdbid", store.IDSourceIMDB)
+	add("tvdbid", store.IDSourceTVDB)
+	add("tmdbid", store.IDSourceTMDB)
+	return out
 }
 
 // pad2 zero-pads a small integer to at least two digits.
