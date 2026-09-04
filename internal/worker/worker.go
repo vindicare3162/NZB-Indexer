@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -88,7 +89,14 @@ type Metrics struct {
 	ReleasesCreated  int64      `json:"releases_created"`
 	ReleasesRenamed  int64      `json:"releases_renamed"`
 	NFOsFound        int64      `json:"nfos_found"`
-	CurrentStage     string     `json:"current_stage"`
+	// CurrentStage is the most recently entered stage (single value, kept for
+	// compatibility). Because loops run concurrently it can be overwritten;
+	// prefer ActiveStages for an accurate view of what is running now.
+	CurrentStage string `json:"current_stage"`
+	// ActiveStages lists every pipeline stage currently executing, sorted. The
+	// loops run on independent goroutines, so more than one can be active at
+	// once (e.g. "backfill" and "postprocess"). Empty means idle.
+	ActiveStages []string `json:"active_stages"`
 }
 
 // Worker runs and coordinates the pipeline. The scan loop and the downstream
@@ -129,6 +137,9 @@ type Worker struct {
 
 	mu      sync.Mutex
 	metrics Metrics
+	// active is the set of pipeline stages currently executing (guarded by mu).
+	// Loops run concurrently, so several may be active at once.
+	active map[string]bool
 }
 
 // scanTrigger is a manual scan request. backfill selects a backfill pass.
@@ -172,6 +183,7 @@ func New(groups GroupLister, scan Scanner, asm Assembler, build ReleaseBuilder, 
 		asmReset:     make(chan struct{}, 1),
 		buildReset:   make(chan struct{}, 1),
 		ppReset:      make(chan struct{}, 1),
+		active:       map[string]bool{},
 	}
 }
 
@@ -402,6 +414,8 @@ func (w *Worker) runEnrich(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	w.stageStart("enrich")
+	defer w.stageEnd("enrich")
 	if err := w.enrich.Run(ctx); err != nil {
 		w.recordError(fmt.Errorf("metadata enrichment: %w", err))
 	}
@@ -420,7 +434,8 @@ func (w *Worker) runScan(ctx context.Context, group string, backfill bool) {
 	if backfill {
 		stage = "backfill"
 	}
-	w.setStage(stage)
+	w.stageStart(stage)
+	defer w.stageEnd(stage)
 
 	groups, err := w.targetGroups(ctx, group)
 	if err != nil {
@@ -462,7 +477,8 @@ func (w *Worker) runAssemble(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	w.setStage("assemble")
+	w.stageStart("assemble")
+	defer w.stageEnd("assemble")
 	asmRes, err := w.asm.Assemble(ctx)
 	if err != nil {
 		w.recordError(fmt.Errorf("assemble: %w", err))
@@ -471,7 +487,6 @@ func (w *Worker) runAssemble(ctx context.Context) {
 		w.metrics.BinariesTouched += int64(asmRes.BinariesTouched)
 		w.mu.Unlock()
 	}
-	w.setStage("idle")
 }
 
 // runBuild promotes complete binaries into releases under the build mutex. It
@@ -484,7 +499,8 @@ func (w *Worker) runBuild(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	w.setStage("release")
+	w.stageStart("release")
+	defer w.stageEnd("release")
 	buildRes, err := w.build.Build(ctx)
 	if err != nil {
 		w.recordError(fmt.Errorf("build releases: %w", err))
@@ -493,7 +509,6 @@ func (w *Worker) runBuild(ctx context.Context) {
 		w.metrics.ReleasesCreated += int64(buildRes.Created)
 		w.mu.Unlock()
 	}
-	w.setStage("idle")
 }
 
 // runPostProcess runs one post-processing pass under the post-process mutex,
@@ -511,14 +526,14 @@ func (w *Worker) runPostProcess(ctx context.Context) {
 	w.metrics.Running = true
 	w.metrics.LastCycleStart = &start
 	w.mu.Unlock()
+	w.stageStart("postprocess")
 	defer func() {
+		w.stageEnd("postprocess")
 		w.mu.Lock()
 		w.metrics.Running = false
-		w.metrics.CurrentStage = "idle"
 		w.mu.Unlock()
 	}()
 
-	w.setStage("postprocess")
 	ppRes, err := w.pp.Run(ctx)
 	if err != nil {
 		w.recordError(fmt.Errorf("post-process: %w", err))
@@ -580,8 +595,7 @@ func (w *Worker) TriggerPostProcess() error {
 func (w *Worker) Status() any {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	m := w.metrics // copy
-	return m
+	return w.snapshotLocked()
 }
 
 // MetricsSnapshot returns a typed copy of the current pipeline metrics, for
@@ -590,7 +604,22 @@ func (w *Worker) Status() any {
 func (w *Worker) MetricsSnapshot() Metrics {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.metrics
+	return w.snapshotLocked()
+}
+
+// snapshotLocked returns a copy of the metrics with ActiveStages populated from
+// the current active set. Caller must hold w.mu.
+func (w *Worker) snapshotLocked() Metrics {
+	m := w.metrics // copy
+	if len(w.active) > 0 {
+		stages := make([]string, 0, len(w.active))
+		for s := range w.active {
+			stages = append(stages, s)
+		}
+		sort.Strings(stages)
+		m.ActiveStages = stages
+	}
+	return m
 }
 
 // --- metrics helpers ---
@@ -598,6 +627,27 @@ func (w *Worker) MetricsSnapshot() Metrics {
 func (w *Worker) setStage(stage string) {
 	w.mu.Lock()
 	w.metrics.CurrentStage = stage
+	w.mu.Unlock()
+}
+
+// stageStart marks a pipeline stage as currently running and records it as the
+// current stage. stageEnd clears it. They are safe to call concurrently across
+// loops, so ActiveStages reflects everything running at once.
+func (w *Worker) stageStart(stage string) {
+	w.mu.Lock()
+	w.active[stage] = true
+	w.metrics.CurrentStage = stage
+	w.mu.Unlock()
+}
+
+func (w *Worker) stageEnd(stage string) {
+	w.mu.Lock()
+	delete(w.active, stage)
+	// When nothing is running, reflect idle in the single-value CurrentStage
+	// (compatibility with the pre-ActiveStages field/consumers).
+	if len(w.active) == 0 {
+		w.metrics.CurrentStage = "idle"
+	}
 	w.mu.Unlock()
 }
 
