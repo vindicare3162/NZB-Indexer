@@ -19,6 +19,10 @@ type SystemProbe interface {
 	// DefaultJWTSecret reports whether the JWT secret is still the insecure
 	// placeholder default (a misconfiguration worth flagging).
 	DefaultJWTSecret() bool
+	// Capacity reports the effective NNTP connection ceiling the pool was built
+	// with and the derived scan/post-process worker limits, so operators can
+	// see how concurrency was sized.
+	Capacity() (nntpMaxConns, scanWorkers, postProcessWorkers int)
 }
 
 // startTime records process start for uptime reporting.
@@ -42,6 +46,12 @@ type usenetHealth struct {
 	PoolOpen         int  `json:"pool_open"`
 	PoolIdle         int  `json:"pool_idle"`
 	ServerConfigured bool `json:"server_configured"`
+	// Effective capacity: the NNTP connection ceiling the pool was built with
+	// (from the active DB-managed server when present), and the derived worker
+	// limits sized against it.
+	MaxConns           int `json:"max_conns"`
+	ScanWorkers        int `json:"scan_workers"`
+	PostProcessWorkers int `json:"postprocess_workers"`
 }
 
 type healthResponse struct {
@@ -96,7 +106,11 @@ func (a *API) handleHealthReport(w http.ResponseWriter, r *http.Request) {
 	if a.probe != nil {
 		open, idle := a.probe.NNTPPoolStats()
 		configured := a.probe.NewsServerConfigured(ctx)
-		usenet = &usenetHealth{PoolOpen: open, PoolIdle: idle, ServerConfigured: configured}
+		maxConns, scanW, ppW := a.probe.Capacity()
+		usenet = &usenetHealth{
+			PoolOpen: open, PoolIdle: idle, ServerConfigured: configured,
+			MaxConns: maxConns, ScanWorkers: scanW, PostProcessWorkers: ppW,
+		}
 		if !configured {
 			checks = append(checks, healthCheck{Name: "news_server", Status: "warn", Message: "no active news server configured"})
 		}

@@ -285,6 +285,7 @@
         <div>
           <div class="muted" style="font-size:0.8rem">Usenet</div>
           <div>Connections: {health.usenet.pool_open} open, {health.usenet.pool_idle} idle</div>
+          <div>Capacity: {health.usenet.max_conns} max ({health.usenet.scan_workers} scan / {health.usenet.postprocess_workers} pp workers)</div>
           <div>Server: {health.usenet.server_configured ? 'configured' : 'not configured'}</div>
         </div>
       {/if}

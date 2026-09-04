@@ -17,6 +17,11 @@ type systemProbe struct {
 	pool      *nntp.Pool
 	store     *store.Store
 	jwtSecret string
+	// Effective concurrency sizing, captured at startup from the pool the
+	// service actually built (active DB-managed server when present).
+	nntpMaxConns  int
+	scanWorkers   int
+	ppWorkers     int
 }
 
 func (p systemProbe) NNTPPoolStats() (open, idle int) {
@@ -36,4 +41,8 @@ func (p systemProbe) NewsServerConfigured(ctx context.Context) bool {
 
 func (p systemProbe) DefaultJWTSecret() bool {
 	return p.jwtSecret == "" || p.jwtSecret == defaultJWTSecret
+}
+
+func (p systemProbe) Capacity() (nntpMaxConns, scanWorkers, postProcessWorkers int) {
+	return p.nntpMaxConns, p.scanWorkers, p.ppWorkers
 }
