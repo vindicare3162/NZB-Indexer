@@ -83,10 +83,13 @@ least to most invasive:
    more than N days ago, provided `release_files` holds the segments needed to
    rebuild the NZB. Biggest storage win; requires verifying NZB generation reads
    only from `release_files` (not `parts`) for released items before enabling.
-3. **Time partitioning of `parts`** (by `posted_at` or ingest date) — makes
+3. **Time partitioning of `parts`** (by ingest date, `created_at`) — makes
    dropping old data an `O(1)` partition drop instead of a big `DELETE`, and
    keeps autovacuum per-partition. Worth it once `parts` is very large or a
-   retention policy is adopted; adds schema/operational complexity.
+   retention policy is adopted; adds schema/operational complexity. This is now
+   implemented as an opt-in rollout (#119) — see `docs/parts-partitioning.md`
+   for the partition key, application-managed partition creation/expiry, and the
+   resumable conversion procedure for existing installs.
 
 Recommendation: keep option 1 until storage is a real constraint; when it is,
 adopt option 2 (retention on released binaries' parts) after confirming NZB
