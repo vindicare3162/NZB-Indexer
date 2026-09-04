@@ -7,6 +7,15 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Changed
+- Admin action feedback and confirmation flows overhauled (#122). Every admin
+  action now gives distinct, dismissible toast feedback (success or error,
+  auto-expiring, errors linger longer) instead of a single shared status line
+  that was easy to miss. Destructive actions — deleting a group, user, or news
+  server, and pruning raw parts — now use an accessible in-page confirmation
+  dialog (labelled `alertdialog`, Escape to cancel) in place of the blocking
+  browser `confirm()`, with clear consequences spelled out. The toast queue and
+  confirmation flow are pure, unit-tested modules (`web/src/lib/toasts.js`,
+  `web/src/lib/confirm.js`).
 - Binary assembly is now set-based, cutting database round trips (#116).
   `AssembleBinaries` previously issued three statements (aggregate, upsert, link)
   per grouping inside a Go loop — roughly `2 + 3N` round trips per batch. It now
