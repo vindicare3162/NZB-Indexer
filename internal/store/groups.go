@@ -11,7 +11,7 @@ import (
 
 // groupColumns is the shared SELECT/RETURNING column list for groups, kept in
 // one place so all group queries scan the same shape.
-const groupColumns = `id, name, active, last_scanned_high, backfill_low, backfill_complete, backfill_target_days, backfill_target_articles, last_scan_at, last_scan_backfill, last_scan_articles, last_scan_parts, server_high, last_scan_error, last_scan_error_at, created_at, updated_at`
+const groupColumns = `id, name, active, last_scanned_high, backfill_low, backfill_complete, backfill_target_days, backfill_target_articles, last_scan_at, last_scan_backfill, last_scan_articles, last_scan_parts, server_high, last_scan_error, last_scan_error_at, priority, forward_target_articles, created_at, updated_at`
 
 // scanGroup scans a row in groupColumns order into a Group.
 func scanGroup(row pgx.Row) (Group, error) {
@@ -20,6 +20,7 @@ func scanGroup(row pgx.Row) (Group, error) {
 		&g.BackfillComplete, &g.BackfillTargetDays, &g.BackfillTargetArticles,
 		&g.LastScanAt, &g.LastScanBackfill, &g.LastScanArticles, &g.LastScanParts,
 		&g.ServerHigh, &g.LastScanError, &g.LastScanErrorAt,
+		&g.Priority, &g.ForwardTargetArticles,
 		&g.CreatedAt, &g.UpdatedAt)
 	return g, err
 }
@@ -59,7 +60,8 @@ func (s *Store) ListGroups(ctx context.Context, activeOnly bool) ([]Group, error
 	if activeOnly {
 		q += ` WHERE active = TRUE`
 	}
-	q += ` ORDER BY name`
+	// Scan high-priority groups first (#126); name is a stable tiebreaker.
+	q += ` ORDER BY priority DESC, name`
 
 	rows, err := s.pool.Query(ctx, q)
 	if err != nil {
@@ -122,6 +124,8 @@ func groupSortExpr(sort string, desc bool) string {
 		col = "last_scan_at"
 	case "backfill":
 		col = "backfill_low"
+	case "priority":
+		col = "priority"
 	default:
 		col = "name"
 	}
@@ -212,6 +216,23 @@ UPDATE groups SET backfill_target_days = $2, backfill_target_articles = $3,
 WHERE id = $1`, id, days, articles)
 	if err != nil {
 		return fmt.Errorf("set backfill target: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetGroupScanConfig sets a group's scan priority and per-group forward article
+// budget (#126). priority orders the scan set (higher first). forwardArticles
+// overrides the global per-pass forward cap when non-nil (0 = unbounded); nil
+// clears the override so the group uses the global default.
+func (s *Store) SetGroupScanConfig(ctx context.Context, id int64, priority int, forwardArticles *int64) error {
+	ct, err := s.pool.Exec(ctx, `
+UPDATE groups SET priority = $2, forward_target_articles = $3, updated_at = now()
+WHERE id = $1`, id, priority, forwardArticles)
+	if err != nil {
+		return fmt.Errorf("set group scan config: %w", err)
 	}
 	if ct.RowsAffected() == 0 {
 		return ErrNotFound

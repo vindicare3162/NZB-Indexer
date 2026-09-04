@@ -93,6 +93,8 @@ export const api = {
     request('POST', '/admin/groups/bulk', { names, backfill_days: backfillDays, active }),
   setGroupActive: (id, active) => request('PATCH', `/admin/groups/${id}`, { active }),
   setGroupBackfill: (id, days, articles) => request('PUT', `/admin/groups/${id}/backfill`, { days, articles }),
+  setGroupScanConfig: (id, priority, forwardArticles) =>
+    request('PUT', `/admin/groups/${id}/scan-config`, { priority, forward_articles: forwardArticles }),
   deleteGroup: (id) => request('DELETE', `/admin/groups/${id}`),
   users: () => request('GET', '/admin/users'),
   createUser: (username, password, admin) =>

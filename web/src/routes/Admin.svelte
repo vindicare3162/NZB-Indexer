@@ -62,7 +62,7 @@
   // currently being edited (null = none); the fields are strings so blank is
   // distinguishable from 0.
   let editingBackfillId = $state(null);
-  let backfillForm = $state({ days: '', articles: '' });
+  let backfillForm = $state({ days: '', articles: '', priority: '', forward: '' });
   let backfillFormError = $state('');
   let backfillSaving = $state(false);
 
@@ -481,6 +481,8 @@
     backfillForm = {
       days: g.backfill_target_days != null ? String(g.backfill_target_days) : '',
       articles: g.backfill_target_articles != null ? String(g.backfill_target_articles) : '',
+      priority: g.priority != null ? String(g.priority) : '0',
+      forward: g.forward_target_articles != null ? String(g.forward_target_articles) : '',
     };
   }
   function cancelBackfillEdit() {
@@ -492,15 +494,23 @@
     backfillFormError = '';
     const { payload, error: verr } = buildBackfillPayload(backfillForm.days, backfillForm.articles);
     if (verr) { backfillFormError = verr; return; }
+    // Forward budget reuses the backfill blank/0/positive semantics; priority is
+    // a plain integer (may be negative) defaulting to 0 (#126).
+    const fwd = buildBackfillPayload('', backfillForm.forward);
+    if (fwd.error) { backfillFormError = fwd.error; return; }
+    const priStr = backfillForm.priority.trim();
+    const priority = priStr === '' ? 0 : Number(priStr);
+    if (!Number.isInteger(priority)) { backfillFormError = 'Priority must be a whole number'; return; }
     backfillSaving = true;
     try {
       await api.setGroupBackfill(g.id, payload.days, payload.articles);
-      notify(`Backfill target saved for ${g.name}`);
+      await api.setGroupScanConfig(g.id, priority, fwd.payload.articles);
+      notify(`Group config saved for ${g.name}`);
       editingBackfillId = null;
       loadAll();
     } catch (e) {
       // Keep the editor open so the operator can retry without re-entering.
-      backfillFormError = e.message || 'Failed to save backfill target';
+      backfillFormError = e.message || 'Failed to save group config';
     } finally {
       backfillSaving = false;
     }
@@ -757,6 +767,7 @@
       <thead><tr>
         <th><button class="linklike" onclick={() => sortGroupsBy('name')}>Group{groupQuery.sort === 'name' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
         <th>Active</th>
+        <th><button class="linklike" onclick={() => sortGroupsBy('priority')}>Priority{groupQuery.sort === 'priority' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
         <th>Fwd pos</th>
         <th><button class="linklike" onclick={() => sortGroupsBy('lag')}>Lag{groupQuery.sort === 'lag' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
         <th><button class="linklike" onclick={() => sortGroupsBy('last_scan')}>Last scan{groupQuery.sort === 'last_scan' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
@@ -769,6 +780,7 @@
           <tr>
             <td>{g.name}</td>
             <td>{g.active ? 'yes' : 'no'}</td>
+            <td>{g.priority ?? 0}</td>
             <td>{g.last_scanned_high}</td>
             <td class="muted">{formatLag(g)}</td>
             <td class="muted" style="white-space:nowrap">
@@ -783,19 +795,21 @@
               <button class="secondary" onclick={() => toggleGroup(g)}>{g.active ? 'Disable' : 'Enable'}</button>
               <button class="secondary" onclick={() => scan(g.name)}>Scan</button>
               <button class="secondary" onclick={() => backfill(g.name)}>Backfill</button>
-              <button class="secondary" aria-expanded={editingBackfillId === g.id} onclick={() => editingBackfillId === g.id ? cancelBackfillEdit() : setBackfillTarget(g)}>Target</button>
+              <button class="secondary" aria-expanded={editingBackfillId === g.id} onclick={() => editingBackfillId === g.id ? cancelBackfillEdit() : setBackfillTarget(g)}>Config</button>
               <button class="danger" onclick={() => removeGroup(g)}>Delete</button>
             </td>
           </tr>
           {#if editingBackfillId === g.id}
             <tr>
-              <td colspan="8">
+              <td colspan="9">
                 <form class="panel" style="margin:0" onsubmit={(e) => { e.preventDefault(); saveBackfillTarget(g); }}>
-                  <h4 style="margin:0 0 0.4rem">Backfill target — {g.name}</h4>
+                  <h4 style="margin:0 0 0.4rem">Group config — {g.name}</h4>
                   <p class="muted" style="margin:0 0 0.6rem; font-size:0.85rem">
                     Backfill limits control how much history is indexed for this group, affecting storage and provider load.
                     Leave a field <strong>blank</strong> to use the global default, enter <strong>0</strong> for no limit (unlimited),
-                    or a positive number to set an explicit limit. The two limits are independent.
+                    or a positive number to set an explicit limit. The two backfill limits are independent.
+                    <strong>Priority</strong> orders scanning (higher scanned first); the <strong>forward budget</strong>
+                    caps how many new articles a single forward pass ingests for this group.
                   </p>
                   <div class="row" style="gap:1rem; align-items:flex-start; flex-wrap:wrap">
                     <label style="display:flex; flex-direction:column; gap:0.2rem">
@@ -805,17 +819,29 @@
                       <span class="muted" style="font-size:0.75rem">{describeBackfillField(backfillForm.days.trim() === '' ? null : Number(backfillForm.days), 'days')}</span>
                     </label>
                     <label style="display:flex; flex-direction:column; gap:0.2rem">
-                      Max articles per pass
+                      Backfill articles per pass
                       <input type="number" min="0" step="1" inputmode="numeric" placeholder="default"
                              bind:value={backfillForm.articles} style="width:11rem" />
                       <span class="muted" style="font-size:0.75rem">{describeBackfillField(backfillForm.articles.trim() === '' ? null : Number(backfillForm.articles), 'articles')}</span>
+                    </label>
+                    <label style="display:flex; flex-direction:column; gap:0.2rem">
+                      Priority
+                      <input type="number" step="1" inputmode="numeric" placeholder="0"
+                             bind:value={backfillForm.priority} style="width:7rem" />
+                      <span class="muted" style="font-size:0.75rem">Higher scanned first (default 0).</span>
+                    </label>
+                    <label style="display:flex; flex-direction:column; gap:0.2rem">
+                      Forward articles per pass
+                      <input type="number" min="0" step="1" inputmode="numeric" placeholder="default"
+                             bind:value={backfillForm.forward} style="width:11rem" />
+                      <span class="muted" style="font-size:0.75rem">{describeBackfillField(backfillForm.forward.trim() === '' ? null : Number(backfillForm.forward), 'articles')}</span>
                     </label>
                   </div>
                   {#if backfillFormError}
                     <p class="danger" role="alert" style="margin:0.6rem 0 0">{backfillFormError}</p>
                   {/if}
                   <div class="row" style="margin-top:0.6rem; gap:0.5rem">
-                    <button type="submit" disabled={backfillSaving}>{backfillSaving ? 'Saving…' : 'Save target'}</button>
+                    <button type="submit" disabled={backfillSaving}>{backfillSaving ? 'Saving…' : 'Save config'}</button>
                     <button type="button" class="secondary" onclick={cancelBackfillEdit} disabled={backfillSaving}>Cancel</button>
                   </div>
                 </form>

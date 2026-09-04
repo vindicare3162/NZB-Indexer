@@ -59,8 +59,8 @@ func TestMigrateUpDownAndVersion(t *testing.T) {
 	if dirty {
 		t.Fatal("schema is dirty after migrate up")
 	}
-	if v != 17 {
-		t.Fatalf("expected schema version 17, got %d", v)
+	if v != 18 {
+		t.Fatalf("expected schema version 18, got %d", v)
 	}
 
 	// Re-running up should be a no-op, not an error.
@@ -326,6 +326,61 @@ func TestListGroupsPage(t *testing.T) {
 	}
 	if page.Groups[0].Name != "alt.binaries.c" || page.Groups[1].Name != "misc.test.d" {
 		t.Errorf("page 2 = %s, %s", page.Groups[0].Name, page.Groups[1].Name)
+	}
+}
+
+// TestGroupScanConfig covers per-group priority + forward budget (#126):
+// SetGroupScanConfig persists both, ListGroups orders by priority DESC, and a
+// nil forward budget clears the override.
+func TestGroupScanConfig(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+
+	low, _ := st.UpsertGroup(ctx, "alt.binaries.low", true)
+	high, _ := st.UpsertGroup(ctx, "alt.binaries.high", true)
+
+	// Defaults: priority 0, no forward override.
+	if low.Priority != 0 || low.ForwardTargetArticles != nil {
+		t.Errorf("fresh group defaults wrong: %+v", low)
+	}
+
+	// Give "high" a higher priority and an explicit forward budget.
+	fwd := int64(25000)
+	if err := st.SetGroupScanConfig(ctx, high.ID, 10, &fwd); err != nil {
+		t.Fatal(err)
+	}
+	// "low" gets a lower priority and unbounded forward (0).
+	zero := int64(0)
+	if err := st.SetGroupScanConfig(ctx, low.ID, 1, &zero); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := st.GetGroupByName(ctx, high.Name)
+	if got.Priority != 10 || got.ForwardTargetArticles == nil || *got.ForwardTargetArticles != 25000 {
+		t.Errorf("high scan config = priority %d forward %v, want 10/25000", got.Priority, got.ForwardTargetArticles)
+	}
+
+	// ListGroups orders by priority DESC: high before low.
+	groups, err := st.ListGroups(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 2 || groups[0].Name != "alt.binaries.high" || groups[1].Name != "alt.binaries.low" {
+		t.Errorf("priority order wrong: %v", []string{groups[0].Name, groups[1].Name})
+	}
+
+	// Clearing the forward override (nil) reverts to the global default.
+	if err := st.SetGroupScanConfig(ctx, high.ID, 10, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetGroupByName(ctx, high.Name)
+	if got.ForwardTargetArticles != nil {
+		t.Errorf("forward override should be cleared, got %v", got.ForwardTargetArticles)
+	}
+
+	// Not found.
+	if err := st.SetGroupScanConfig(ctx, 99999, 5, nil); err != ErrNotFound {
+		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
 

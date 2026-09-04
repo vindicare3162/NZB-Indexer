@@ -62,6 +62,8 @@ type Store interface {
 	UpsertGroup(ctx context.Context, name string, active bool) (store.Group, error)
 	SetGroupActive(ctx context.Context, id int64, active bool) error
 	SetGroupBackfillTarget(ctx context.Context, id int64, days *int, articles *int64) error
+	// SetGroupScanConfig sets a group's scan priority and forward budget (#126).
+	SetGroupScanConfig(ctx context.Context, id int64, priority int, forwardArticles *int64) error
 	DeleteGroup(ctx context.Context, id int64) error
 
 	// News servers (admin)
@@ -251,6 +253,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/v1/admin/groups/bulk", admin(http.HandlerFunc(a.handleBulkGroups)))
 	mux.Handle("PATCH /api/v1/admin/groups/{id}", admin(http.HandlerFunc(a.handleUpdateGroup)))
 	mux.Handle("PUT /api/v1/admin/groups/{id}/backfill", admin(http.HandlerFunc(a.handleSetGroupBackfill)))
+	mux.Handle("PUT /api/v1/admin/groups/{id}/scan-config", admin(http.HandlerFunc(a.handleSetGroupScanConfig)))
 	mux.Handle("DELETE /api/v1/admin/groups/{id}", admin(http.HandlerFunc(a.handleDeleteGroup)))
 	mux.Handle("GET /api/v1/admin/users", admin(http.HandlerFunc(a.handleListUsers)))
 	mux.Handle("POST /api/v1/admin/users", admin(http.HandlerFunc(a.handleCreateUser)))
