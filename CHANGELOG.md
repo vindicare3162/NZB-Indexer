@@ -7,6 +7,23 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- NNTP provider health checks, failover, and circuit breaking (#128). The
+  pipeline now routes NNTP work across all enabled DB-managed servers by
+  priority: the highest-priority healthy provider serves each request, and on a
+  connection or authentication failure that provider's circuit breaker trips and
+  work fails over to the next healthy provider, so indexing continues through a
+  fallback instead of failing. Errors are classified (connection, auth,
+  protocol, retention) — protocol/retention responses (the server answered) are
+  returned without failover, while repeated connection failures (or any auth
+  failure) open the circuit to prevent retry storms. Opened circuits are probed
+  after a cooldown (half-open) and restored on success. Per-provider circuit
+  state, failure counts, last error, and pool utilisation are exposed in the
+  admin health report (`usenet.providers`) and SPA, and an open circuit raises a
+  health check (warn, or error when every provider is down). Configurable via
+  `GOINDEX_NNTP_CIRCUIT_FAILURE_THRESHOLD` / `GOINDEX_NNTP_CIRCUIT_COOLDOWN`.
+  Editing servers rebuilds the failover rotation live (existing servers keep
+  their circuit state). Race-enabled tests cover failover, recovery,
+  simultaneous failures, and protocol-vs-connection handling.
 - Opt-in time-partitioning strategy for the high-volume `parts` table (#119).
   At large scale, native declarative RANGE partitioning by ingest month
   (`created_at`) lets retention drop an entire expired month as an instant

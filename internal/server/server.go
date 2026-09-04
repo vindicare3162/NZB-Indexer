@@ -50,6 +50,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	if err := seedServerFromConfig(ctx, st, cfg, logger); err != nil {
 		return fmt.Errorf("seed server: %w", err)
 	}
+	// A default connection config used when no DB server is configured yet.
 	poolCfg := nntp.Config{
 		Host:           cfg.NNTP.Host,
 		Port:           cfg.NNTP.Port,
@@ -61,18 +62,27 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		MaxRetries:     3,
 		RetryBackoff:   500 * time.Millisecond,
 	}
-	if active, err := st.GetActiveServer(ctx); err == nil {
-		poolCfg = serverToNNTPConfig(active, cfg.NNTP.ConnectTimeout)
-		logger.Info("using configured news server", "name", active.Name, "host", active.Host)
-	}
-	pool := nntp.New(poolCfg)
+	// Build a failover pool over ALL enabled servers by priority (#128): the
+	// highest-priority healthy provider serves each request, with per-provider
+	// circuit breaking and automatic failover/recovery.
+	endpoints := buildEndpoints(ctx, st, cfg, poolCfg)
+	pool := nntp.NewFailover(endpoints, nntp.FailoverOptions{
+		FailureThreshold: cfg.NNTP.CircuitFailureThreshold,
+		Cooldown:         cfg.NNTP.CircuitCooldown,
+	})
 	defer pool.Close()
+	if active, err := st.GetActiveServer(ctx); err == nil {
+		logger.Info("using configured news server", "name", active.Name, "host", active.Host,
+			"servers", len(endpoints))
+	}
 
-	// Effective NNTP connection capacity: derive concurrency from the limit the
-	// pool was ACTUALLY built with (the active DB-managed server when present),
-	// not the startup config, which may differ. This keeps scan/post-process
-	// worker counts consistent with the real provider budget.
+	// Effective NNTP connection capacity: the highest-priority (active) server's
+	// connection limit, so scan/post-process worker counts match the real
+	// provider budget.
 	effectiveNNTPConns := poolCfg.MaxConns
+	if len(endpoints) > 0 {
+		effectiveNNTPConns = endpoints[0].Config.MaxConns
+	}
 
 	// Resource budgeting (#117): size the NNTP-bound pipeline stages against
 	// BOTH the effective NNTP capacity and the PostgreSQL pool, reserving
@@ -164,7 +174,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		MaxLimit:     100,
 		DefaultLimit: 100,
 	})
-	srvMgr := &serverManager{store: st, pool: pool, connectTimeout: cfg.NNTP.ConnectTimeout, log: logger}
+	srvMgr := &serverManager{store: st, pool: pool, cfg: cfg, connectTimeout: cfg.NNTP.ConnectTimeout, log: logger}
 	discovery := newDiscoveryService(pool, time.Hour)
 	restAPI := rest.New(st, nzbGen, authSvc, authSvc, scheduleAdapter{wrk}, srvMgr, logs, discovery, logger)
 	restAPI.SetSystemProbe(systemProbe{
@@ -305,6 +315,35 @@ func runRetentionLoop(ctx context.Context, st *store.Store, rc config.RetentionC
 	}
 }
 
+// buildEndpoints returns the failover endpoints for all ENABLED news servers,
+// ordered by priority. When no server is configured it falls back to the
+// startup NNTP config as a single endpoint so a bare env/YAML deployment still
+// works.
+func buildEndpoints(ctx context.Context, st *store.Store, cfg config.Config, fallback nntp.Config) []nntp.EndpointConfig {
+	servers, err := st.ListServers(ctx)
+	if err == nil && len(servers) > 0 {
+		var eps []nntp.EndpointConfig
+		for _, s := range servers {
+			if !s.Enabled {
+				continue
+			}
+			eps = append(eps, nntp.EndpointConfig{
+				ID:       s.ID,
+				Name:     s.Name,
+				Priority: s.Priority,
+				Config:   serverToNNTPConfig(s, cfg.NNTP.ConnectTimeout),
+			})
+		}
+		if len(eps) > 0 {
+			return eps
+		}
+	}
+	if fallback.Host == "" {
+		return nil
+	}
+	return []nntp.EndpointConfig{{ID: 0, Name: "default", Priority: 0, Config: fallback}}
+}
+
 // serverToNNTPConfig converts a stored news server into an nntp.Config.
 func serverToNNTPConfig(s store.Server, connectTimeout time.Duration) nntp.Config {
 	return nntp.Config{
@@ -353,30 +392,34 @@ func seedServerFromConfig(ctx context.Context, st *store.Store, cfg config.Confi
 	return nil
 }
 
-// serverManager applies the active news server to the live NNTP pool. It
-// implements rest.ServerManager.
+// serverManager rebuilds the failover pool's endpoints from the DB-managed
+// servers when they change. It implements rest.ServerManager.
 type serverManager struct {
 	store          *store.Store
-	pool           *nntp.Pool
+	pool           *nntp.FailoverPool
+	cfg            config.Config
 	connectTimeout time.Duration
 	log            *slog.Logger
 }
 
-// ApplyActive reloads the active server and reconfigures the pool. When no
-// server is enabled, the pool keeps its current configuration.
+// ApplyActive reloads all enabled servers and rebuilds the failover pool's
+// endpoints (#128) so provider changes (add/edit/priority/max-conns/enable)
+// take effect live. Existing servers keep their pool + circuit state; removed
+// ones are closed.
 func (m *serverManager) ApplyActive(ctx context.Context) error {
-	active, err := m.store.GetActiveServer(ctx)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			m.log.Warn("no enabled news server configured; pool unchanged")
-			return nil
-		}
-		return err
+	fallback := nntp.Config{
+		Host: m.cfg.NNTP.Host, Port: m.cfg.NNTP.Port, TLS: m.cfg.NNTP.TLS,
+		Username: m.cfg.NNTP.Username, Password: m.cfg.NNTP.Password,
+		MaxConns: m.cfg.NNTP.MaxConns, ConnectTimeout: m.cfg.NNTP.ConnectTimeout,
+		MaxRetries: 3, RetryBackoff: 500 * time.Millisecond,
 	}
-	m.pool.Reconfigure(serverToNNTPConfig(active, m.connectTimeout))
-	limit, inUse := m.pool.MaxConns()
-	m.log.Info("applied news server to pool",
-		"name", active.Name, "host", active.Host,
-		"effective_max_conns", limit, "in_use", inUse)
+	eps := buildEndpoints(ctx, m.store, m.cfg, fallback)
+	if len(eps) == 0 {
+		m.log.Warn("no enabled news server configured; pool unchanged")
+		return nil
+	}
+	m.pool.SetEndpoints(eps)
+	name, _, _ := m.pool.ActiveServer()
+	m.log.Info("applied news servers to failover pool", "servers", len(eps), "active", name)
 	return nil
 }

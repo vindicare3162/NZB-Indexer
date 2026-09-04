@@ -23,6 +23,8 @@ type SystemProbe interface {
 	// with and the derived scan/post-process worker limits, so operators can
 	// see how concurrency was sized.
 	Capacity() (nntpMaxConns, scanWorkers, postProcessWorkers int)
+	// ServerHealth reports per-provider circuit/failover health (#128).
+	ServerHealth() []ProviderHealth
 }
 
 // startTime records process start for uptime reporting.
@@ -52,6 +54,24 @@ type usenetHealth struct {
 	MaxConns           int `json:"max_conns"`
 	ScanWorkers        int `json:"scan_workers"`
 	PostProcessWorkers int `json:"postprocess_workers"`
+	// Providers reports per-server circuit/failover health (#128).
+	Providers []ProviderHealth `json:"providers,omitempty"`
+}
+
+// ProviderHealth is the circuit/failover health of one NNTP provider (#128).
+type ProviderHealth struct {
+	Name                string `json:"name"`
+	Priority            int    `json:"priority"`
+	Circuit             string `json:"circuit"` // closed | open | half-open
+	ConsecutiveFailures int    `json:"consecutive_failures"`
+	LastError           string `json:"last_error,omitempty"`
+	LastErrorKind       string `json:"last_error_kind,omitempty"`
+	TotalFailures       int64  `json:"total_failures"`
+	TotalSuccess        int64  `json:"total_success"`
+	CircuitOpens        int64  `json:"circuit_opens"`
+	PoolOpen            int    `json:"pool_open"`
+	PoolIdle            int    `json:"pool_idle"`
+	MaxConns            int    `json:"max_conns"`
 }
 
 type healthResponse struct {
@@ -112,12 +132,31 @@ func (a *API) buildHealthReport(ctx context.Context) healthResponse {
 		open, idle := a.probe.NNTPPoolStats()
 		configured := a.probe.NewsServerConfigured(ctx)
 		maxConns, scanW, ppW := a.probe.Capacity()
+		providers := a.probe.ServerHealth()
 		usenet = &usenetHealth{
 			PoolOpen: open, PoolIdle: idle, ServerConfigured: configured,
 			MaxConns: maxConns, ScanWorkers: scanW, PostProcessWorkers: ppW,
+			Providers: providers,
 		}
 		if !configured {
 			checks = append(checks, healthCheck{Name: "news_server", Status: "warn", Message: "no active news server configured"})
+		}
+		// Flag providers whose circuit is open (isolated by failover, #128).
+		var openCircuits int
+		for _, ph := range providers {
+			if ph.Circuit == "open" {
+				openCircuits++
+			}
+		}
+		if openCircuits > 0 {
+			status := "warn"
+			if len(providers) > 0 && openCircuits >= len(providers) {
+				status = "error" // every provider is down
+			}
+			checks = append(checks, healthCheck{
+				Name: "news_provider_circuit", Status: status,
+				Message: "one or more NNTP providers are circuit-open (failing); failover is active",
+			})
 		}
 		if a.probe.DefaultJWTSecret() {
 			checks = append(checks, healthCheck{Name: "jwt_secret", Status: "warn", Message: "JWT secret is the insecure default; set GOINDEX_AUTH_JWT_SECRET"})

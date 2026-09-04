@@ -384,6 +384,17 @@
           <div>Connections: {health.usenet.pool_open} open, {health.usenet.pool_idle} idle</div>
           <div>Capacity: {health.usenet.max_conns} max ({health.usenet.scan_workers} scan / {health.usenet.postprocess_workers} pp workers)</div>
           <div>Server: {health.usenet.server_configured ? 'configured' : 'not configured'}</div>
+          {#if health.usenet.providers && health.usenet.providers.length > 0}
+            <div style="margin-top:0.4rem">
+              {#each health.usenet.providers as pr}
+                <div class="muted" style="font-size:0.8rem">
+                  {pr.name} (p{pr.priority}): circuit <strong style={pr.circuit === 'open' ? 'color:var(--danger,#c33)' : ''}>{pr.circuit}</strong>
+                  {#if pr.consecutive_failures > 0} · {pr.consecutive_failures} consecutive failure(s){/if}
+                  {#if pr.last_error_kind} · last: {pr.last_error_kind}{/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
         </div>
       {/if}
     </div>

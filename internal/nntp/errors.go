@@ -7,6 +7,68 @@ import (
 	"net/textproto"
 )
 
+// ErrorKind classifies an NNTP failure so health checks and circuit breaking
+// (#128) can distinguish connection, authentication, protocol, and retention
+// failures.
+type ErrorKind int
+
+const (
+	// ErrKindNone means no error (success).
+	ErrKindNone ErrorKind = iota
+	// ErrKindConnection is a network/transport failure (dial, timeout, reset,
+	// EOF) or a malformed response stream — the connection is unusable.
+	ErrKindConnection
+	// ErrKindAuth is an authentication failure (bad credentials): a 480/481/482
+	// NNTP status. Retrying won't help until credentials change.
+	ErrKindAuth
+	// ErrKindProtocol is a well-formed error status from the server that is not
+	// auth-related (e.g. command rejected, no such group). The connection is
+	// healthy.
+	ErrKindProtocol
+	// ErrKindRetention is a "no such article" / article-expired response (430),
+	// i.e. the provider does not (or no longer) carries the article. The
+	// connection and credentials are fine.
+	ErrKindRetention
+)
+
+func (k ErrorKind) String() string {
+	switch k {
+	case ErrKindConnection:
+		return "connection"
+	case ErrKindAuth:
+		return "auth"
+	case ErrKindProtocol:
+		return "protocol"
+	case ErrKindRetention:
+		return "retention"
+	default:
+		return "none"
+	}
+}
+
+// classifyError maps an error to an ErrorKind for health tracking.
+func classifyError(err error) ErrorKind {
+	if err == nil {
+		return ErrKindNone
+	}
+	var protoErr *textproto.Error
+	if errors.As(err, &protoErr) {
+		switch protoErr.Code {
+		case 480, 481, 482, 502: // auth required / rejected / failed
+			return ErrKindAuth
+		case 430: // no such article (retention / not carried)
+			return ErrKindRetention
+		default:
+			return ErrKindProtocol
+		}
+	}
+	// Non-status errors are transport/stream problems: connection-fatal.
+	if isConnFatal(err) {
+		return ErrKindConnection
+	}
+	return ErrKindProtocol
+}
+
 // isConnFatal reports whether an error means the connection is no longer
 // usable and should be discarded (and the operation retried on a fresh
 // connection). A well-formed NNTP status response (e.g. "no such group") is
