@@ -7,6 +7,11 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- "Current tasks" now shows scan/backfill **progress** — the group currently
+  being scanned and its position in the list, e.g. `Scanning:
+  alt.binaries.teevee (12/500)` (#98). Groups are scanned sequentially, so this
+  makes it obvious how far a pass has got (and whether it's falling behind) at
+  scale. Exposed via `scan_progress` in `/api/v1/admin/status`.
 - "Current tasks" section on the Admin page (under System health) showing which
   pipeline stages are running right now — scan/backfill, assemble, build,
   post-process, enrich (#96). The worker now tracks per-stage activity as a set
