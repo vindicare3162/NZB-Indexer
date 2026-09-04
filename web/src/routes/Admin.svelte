@@ -10,6 +10,7 @@
   let logs = $state([]);
   let logLevel = $state('');
   let logTimer = null;
+  let jobs = $state([]);
   let newGroup = $state('');
   let bulkNames = $state('');
   let bulkBackfillDays = $state(7);
@@ -65,6 +66,7 @@
       health = o.health ?? null;
       logs = o.logs || [];
       applySchedule(o.schedule);
+      loadJobs();
       // Surface any per-subsystem failures without blanking the rest.
       if (o.errors && Object.keys(o.errors).length > 0) {
         error = 'Some data could not be loaded: ' + Object.keys(o.errors).join(', ');
@@ -145,19 +147,50 @@
     api.logs(logLevel, 200).then((l) => { logs = l || []; }).catch(() => {});
   }
 
+  function loadJobs() {
+    api.jobs(50).then((j) => { jobs = j || []; }).catch(() => {});
+  }
+
   // Auto-refresh logs + pipeline status (for Current tasks) every 5s while the
-  // admin page is mounted.
+  // admin page is mounted. Jobs poll on the same cadence.
   $effect(() => {
     logTimer = setInterval(() => {
       loadLogs();
+      loadJobs();
       api.status().then((s) => { status = s; }).catch(() => {});
     }, 5000);
     return () => clearInterval(logTimer);
   });
 
+  async function cancelJob(id) {
+    error = '';
+    notice = '';
+    try {
+      await api.cancelJob(id);
+      notice = 'Cancellation requested';
+      loadJobs();
+    } catch (e) { error = e.message; }
+  }
+
   function fmtTime(s) {
     if (!s) return '';
     return new Date(s).toLocaleTimeString();
+  }
+  // Background colour per job state for the status badge.
+  function jobStateColor(state) {
+    switch (state) {
+      case 'running': return '#1a7f37';
+      case 'queued': return '#9a6700';
+      case 'completed': return '#0969da';
+      case 'failed': return '#cf222e';
+      case 'cancelled': return '#57606a';
+      case 'interrupted': return '#8250df';
+      default: return '#57606a';
+    }
+  }
+  function jobProgress(j) {
+    if (!j || !j.progress_total || j.progress_total <= 0) return '';
+    return `${j.progress_current}/${j.progress_total}`;
   }
   function levelClass(lvl) {
     if (lvl && lvl.startsWith('ERROR')) return 'error';
@@ -254,19 +287,28 @@
   }
   async function scan(group) {
     notice = '';
-    try { await api.triggerScan(group || ''); notice = 'Scan triggered'; }
-    catch (e) { error = e.message; }
+    try {
+      const res = await api.triggerScan(group || '');
+      notice = res?.job_id ? `Scan triggered (job ${res.job_id.slice(0, 8)})` : 'Scan triggered';
+      loadJobs();
+    } catch (e) { error = e.message; }
   }
   async function backfill(group) {
     notice = '';
-    try { await api.triggerBackfill(group || ''); notice = 'Backfill triggered'; }
-    catch (e) { error = e.message; }
+    try {
+      const res = await api.triggerBackfill(group || '');
+      notice = res?.job_id ? `Backfill triggered (job ${res.job_id.slice(0, 8)})` : 'Backfill triggered';
+      loadJobs();
+    } catch (e) { error = e.message; }
   }
   async function postProcess() {
     error = '';
     notice = '';
-    try { await api.triggerPostProcess(); notice = 'Post-processing triggered'; }
-    catch (e) { error = e.message; }
+    try {
+      const res = await api.triggerPostProcess();
+      notice = res?.job_id ? `Post-processing triggered (job ${res.job_id.slice(0, 8)})` : 'Post-processing triggered';
+      loadJobs();
+    } catch (e) { error = e.message; }
   }
   async function retryFailedPP() {
     error = '';
@@ -425,6 +467,41 @@
     </ul>
   {:else}
     <p class="muted" style="margin:0">Idle — no pipeline tasks running.</p>
+  {/if}
+</div>
+
+<div class="panel">
+  <div class="row" style="justify-content:space-between; align-items:center">
+    <h3 style="margin-top:0; margin-bottom:0">Jobs</h3>
+    <button class="secondary" onclick={loadJobs}>Refresh</button>
+  </div>
+  <p class="muted">Manual scan, backfill, and post-processing triggers are tracked here with progress and cancellation. History is retained for 7 days.</p>
+  {#if jobs.length > 0}
+    <table style="margin-top:0.4rem">
+      <thead>
+        <tr><th>Type</th><th>Target</th><th>State</th><th>Progress</th><th>Started</th><th>Finished</th><th>Detail</th><th></th></tr>
+      </thead>
+      <tbody>
+        {#each jobs as j (j.id)}
+          <tr>
+            <td>{j.type}</td>
+            <td>{j.target || '—'}</td>
+            <td><span class="badge" style="background:{jobStateColor(j.state)}">{j.state}</span></td>
+            <td>{jobProgress(j)}</td>
+            <td>{fmtTime(j.started_at)}</td>
+            <td>{fmtTime(j.finished_at)}</td>
+            <td class="muted" style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title={j.error || j.message || ''}>{j.error || j.message || ''}</td>
+            <td>
+              {#if j.state === 'queued' || j.state === 'running'}
+                <button class="danger" onclick={() => cancelJob(j.id)} disabled={j.cancel_requested}>{j.cancel_requested ? 'Cancelling…' : 'Cancel'}</button>
+              {/if}
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {:else}
+    <p class="muted" style="margin:0">No jobs yet. Trigger a scan, backfill, or post-processing pass to create one.</p>
   {/if}
 </div>
 

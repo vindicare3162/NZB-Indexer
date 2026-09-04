@@ -491,11 +491,12 @@ func (a *API) handleTriggerScan(w http.ResponseWriter, r *http.Request) {
 	}
 	var req triggerRequest
 	_ = decodeJSON(r, &req)
-	if err := a.jobs.TriggerScan(req.Group); err != nil {
+	jobID, err := a.jobs.TriggerScan(req.Group)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "scan triggered"})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted", "job_id": jobID})
 }
 
 func (a *API) handleTriggerBackfill(w http.ResponseWriter, r *http.Request) {
@@ -505,11 +506,12 @@ func (a *API) handleTriggerBackfill(w http.ResponseWriter, r *http.Request) {
 	}
 	var req triggerRequest
 	_ = decodeJSON(r, &req)
-	if err := a.jobs.TriggerBackfill(req.Group); err != nil {
+	jobID, err := a.jobs.TriggerBackfill(req.Group)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "backfill triggered"})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted", "job_id": jobID})
 }
 
 func (a *API) handleTriggerPostProcess(w http.ResponseWriter, r *http.Request) {
@@ -517,11 +519,57 @@ func (a *API) handleTriggerPostProcess(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "job controller not available")
 		return
 	}
-	if err := a.jobs.TriggerPostProcess(); err != nil {
+	jobID, err := a.jobs.TriggerPostProcess()
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "post-process triggered"})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted", "job_id": jobID})
+}
+
+// handleListJobs returns recent pipeline jobs (newest first).
+func (a *API) handleListJobs(w http.ResponseWriter, r *http.Request) {
+	limit := parseIntDefault(r.URL.Query().Get("limit"), 100)
+	jobs, err := a.store.ListJobs(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list jobs")
+		return
+	}
+	if jobs == nil {
+		jobs = []store.Job{}
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+// handleGetJob returns a single job by id.
+func (a *API) handleGetJob(w http.ResponseWriter, r *http.Request) {
+	job, err := a.store.GetJob(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "job not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get job")
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+// handleCancelJob requests cooperative cancellation of a job.
+func (a *API) handleCancelJob(w http.ResponseWriter, r *http.Request) {
+	if a.jobs == nil {
+		writeError(w, http.StatusServiceUnavailable, "job controller not available")
+		return
+	}
+	if err := a.jobs.CancelJob(r.PathValue("id")); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "job not found or not cancellable")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "cancellation requested"})
 }
 
 func (a *API) handleRetryFailed(w http.ResponseWriter, r *http.Request) {
@@ -533,7 +581,7 @@ func (a *API) handleRetryFailed(w http.ResponseWriter, r *http.Request) {
 	// Kick a post-processing pass so the requeued releases are picked up
 	// promptly (best-effort; the scheduled loop would pick them up anyway).
 	if a.jobs != nil {
-		_ = a.jobs.TriggerPostProcess()
+		_, _ = a.jobs.TriggerPostProcess()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "failed releases requeued", "requeued": n})
 }

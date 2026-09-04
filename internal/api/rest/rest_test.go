@@ -39,6 +39,7 @@ type mockStore struct {
 	savedSettings  map[string]string
 	metadata       map[int64]store.ReleaseMetadata
 	identifiers    map[int64][]store.ReleaseIdentifier
+	jobs           []store.Job
 
 	createdGroup  string
 	deletedGroup  int64
@@ -107,6 +108,17 @@ func (m *mockStore) RequeueFailedReleases(context.Context) (int64, error) {
 func (m *mockStore) BackfillReleaseSegments(context.Context, int) (int, int, error) {
 	m.segmentsBackfilled = true
 	return 5, 1, nil
+}
+func (m *mockStore) ListJobs(context.Context, int) ([]store.Job, error) {
+	return m.jobs, nil
+}
+func (m *mockStore) GetJob(_ context.Context, id string) (store.Job, error) {
+	for _, j := range m.jobs {
+		if j.ID == id {
+			return j, nil
+		}
+	}
+	return store.Job{}, store.ErrNotFound
 }
 func (m *mockStore) RetentionCandidates(_ context.Context, olderThan time.Duration) (store.RetentionReport, error) {
 	m.retentionPreviewAge = olderThan
@@ -239,13 +251,15 @@ func (mockNZB) ForGUID(context.Context, string) ([]byte, string, error) {
 type mockJobs struct {
 	scanned, backfilled string
 	postProcessed       int
+	cancelledJob        string
 	schedule            Schedule
 }
 
-func (m *mockJobs) TriggerScan(g string) error     { m.scanned = g; return nil }
-func (m *mockJobs) TriggerBackfill(g string) error { m.backfilled = g; return nil }
-func (m *mockJobs) TriggerPostProcess() error      { m.postProcessed++; return nil }
-func (m *mockJobs) Status() any                    { return map[string]string{"state": "idle"} }
+func (m *mockJobs) TriggerScan(g string) (string, error)     { m.scanned = g; return "job-scan", nil }
+func (m *mockJobs) TriggerBackfill(g string) (string, error) { m.backfilled = g; return "job-bf", nil }
+func (m *mockJobs) TriggerPostProcess() (string, error)      { m.postProcessed++; return "job-pp", nil }
+func (m *mockJobs) CancelJob(id string) error                { m.cancelledJob = id; return nil }
+func (m *mockJobs) Status() any                              { return map[string]string{"state": "idle"} }
 func (m *mockJobs) CurrentSchedule() Schedule {
 	if m.schedule == (Schedule{}) {
 		return Schedule{

@@ -284,7 +284,7 @@ func TestTriggersAndRunLoopShutdown(t *testing.T) {
 	}
 
 	// Fire a manual scan trigger for a single group.
-	if err := w.TriggerScan("only-group"); err != nil {
+	if _, err := w.TriggerScan("only-group"); err != nil {
 		t.Fatalf("trigger scan: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -293,7 +293,7 @@ func TestTriggersAndRunLoopShutdown(t *testing.T) {
 	}
 
 	// Backfill trigger.
-	if err := w.TriggerBackfill("only-group"); err != nil {
+	if _, err := w.TriggerBackfill("only-group"); err != nil {
 		t.Fatalf("trigger backfill: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -317,7 +317,7 @@ func TestTriggerQueueFull(t *testing.T) {
 	// Fill the trigger buffer (capacity 16) without a running loop to drain it.
 	var lastErr error
 	for i := 0; i < 20; i++ {
-		lastErr = w.TriggerScan("g")
+		_, lastErr = w.TriggerScan("g")
 	}
 	if lastErr == nil {
 		t.Error("expected a 'queue full' error once buffer is saturated")
@@ -577,5 +577,195 @@ func TestParallelScanConcurrency(t *testing.T) {
 	m := w.MetricsSnapshot()
 	if m.ArticlesPulled != 6 || m.PartsInserted != 6 {
 		t.Errorf("aggregated metrics pulled=%d parts=%d, want 6/6", m.ArticlesPulled, m.PartsInserted)
+	}
+}
+
+// --- #113 job tracking tests ---
+
+// fakeJobStore is an in-memory JobStore for verifying that manual triggers are
+// recorded as persistent jobs with a lifecycle (queued -> running -> terminal).
+type fakeJobStore struct {
+	mu   sync.Mutex
+	jobs map[string]*store.Job
+}
+
+func newFakeJobStore() *fakeJobStore {
+	return &fakeJobStore{jobs: map[string]*store.Job{}}
+}
+
+func (f *fakeJobStore) CreateJob(_ context.Context, id, jobType, target string) (store.Job, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	j := &store.Job{ID: id, Type: jobType, Target: target, State: store.JobQueued}
+	f.jobs[id] = j
+	return *j, nil
+}
+
+func (f *fakeJobStore) StartJob(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if j, ok := f.jobs[id]; ok {
+		j.State = store.JobRunning
+	}
+	return nil
+}
+
+func (f *fakeJobStore) FinishJob(_ context.Context, id, state, errMsg string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if j, ok := f.jobs[id]; ok {
+		j.State = state
+		j.Error = errMsg
+	}
+	return nil
+}
+
+func (f *fakeJobStore) IsJobCancelRequested(_ context.Context, id string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if j, ok := f.jobs[id]; ok {
+		return j.CancelRequested, nil
+	}
+	return false, nil
+}
+
+func (f *fakeJobStore) RequestJobCancel(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if j, ok := f.jobs[id]; ok {
+		j.CancelRequested = true
+	}
+	return nil
+}
+
+func (f *fakeJobStore) state(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if j, ok := f.jobs[id]; ok {
+		return j.State
+	}
+	return ""
+}
+
+func (f *fakeJobStore) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.jobs)
+}
+
+// TestTriggerRecordsJobToCompletion verifies a manual scan trigger creates a
+// tracked job that is driven to the completed terminal state once the running
+// loop processes it.
+func TestTriggerRecordsJobToCompletion(t *testing.T) {
+	w, _, _, _, _ := newTestWorker(Options{ScanInterval: time.Hour})
+	fjs := newFakeJobStore()
+	w.SetJobStore(fjs)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); w.Run(ctx) }()
+	time.Sleep(50 * time.Millisecond)
+
+	jobID, err := w.TriggerScan("g1")
+	if err != nil {
+		t.Fatalf("trigger scan: %v", err)
+	}
+	if jobID == "" {
+		t.Fatal("expected a non-empty job id from a tracked trigger")
+	}
+
+	// Wait for the job to reach a terminal completed state.
+	deadline := time.After(2 * time.Second)
+	for {
+		if fjs.state(jobID) == store.JobCompleted {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("job %s did not complete, last state=%q", jobID, fjs.state(jobID))
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	wg.Wait()
+}
+
+// TestCancelJobBeforeRun verifies that requesting cancellation before the job
+// is dequeued resolves it to the cancelled terminal state (work skipped).
+func TestCancelJobBeforeRun(t *testing.T) {
+	// Start a loop, wait for the initial cycle to settle, then enqueue a
+	// trigger and immediately request cancel before it is dequeued. The job
+	// must resolve to cancelled with its work skipped.
+	w, _, _, _, _ := newTestWorker(Options{ScanInterval: time.Hour})
+	fjs := newFakeJobStore()
+	w.SetJobStore(fjs)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); w.Run(ctx) }()
+	time.Sleep(50 * time.Millisecond)
+
+	jobID, err := w.TriggerScan("g1")
+	if err != nil {
+		t.Fatalf("trigger scan: %v", err)
+	}
+	// Request cancellation right away; withJob checks the flag before starting.
+	if err := w.CancelJob(jobID); err != nil {
+		t.Fatalf("cancel job: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if fjs.state(jobID) == store.JobCancelled {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("job %s not cancelled, last state=%q", jobID, fjs.state(jobID))
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	cancel()
+	wg.Wait()
+}
+
+// TestTriggerQueueFullFailsJob verifies a trigger rejected due to a full queue
+// records its job as failed rather than leaving it queued forever.
+func TestTriggerQueueFullFailsJob(t *testing.T) {
+	w, _, _, _, _ := newTestWorker(Options{ScanInterval: time.Hour})
+	fjs := newFakeJobStore()
+	w.SetJobStore(fjs)
+
+	// No loop drains the queue (capacity 16). Saturate it.
+	var lastID string
+	var lastErr error
+	for i := 0; i < 20; i++ {
+		lastID, lastErr = w.TriggerScan("g")
+	}
+	if lastErr == nil {
+		t.Fatal("expected a queue-full error after saturating the buffer")
+	}
+	if lastID != "" {
+		t.Errorf("rejected trigger should return an empty id, got %q", lastID)
+	}
+	// Every created job should exist; the rejected ones are marked failed.
+	if fjs.count() == 0 {
+		t.Fatal("expected jobs to be recorded")
+	}
+	var failed int
+	fjs.mu.Lock()
+	for _, j := range fjs.jobs {
+		if j.State == store.JobFailed {
+			failed++
+		}
+	}
+	fjs.mu.Unlock()
+	if failed == 0 {
+		t.Error("expected at least one job marked failed due to full queue")
 	}
 }
