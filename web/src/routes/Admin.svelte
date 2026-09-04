@@ -2,6 +2,27 @@
   import { api } from '../lib/api.js';
   import { buildBackfillPayload, describeBackfillField } from '../lib/backfill.js';
   import { formatLag, lastScanLabel, hasScanError } from '../lib/groupscan.js';
+  import { createToastStore } from '../lib/toasts.js';
+  import { createConfirmStore } from '../lib/confirm.js';
+
+  // Action feedback + confirmation flows (#122). Toasts give per-action
+  // success/error feedback; confirmStore drives an accessible in-page prompt
+  // for destructive actions (replaces window.confirm).
+  const toastStore = createToastStore();
+  const confirmStore = createConfirmStore();
+  let toasts = $state([]);
+  let pendingConfirm = $state(null);
+  toastStore.subscribe((list) => { toasts = list; });
+  confirmStore.subscribe((p) => { pendingConfirm = p; });
+
+  // notify reports success; fail reports an error. Both surface as toasts and
+  // keep the legacy `error` string in sync for existing inline displays.
+  function notify(message) { toastStore.success(message); }
+  function fail(e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    error = msg;
+    toastStore.error(msg);
+  }
 
   let groups = $state([]);
   let users = $state([]);
@@ -28,7 +49,6 @@
   let savingSchedule = $state(false);
   let health = $state(null);
   let error = $state('');
-  let notice = $state('');
 
   // Inline backfill-target editor state. editingBackfillId is the group id
   // currently being edited (null = none); the fields are strings so blank is
@@ -132,13 +152,12 @@
     e.preventDefault();
     savingSchedule = true;
     error = '';
-    notice = '';
     try {
       await api.updateSchedule(schedule);
-      notice = 'Schedule updated and applied live';
+      notify('Schedule updated and applied live');
       loadSchedule();
     } catch (err) {
-      error = err.message || 'Failed to update schedule';
+      fail(err.message ? err : new Error('Failed to update schedule'));
     } finally {
       savingSchedule = false;
     }
@@ -165,12 +184,11 @@
 
   async function cancelJob(id) {
     error = '';
-    notice = '';
     try {
       await api.cancelJob(id);
-      notice = 'Cancellation requested';
+      notify('Cancellation requested');
       loadJobs();
-    } catch (e) { error = e.message; }
+    } catch (e) { fail(e); }
   }
 
   function fmtTime(s) {
@@ -204,42 +222,52 @@
     try {
       const payload = { ...newServer, password: newServer.password || null };
       await api.createServer(payload);
+      const name = newServer.name || newServer.host;
       newServer = { name: '', host: '', port: 563, tls: true, username: '', password: '', max_conns: 10, priority: 0, enabled: true };
+      notify(`Added server ${name}`);
       loadAll();
-    } catch (e) { error = e.message; }
+    } catch (e) { fail(e); }
   }
   async function toggleServer(s) {
     try {
       // password null = leave unchanged
       await api.updateServer(s.id, { name: s.name, host: s.host, port: s.port, tls: s.tls, username: s.username, password: null, max_conns: s.max_conns, priority: s.priority, enabled: !s.enabled });
+      notify(`${s.enabled ? 'Disabled' : 'Enabled'} server ${s.name || s.host}`);
       loadAll();
-    } catch (e) { error = e.message; }
+    } catch (e) { fail(e); }
   }
-  async function removeServer(id) {
-    try { await api.deleteServer(id); loadAll(); }
-    catch (e) { error = e.message; }
+  async function removeServer(s) {
+    const ok = await confirmStore.request({
+      title: 'Delete news server?',
+      message: `Remove "${s.name || s.host}"? The pipeline will fail over to other enabled servers by priority.`,
+      confirmLabel: 'Delete server',
+      danger: true,
+    });
+    if (!ok) return;
+    try { await api.deleteServer(s.id); notify(`Deleted server ${s.name || s.host}`); loadAll(); }
+    catch (e) { fail(e); }
   }
 
   $effect(loadAll);
 
   async function addGroup() {
     error = '';
-    try { await api.createGroup(newGroup); newGroup = ''; loadAll(); }
-    catch (e) { error = e.message; }
+    const name = newGroup;
+    try { await api.createGroup(newGroup); newGroup = ''; notify(`Added group ${name}`); loadAll(); }
+    catch (e) { fail(e); }
   }
 
   async function addBulk() {
     error = '';
-    notice = '';
     const names = bulkNames.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-    if (names.length === 0) { error = 'Enter one or more newsgroup names'; return; }
+    if (names.length === 0) { fail(new Error('Enter one or more newsgroup names')); return; }
     bulkBusy = true;
     try {
       const res = await api.bulkGroups(names, Number(bulkBackfillDays) || 0);
-      notice = `Bulk add: ${res.added} added, ${res.existing} existing, ${res.errors} error(s)`;
+      notify(`Bulk add: ${res.added} added, ${res.existing} existing, ${res.errors} error(s)`);
       bulkNames = '';
       loadAll();
-    } catch (e) { error = e.message; }
+    } catch (e) { fail(e); }
     finally { bulkBusy = false; }
   }
 
@@ -252,13 +280,13 @@
       discoverResults = res.groups || [];
       discoverTotal = res.total || 0;
       discoverCachedAt = res.cached_at || '';
-    } catch (e) { error = e.message; }
+    } catch (e) { fail(e); }
     finally { discoverLoading = false; }
   }
   async function addDiscovered(name) {
     error = '';
-    try { await api.createGroup(name); notice = `Added ${name}`; loadAll(); }
-    catch (e) { error = e.message; }
+    try { await api.createGroup(name); notify(`Added ${name}`); loadAll(); }
+    catch (e) { fail(e); }
   }
   function fmtCount(n) {
     if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
@@ -267,92 +295,105 @@
     return String(n);
   }
   async function toggleGroup(g) {
-    try { await api.setGroupActive(g.id, !g.active); loadAll(); }
-    catch (e) { error = e.message; }
+    try { await api.setGroupActive(g.id, !g.active); notify(`${g.active ? 'Disabled' : 'Enabled'} ${g.name}`); loadAll(); }
+    catch (e) { fail(e); }
   }
-  async function removeGroup(id) {
-    try { await api.deleteGroup(id); loadAll(); }
-    catch (e) { error = e.message; }
+  async function removeGroup(g) {
+    const ok = await confirmStore.request({
+      title: 'Delete group?',
+      message: `Remove "${g.name}" and all its indexed parts and binaries? This cannot be undone.`,
+      confirmLabel: 'Delete group',
+      danger: true,
+    });
+    if (!ok) return;
+    try { await api.deleteGroup(g.id); notify(`Deleted group ${g.name}`); loadAll(); }
+    catch (e) { fail(e); }
   }
   async function addUser() {
     error = '';
     try {
+      const uname = newUser.username;
       await api.createUser(newUser.username, newUser.password, newUser.admin);
       newUser = { username: '', password: '', admin: false };
+      notify(`Created user ${uname}`);
       loadAll();
-    } catch (e) { error = e.message; }
+    } catch (e) { fail(e); }
   }
-  async function removeUser(id) {
-    try { await api.deleteUser(id); loadAll(); }
-    catch (e) { error = e.message; }
+  async function removeUser(u) {
+    const ok = await confirmStore.request({
+      title: 'Delete user?',
+      message: `Remove user "${u.username}" and their API keys? This cannot be undone.`,
+      confirmLabel: 'Delete user',
+      danger: true,
+    });
+    if (!ok) return;
+    try { await api.deleteUser(u.id); notify(`Deleted user ${u.username}`); loadAll(); }
+    catch (e) { fail(e); }
   }
   async function scan(group) {
-    notice = '';
     try {
       const res = await api.triggerScan(group || '');
-      notice = res?.job_id ? `Scan triggered (job ${res.job_id.slice(0, 8)})` : 'Scan triggered';
+      notify(res?.job_id ? `Scan triggered (job ${res.job_id.slice(0, 8)})` : 'Scan triggered');
       loadJobs();
-    } catch (e) { error = e.message; }
+    } catch (e) { fail(e); }
   }
   async function backfill(group) {
-    notice = '';
     try {
       const res = await api.triggerBackfill(group || '');
-      notice = res?.job_id ? `Backfill triggered (job ${res.job_id.slice(0, 8)})` : 'Backfill triggered';
+      notify(res?.job_id ? `Backfill triggered (job ${res.job_id.slice(0, 8)})` : 'Backfill triggered');
       loadJobs();
-    } catch (e) { error = e.message; }
+    } catch (e) { fail(e); }
   }
   async function postProcess() {
     error = '';
-    notice = '';
     try {
       const res = await api.triggerPostProcess();
-      notice = res?.job_id ? `Post-processing triggered (job ${res.job_id.slice(0, 8)})` : 'Post-processing triggered';
+      notify(res?.job_id ? `Post-processing triggered (job ${res.job_id.slice(0, 8)})` : 'Post-processing triggered');
       loadJobs();
-    } catch (e) { error = e.message; }
+    } catch (e) { fail(e); }
   }
   async function retryFailedPP() {
     error = '';
-    notice = '';
     try {
       const res = await api.retryFailedPP();
-      notice = `Requeued ${res.requeued} failed release(s) for post-processing`;
+      notify(`Requeued ${res.requeued} failed release(s) for post-processing`);
       api.stats().then((s) => { stats = s; }).catch(() => {});
-    } catch (e) { error = e.message; }
+    } catch (e) { fail(e); }
   }
   async function backfillSegments() {
     error = '';
-    notice = '';
     try {
       const res = await api.backfillSegments();
-      notice = `Segment backfill: ${res.repaired} repaired, ${res.unresolved} unresolved`;
-    } catch (e) { error = e.message; }
+      notify(`Segment backfill: ${res.repaired} repaired, ${res.unresolved} unresolved`);
+    } catch (e) { fail(e); }
   }
   async function retentionPreview() {
     error = '';
-    notice = '';
     retentionReport = null;
     const days = retentionDays ? Number(retentionDays) : 0;
     try {
       const res = await api.retentionPreview(days);
       retentionReport = res.report;
       retentionReportDays = res.days;
-    } catch (e) { error = e.message; }
+    } catch (e) { fail(e); }
   }
   async function retentionPrune() {
     error = '';
-    notice = '';
     const days = retentionDays ? Number(retentionDays) : 0;
-    if (!confirm(`Delete raw parts for reconstructable released items older than ${days || 'the configured window'} days? Durable NZB segments are kept, so downloads still work. This cannot be undone.`)) {
-      return;
-    }
+    const ok = await confirmStore.request({
+      title: 'Prune raw parts?',
+      message: `Delete raw parts for reconstructable released items older than ${days || 'the configured window'} day(s)? Durable NZB segments are kept, so downloads still work. This cannot be undone.`,
+      confirmLabel: 'Prune now',
+      danger: true,
+    });
+    if (!ok) return;
     retentionPruning = true;
     try {
       const res = await api.retentionPrune(days);
-      notice = `Retention prune: ${res.parts_deleted} raw part(s) deleted`;
+      notify(`Retention prune: ${res.parts_deleted} raw part(s) deleted`);
       retentionReport = null;
       api.stats().then((s) => { stats = s; }).catch(() => {});
-    } catch (e) { error = e.message; }
+    } catch (e) { fail(e); }
     finally { retentionPruning = false; }
   }
   async function setBackfillTarget(g) {
@@ -377,7 +418,7 @@
     backfillSaving = true;
     try {
       await api.setGroupBackfill(g.id, payload.days, payload.articles);
-      notice = `Backfill target saved for ${g.name}`;
+      notify(`Backfill target saved for ${g.name}`);
       editingBackfillId = null;
       loadAll();
     } catch (e) {
@@ -395,9 +436,35 @@
   }
 </script>
 
+<!-- Toasts: per-action success/error feedback (#122). Live region so screen
+     readers announce them. -->
+<div class="toasts" aria-live="polite" aria-atomic="false">
+  {#each toasts as t (t.id)}
+    <div class="toast toast-{t.kind}" role={t.kind === 'error' ? 'alert' : 'status'}>
+      <span class="toast-msg">{t.message}</span>
+      <button class="toast-close" aria-label="Dismiss" onclick={() => toastStore.dismiss(t.id)}>×</button>
+    </div>
+  {/each}
+</div>
+
+<!-- Confirmation dialog for destructive actions (#122), replacing window.confirm. -->
+{#if pendingConfirm}
+  <div class="confirm-backdrop">
+    <div class="confirm-dialog" role="alertdialog" aria-modal="true"
+         aria-labelledby="confirm-title" aria-describedby="confirm-msg"
+         tabindex="-1" onkeydown={(e) => { if (e.key === 'Escape') confirmStore.cancel(); }}>
+      <h3 id="confirm-title" style="margin-top:0">{pendingConfirm.title}</h3>
+      <p id="confirm-msg">{pendingConfirm.message}</p>
+      <div class="row" style="justify-content:flex-end; gap:0.5rem">
+        <button class="secondary" onclick={() => confirmStore.cancel()}>{pendingConfirm.cancelLabel}</button>
+        <button class={pendingConfirm.danger ? 'danger' : ''} onclick={() => confirmStore.confirm()}>{pendingConfirm.confirmLabel}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <h2>Admin</h2>
 {#if error}<p class="error">{error}</p>{/if}
-{#if notice}<p class="muted">{notice}</p>{/if}
 
 {#if health}
   <div class="panel">
@@ -534,7 +601,7 @@
             <td>{s.enabled ? 'yes' : 'no'}</td>
             <td class="row">
               <button class="secondary" onclick={() => toggleServer(s)}>{s.enabled ? 'Disable' : 'Enable'}</button>
-              <button class="danger" onclick={() => removeServer(s.id)}>Delete</button>
+              <button class="danger" onclick={() => removeServer(s)}>Delete</button>
             </td>
           </tr>
         {/each}
@@ -616,7 +683,7 @@
               <button class="secondary" onclick={() => scan(g.name)}>Scan</button>
               <button class="secondary" onclick={() => backfill(g.name)}>Backfill</button>
               <button class="secondary" aria-expanded={editingBackfillId === g.id} onclick={() => editingBackfillId === g.id ? cancelBackfillEdit() : setBackfillTarget(g)}>Target</button>
-              <button class="danger" onclick={() => removeGroup(g.id)}>Delete</button>
+              <button class="danger" onclick={() => removeGroup(g)}>Delete</button>
             </td>
           </tr>
           {#if editingBackfillId === g.id}
@@ -732,7 +799,7 @@
             <td>{u.username}</td>
             <td>{u.role}</td>
             <td>{u.active ? 'yes' : 'no'}</td>
-            <td><button class="danger" onclick={() => removeUser(u.id)}>Delete</button></td>
+            <td><button class="danger" onclick={() => removeUser(u)}>Delete</button></td>
           </tr>
         {/each}
       </tbody>
@@ -813,3 +880,64 @@
     </div>
   {/if}
 </div>
+
+<style>
+  /* Toast stack: fixed, top-right, above content (#122). */
+  .toasts {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-width: min(90vw, 26rem);
+  }
+  .toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.6rem 0.8rem;
+    border-radius: 6px;
+    border: 1px solid var(--border, #30363d);
+    background: var(--panel, #161b22);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    font-size: 0.9rem;
+  }
+  .toast-success { border-left: 4px solid #1a7f37; }
+  .toast-error { border-left: 4px solid #cf222e; }
+  .toast-info { border-left: 4px solid #0969da; }
+  .toast-msg { flex: 1; word-break: break-word; }
+  .toast-close {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 0 0.1rem;
+    opacity: 0.7;
+  }
+  .toast-close:hover { opacity: 1; }
+
+  /* Confirmation dialog overlay (#122). */
+  .confirm-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1001;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+  }
+  .confirm-dialog {
+    background: var(--panel, #161b22);
+    border: 1px solid var(--border, #30363d);
+    border-radius: 8px;
+    padding: 1.2rem;
+    max-width: 30rem;
+    width: 100%;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  }
+</style>
