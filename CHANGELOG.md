@@ -6,6 +6,25 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Added
+- Configurable raw-part retention with a dry-run mode (#118). Raw article rows
+  for released items that are fully post-processed and reconstructable from
+  durable NZB segments (from #105) can now be pruned after a retention window,
+  so storage tracks intended retention rather than installation lifetime.
+  Retention is opt-in and conservative by default (`GOINDEX_RETENTION_ENABLED`,
+  `GOINDEX_RETENTION_DAYS`, plus interval/batch-size/max-batches knobs). A part
+  is only prunable when its binary is released, its release is `pp_status='done'`
+  with non-empty durable segments, and it is older than the window; unassigned
+  backlog, incomplete/unreleased binaries, releases still pending/failed
+  post-processing, and non-reconstructable releases are always retained. New
+  admin endpoints `GET /api/v1/admin/retention/preview` (dry-run report of
+  candidate parts, estimated bytes, oldest/newest, and retention reasons) and
+  `POST /api/v1/admin/retention/prune` (bounded, resumable, cancellable batched
+  deletion), surfaced in the admin UI, plus an optional background retention
+  loop. Integration tests cover the safety predicate, batched/cancellable
+  deletion, and confirm pruned releases still generate NZBs from durable
+  segments.
+
 ### Changed
 - NNTP connection capacity is now safely reconfigurable at runtime (#111).
   Previously the pool's concurrency ceiling was fixed at construction, so an

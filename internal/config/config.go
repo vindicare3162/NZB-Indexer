@@ -25,8 +25,33 @@ type Config struct {
 	Auth AuthConfig `yaml:"auth"`
 	// Metadata holds optional release metadata-enrichment settings.
 	Metadata MetadataConfig `yaml:"metadata"`
+	// Retention holds raw-part retention settings.
+	Retention RetentionConfig `yaml:"retention"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `yaml:"log_level"`
+}
+
+// RetentionConfig configures raw-part retention (#118): pruning the raw article
+// rows for released, fully post-processed, reconstructable releases older than
+// a window. Disabled by default so existing installations are unaffected until
+// an operator opts in.
+type RetentionConfig struct {
+	// Enabled turns on the background retention loop. When false, no parts are
+	// ever pruned automatically (the dry-run report and manual admin trigger
+	// remain available).
+	Enabled bool `yaml:"enabled"`
+	// Days is the retention window: only parts of releases older than this many
+	// days are eligible for pruning. Must be > 0 when Enabled.
+	Days int `yaml:"days"`
+	// Interval is how often the retention loop runs when Enabled. Zero uses a
+	// sane default (6h).
+	Interval time.Duration `yaml:"interval"`
+	// BatchSize bounds how many parts are deleted per transaction, so cleanup
+	// never holds one unbounded transaction. Zero uses a sane default (5000).
+	BatchSize int `yaml:"batch_size"`
+	// MaxBatchesPerRun caps how many batches a single automatic run deletes, so
+	// a run is time-bounded. Zero means drain fully.
+	MaxBatchesPerRun int `yaml:"max_batches_per_run"`
 }
 
 // MetadataConfig configures optional release metadata enrichment (matching
@@ -177,6 +202,13 @@ func Default() Config {
 			Provider: "tvmaze",
 			Interval: 30 * time.Minute,
 		},
+		Retention: RetentionConfig{
+			Enabled:          false, // opt-in; conservative default for existing installs
+			Days:             0,
+			Interval:         6 * time.Hour,
+			BatchSize:        5000,
+			MaxBatchesPerRun: 0, // 0 = drain fully per run
+		},
 		NNTP: NNTPConfig{
 			Port:           563,
 			TLS:            true,
@@ -281,6 +313,12 @@ func applyEnv(cfg *Config) {
 	envStr("GOINDEX_METADATA_PROVIDER", &cfg.Metadata.Provider)
 	envDur("GOINDEX_METADATA_INTERVAL", &cfg.Metadata.Interval)
 
+	envBool("GOINDEX_RETENTION_ENABLED", &cfg.Retention.Enabled)
+	envInt("GOINDEX_RETENTION_DAYS", &cfg.Retention.Days)
+	envDur("GOINDEX_RETENTION_INTERVAL", &cfg.Retention.Interval)
+	envInt("GOINDEX_RETENTION_BATCH_SIZE", &cfg.Retention.BatchSize)
+	envInt("GOINDEX_RETENTION_MAX_BATCHES_PER_RUN", &cfg.Retention.MaxBatchesPerRun)
+
 	envStr("GOINDEX_AUTH_JWT_SECRET", &cfg.Auth.JWTSecret)
 	envDur("GOINDEX_AUTH_SESSION_TTL", &cfg.Auth.SessionTTL)
 	envInt("GOINDEX_AUTH_DEFAULT_RATE_LIMIT", &cfg.Auth.DefaultRateLimit)
@@ -342,6 +380,19 @@ func (c Config) Validate() error {
 	}
 	if c.Scan.BackfillMaxArticles < 0 {
 		errs = append(errs, "scan.backfill_max_articles must not be negative")
+	}
+
+	if c.Retention.Days < 0 {
+		errs = append(errs, "retention.days must not be negative")
+	}
+	if c.Retention.Enabled && c.Retention.Days <= 0 {
+		errs = append(errs, "retention.days must be greater than 0 when retention.enabled is true")
+	}
+	if c.Retention.BatchSize < 0 {
+		errs = append(errs, "retention.batch_size must not be negative (0 = default)")
+	}
+	if c.Retention.MaxBatchesPerRun < 0 {
+		errs = append(errs, "retention.max_batches_per_run must not be negative (0 = drain fully)")
 	}
 
 	if c.Auth.DefaultRateLimit <= 0 {

@@ -106,6 +106,8 @@ export const api = {
   triggerPostProcess: () => request('POST', '/admin/postprocess', {}),
   retryFailedPP: () => request('POST', '/admin/postprocess/retry-failed', {}),
   backfillSegments: () => request('POST', '/admin/segments/backfill', {}),
+  retentionPreview: (days) => request('GET', `/admin/retention/preview${days ? `?days=${days}` : ''}`),
+  retentionPrune: (days) => request('POST', `/admin/retention/prune${days ? `?days=${days}` : ''}`, {}),
   status: () => request('GET', '/admin/status'),
   stats: () => request('GET', '/admin/stats'),
   logs: (level = '', limit = 200) => {
