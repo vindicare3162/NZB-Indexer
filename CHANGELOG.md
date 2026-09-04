@@ -7,6 +7,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Release search is backed by a PostgreSQL **pg_trgm GIN index** (#106) so the
+  tokenized `LIKE '%token%'` substring search scales as the catalog grows.
+  Migration 0013 creates the `pg_trgm` extension and
+  `idx_releases_search_name_trgm`; the planner uses a bitmap index scan for
+  substring predicates (verified via `EXPLAIN`). Search semantics are unchanged.
+  `docs/postgres-tuning.md` documents the strategy and measured plan.
 - Durable release segments make NZB generation independent of raw parts (#105,
   the prerequisite for raw-part retention). At build time a release snapshots
   its ordered segments into a new `releases.segments` column (migration 0012),
