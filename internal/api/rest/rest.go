@@ -25,6 +25,9 @@ type Store interface {
 
 	// Search / details
 	SearchReleases(ctx context.Context, f store.SearchFilter) ([]store.Release, int, error)
+	// SearchReleasesPage runs a paginated search with bounded count + keyset
+	// pagination metadata (#120).
+	SearchReleasesPage(ctx context.Context, f store.SearchFilter) (store.SearchResult, error)
 	GetReleaseByGUID(ctx context.Context, guid string) (store.Release, error)
 	GetReleaseFiles(ctx context.Context, releaseID int64) ([]store.ReleaseFile, error)
 	GetReleaseMetadata(ctx context.Context, releaseID int64) (store.ReleaseMetadata, error)

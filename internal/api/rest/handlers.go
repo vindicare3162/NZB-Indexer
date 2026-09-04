@@ -2,6 +2,7 @@ package rest
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -135,6 +136,14 @@ type searchResponse struct {
 	Limit    int             `json:"limit"`
 	Offset   int             `json:"offset"`
 	Releases []store.Release `json:"releases"`
+	// Approximate is true when Total was capped (the real total is >= Total).
+	Approximate bool `json:"approximate"`
+	// NextCursor is an opaque token for the next page via keyset pagination
+	// (#120); empty when there is no further page. Pass it as ?cursor= to fetch
+	// the next page without an OFFSET scan.
+	NextCursor string `json:"next_cursor,omitempty"`
+	// HasMore indicates another page likely exists.
+	HasMore bool `json:"has_more"`
 }
 
 func (a *API) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -155,24 +164,63 @@ func (a *API) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	releases, total, err := a.store.SearchReleases(r.Context(), store.SearchFilter{
+	filter := store.SearchFilter{
 		Query:      q.Get("q"),
 		Categories: cats,
 		Limit:      limit,
 		Offset:     offset,
 		// Obfuscated (unusable) releases are hidden unless explicitly requested.
 		IncludeObfuscated: q.Get("include_obfuscated") == "1" || q.Get("include_obfuscated") == "true",
-	})
+	}
+	// Keyset pagination (#120): a ?cursor= token pages without an OFFSET scan.
+	// When present it takes precedence over offset.
+	if c := q.Get("cursor"); c != "" {
+		cur, err := decodeCursor(c)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		filter.Cursor = cur
+		filter.Offset = 0
+	}
+
+	page, err := a.store.SearchReleasesPage(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "search failed")
 		return
 	}
+	releases := page.Releases
 	if releases == nil {
 		releases = []store.Release{}
 	}
-	writeJSON(w, http.StatusOK, searchResponse{
-		Total: total, Limit: limit, Offset: offset, Releases: releases,
-	})
+	resp := searchResponse{
+		Total: page.Total, Limit: limit, Offset: offset, Releases: releases,
+		Approximate: page.Approximate, HasMore: page.HasMore,
+	}
+	if page.HasMore && page.NextCursor != nil {
+		resp.NextCursor = encodeCursor(*page.NextCursor)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// encodeCursor renders a keyset position as an opaque base64 token
+// "<sortUnixNano>:<id>".
+func encodeCursor(c store.SearchCursor) string {
+	raw := fmt.Sprintf("%d:%d", c.Sort.UTC().UnixNano(), c.ID)
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// decodeCursor parses a token produced by encodeCursor.
+func decodeCursor(tok string) (*store.SearchCursor, error) {
+	b, err := base64.RawURLEncoding.DecodeString(tok)
+	if err != nil {
+		return nil, err
+	}
+	var nanos, id int64
+	if _, err := fmt.Sscanf(string(b), "%d:%d", &nanos, &id); err != nil {
+		return nil, err
+	}
+	return &store.SearchCursor{Sort: time.Unix(0, nanos).UTC(), ID: id}, nil
 }
 
 func (a *API) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {

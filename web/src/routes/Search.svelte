@@ -7,6 +7,8 @@
   let categories = $state([]);
   let releases = $state([]);
   let total = $state(0);
+  let approximate = $state(false);
+  let hasMore = $state(false);
   let limit = $state(50);
   let offset = $state(0);
   let loading = $state(false);
@@ -34,6 +36,8 @@
       const res = await api.search({ q, cat, limit, offset, includeObfuscated });
       releases = res.releases || [];
       total = res.total || 0;
+      approximate = !!res.approximate;
+      hasMore = !!res.has_more;
       searched = true;
     } catch (err) {
       error = err.message || 'Search failed';
@@ -60,8 +64,11 @@
     return new Date(s).toLocaleDateString();
   }
 
-  const hasNext = $derived(offset + limit < total);
+  // Use the server's has_more (works even when the total is capped/approximate)
+  // and fall back to the offset/total comparison.
+  const hasNext = $derived(hasMore || offset + limit < total);
   const hasPrev = $derived(offset > 0);
+  const totalLabel = $derived(approximate ? `${total}+` : `${total}`);
 </script>
 
 <form class="panel row" onsubmit={submit}>
@@ -103,7 +110,7 @@
       </table>
 
       <div class="row" style="justify-content: space-between; margin-top: 0.8rem;">
-        <span class="muted">{total} result{total === 1 ? '' : 's'}</span>
+        <span class="muted">{totalLabel} result{total === 1 && !approximate ? '' : 's'}</span>
         <div class="row">
           <button class="secondary" disabled={!hasPrev} onclick={() => runSearch(offset - limit)}>Prev</button>
           <button class="secondary" disabled={!hasNext} onclick={() => runSearch(offset + limit)}>Next</button>

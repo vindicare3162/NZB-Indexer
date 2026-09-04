@@ -64,6 +64,16 @@ func (m *mockStore) SearchReleases(_ context.Context, f store.SearchFilter) ([]s
 	m.lastFilter = f
 	return m.releases, m.total, nil
 }
+func (m *mockStore) SearchReleasesPage(_ context.Context, f store.SearchFilter) (store.SearchResult, error) {
+	m.lastFilter = f
+	res := store.SearchResult{Releases: m.releases, Total: m.total}
+	if len(m.releases) == f.Limit && f.Limit > 0 {
+		res.HasMore = true
+		last := m.releases[len(m.releases)-1]
+		res.NextCursor = &store.SearchCursor{ID: last.ID}
+	}
+	return res, nil
+}
 func (m *mockStore) GetReleaseByGUID(_ context.Context, guid string) (store.Release, error) {
 	for _, r := range m.releases {
 		if r.GUID == guid {
