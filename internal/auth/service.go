@@ -57,15 +57,41 @@ type Service struct {
 	tokens           *TokenIssuer
 	limiter          *RateLimiter
 	defaultRateLimit int
+	keyCache         *apiKeyCache
 }
 
-// NewService constructs an auth Service.
+// NewService constructs an auth Service with default API-key cache settings
+// (60s TTL, 60s last-used throttle, 4096 entries).
 func NewService(repo Repo, tokens *TokenIssuer, limiter *RateLimiter, defaultRateLimit int) *Service {
 	return &Service{
 		repo:             repo,
 		tokens:           tokens,
 		limiter:          limiter,
 		defaultRateLimit: defaultRateLimit,
+		keyCache:         newAPIKeyCache(60*time.Second, 60*time.Second, 4096),
+	}
+}
+
+// APIKeyCacheStats returns a snapshot of API-key cache activity for metrics.
+func (s *Service) APIKeyCacheStats() APIKeyCacheStats {
+	if s.keyCache == nil {
+		return APIKeyCacheStats{}
+	}
+	return s.keyCache.stats()
+}
+
+// InvalidateAPIKey drops a key from the auth cache immediately (e.g. on key
+// deletion), so it stops authenticating without waiting for the TTL.
+func (s *Service) InvalidateAPIKey(apiKey string) {
+	if s.keyCache != nil {
+		s.keyCache.Invalidate(apiKey)
+	}
+}
+
+// InvalidateAPIKeyCache clears the whole cache (e.g. on user deactivation).
+func (s *Service) InvalidateAPIKeyCache() {
+	if s.keyCache != nil {
+		s.keyCache.InvalidateAll()
 	}
 }
 
@@ -105,9 +131,18 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, apiKey string) (Princi
 	if apiKey == "" {
 		return Principal{}, ErrUnauthorized
 	}
-	rec, err := s.repo.GetAPIKeyWithUser(ctx, apiKey)
-	if err != nil {
-		return Principal{}, ErrUnauthorized
+
+	// Serve from the short-TTL cache when possible, avoiding a DB lookup on the
+	// hot Newznab-polling path. A miss (or expiry) resolves from the store and
+	// caches the result.
+	rec, ok := s.keyCache.get(apiKey)
+	if !ok {
+		var err error
+		rec, err = s.repo.GetAPIKeyWithUser(ctx, apiKey)
+		if err != nil {
+			return Principal{}, ErrUnauthorized
+		}
+		s.keyCache.put(apiKey, rec)
 	}
 
 	limit := rec.User.RateLimit
@@ -126,8 +161,11 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, apiKey string) (Princi
 		}
 	}
 
-	// Best-effort last-used update; ignore errors.
-	_ = s.repo.TouchAPIKey(ctx, rec.Key.ID)
+	// Persist last-used at most once per throttle interval per key, rather than
+	// on every request. Best-effort; errors are ignored.
+	if s.keyCache.shouldTouch(apiKey) {
+		_ = s.repo.TouchAPIKey(ctx, rec.Key.ID)
+	}
 
 	return Principal{
 		UserID:             rec.User.ID,

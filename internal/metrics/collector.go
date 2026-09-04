@@ -34,6 +34,11 @@ type pipelineCollector struct {
 	workerNFOsFound       *prometheus.Desc
 
 	scrapeErrors *prometheus.Desc
+
+	authCacheHits      *prometheus.Desc
+	authCacheMisses    *prometheus.Desc
+	authCacheEvictions *prometheus.Desc
+	authCacheSize      *prometheus.Desc
 }
 
 func newPipelineCollector(p Providers) *pipelineCollector {
@@ -59,6 +64,10 @@ func newPipelineCollector(p Providers) *pipelineCollector {
 		workerReleasesRenamed:   d("goindex_worker_releases_renamed_total", "Releases renamed by post-processing."),
 		workerNFOsFound:         d("goindex_worker_nfos_found_total", "NFOs recovered by post-processing."),
 		scrapeErrors:            d("goindex_metrics_scrape_errors_total", "Errors gathering pipeline metrics on scrape."),
+		authCacheHits:           d("goindex_apikey_cache_hits_total", "API-key auth cache hits."),
+		authCacheMisses:         d("goindex_apikey_cache_misses_total", "API-key auth cache misses."),
+		authCacheEvictions:      d("goindex_apikey_cache_evictions_total", "API-key auth cache evictions."),
+		authCacheSize:           d("goindex_apikey_cache_size", "API-key auth cache current entry count."),
 	}
 }
 
@@ -108,6 +117,14 @@ func (c *pipelineCollector) Collect(ch chan<- prometheus.Metric) {
 		counter(c.workerReleasesCreated, w.ReleasesCreated)
 		counter(c.workerReleasesRenamed, w.ReleasesRenamed)
 		counter(c.workerNFOsFound, w.NFOsFound)
+	}
+
+	if c.p.AuthCache != nil {
+		a := c.p.AuthCache()
+		ch <- prometheus.MustNewConstMetric(c.authCacheHits, prometheus.CounterValue, a.Hits)
+		ch <- prometheus.MustNewConstMetric(c.authCacheMisses, prometheus.CounterValue, a.Misses)
+		ch <- prometheus.MustNewConstMetric(c.authCacheEvictions, prometheus.CounterValue, a.Evictions)
+		ch <- prometheus.MustNewConstMetric(c.authCacheSize, prometheus.GaugeValue, a.Size)
 	}
 
 	ch <- prometheus.MustNewConstMetric(c.scrapeErrors, prometheus.CounterValue, scrapeErr)

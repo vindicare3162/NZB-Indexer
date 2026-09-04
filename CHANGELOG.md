@@ -7,6 +7,13 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- API-key authentication is now cached in-process with a short TTL, and
+  `last_used_at` writes are throttled (#107). Repeated Newznab polling within
+  the TTL avoids the per-request key/user lookup and per-request last-used
+  write (one lookup per TTL window, one write per throttle interval per key).
+  Deleting a key or user invalidates the cache immediately; otherwise entries
+  expire within the TTL. Cache hit/miss/eviction/size are exported as Prometheus
+  metrics (`goindex_apikey_cache_*`). No external cache (Redis) is used.
 - Release search is backed by a PostgreSQL **pg_trgm GIN index** (#106) so the
   tokenized `LIKE '%token%'` substring search scales as the catalog grows.
   Migration 0013 creates the `pg_trgm` extension and

@@ -113,6 +113,7 @@ type fakeRepo struct {
 	users   map[string]store.User
 	keys    map[string]store.APIKeyUser
 	touched int
+	lookups int
 }
 
 func (f *fakeRepo) GetUserByUsername(_ context.Context, u string) (store.User, error) {
@@ -123,6 +124,7 @@ func (f *fakeRepo) GetUserByUsername(_ context.Context, u string) (store.User, e
 }
 
 func (f *fakeRepo) GetAPIKeyWithUser(_ context.Context, k string) (store.APIKeyUser, error) {
+	f.lookups++
 	if rec, ok := f.keys[k]; ok {
 		return rec, nil
 	}
@@ -323,5 +325,67 @@ func TestRequireAPIKeyMiddleware(t *testing.T) {
 		t.Error("expected Retry-After header on 429")
 	} else if n, err := strconv.Atoi(ra); err != nil || n < 1 {
 		t.Errorf("Retry-After = %q, want a positive integer", ra)
+	}
+}
+
+// TestAPIKeyCacheAvoidsRepeatLookups verifies repeated valid-key auth within
+// the TTL hits the cache (one DB lookup, one throttled last-used write) and
+// that invalidation forces a fresh lookup (#107).
+func TestAPIKeyCacheAvoidsRepeatLookups(t *testing.T) {
+	repo := &fakeRepo{keys: map[string]store.APIKeyUser{
+		"goodkey": {
+			Key:  store.APIKey{ID: 7, APIKey: "goodkey", Active: true},
+			User: store.User{ID: 3, Username: "carol", Role: store.RoleUser, Active: true},
+		},
+	}}
+	svc := newTestService(t, repo, nil, 100) // no rate limiter
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		if _, err := svc.AuthenticateAPIKey(ctx, "goodkey"); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	if repo.lookups != 1 {
+		t.Errorf("DB lookups = %d, want 1 (cached after first)", repo.lookups)
+	}
+	if repo.touched != 1 {
+		t.Errorf("last-used writes = %d, want 1 (throttled)", repo.touched)
+	}
+	st := svc.APIKeyCacheStats()
+	if st.Hits != 4 || st.Misses != 1 {
+		t.Errorf("cache stats hits=%d misses=%d, want 4/1", st.Hits, st.Misses)
+	}
+
+	// Invalidation forces a fresh lookup on the next request.
+	svc.InvalidateAPIKey("goodkey")
+	if _, err := svc.AuthenticateAPIKey(ctx, "goodkey"); err != nil {
+		t.Fatal(err)
+	}
+	if repo.lookups != 2 {
+		t.Errorf("after invalidation lookups = %d, want 2", repo.lookups)
+	}
+}
+
+// TestAPIKeyCacheExpiryForcesLookup verifies an expired entry is re-resolved.
+func TestAPIKeyCacheExpiryForcesLookup(t *testing.T) {
+	repo := &fakeRepo{keys: map[string]store.APIKeyUser{
+		"k": {Key: store.APIKey{ID: 1, APIKey: "k", Active: true}, User: store.User{ID: 1, Active: true}},
+	}}
+	ti, _ := NewTokenIssuer("secret", time.Hour)
+	svc := NewService(repo, ti, nil, 100)
+	// Replace the cache with a very short TTL for the test.
+	svc.keyCache = newAPIKeyCache(10*time.Millisecond, time.Hour, 16)
+	ctx := context.Background()
+
+	if _, err := svc.AuthenticateAPIKey(ctx, "k"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := svc.AuthenticateAPIKey(ctx, "k"); err != nil {
+		t.Fatal(err)
+	}
+	if repo.lookups != 2 {
+		t.Errorf("lookups = %d, want 2 (cache expired between requests)", repo.lookups)
 	}
 }
