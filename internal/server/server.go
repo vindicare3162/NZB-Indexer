@@ -68,6 +68,12 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	pool := nntp.New(poolCfg)
 	defer pool.Close()
 
+	// Effective NNTP connection capacity: derive concurrency from the limit the
+	// pool was ACTUALLY built with (the active DB-managed server when present),
+	// not the startup config, which may differ. This keeps scan/post-process
+	// worker counts consistent with the real provider budget.
+	effectiveNNTPConns := poolCfg.MaxConns
+
 	// 3. Pipeline stages.
 	sc := scanner.New(pool, st, logger, scanner.Options{
 		BatchSize:           int64(cfg.Scan.BatchSize),
@@ -84,9 +90,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		BatchLimit:         200,
 		MaxFetchPerRelease: 4,
 		FetchTimeout:       30 * time.Second,
-		// Process releases in parallel, using up to half the NNTP connection
-		// budget so scanning/assembly still have connections available.
-		Concurrency: ppConcurrency(cfg.NNTP.MaxConns),
+		// Process releases in parallel, using up to half the effective NNTP
+		// connection budget so scanning/assembly still have connections available.
+		Concurrency: ppConcurrency(effectiveNNTPConns),
 	})
 	nzbGen := nzb.NewGenerator(st)
 
@@ -112,7 +118,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	}
 	applyPersistedSchedule(ctx, st, &wopts, logger)
 	wopts.EnrichInterval = cfg.Metadata.Interval
-	wopts.ScanConcurrency = scanConcurrency(cfg.Scan.Concurrency, cfg.NNTP.MaxConns)
+	wopts.ScanConcurrency = scanConcurrency(cfg.Scan.Concurrency, effectiveNNTPConns)
+	logger.Info("effective concurrency sizing",
+		"nntp_max_conns", effectiveNNTPConns,
+		"scan_concurrency", wopts.ScanConcurrency,
+		"postprocess_concurrency", ppConcurrency(effectiveNNTPConns))
 
 	// Optional metadata enrichment. Disabled by default; when enabled it uses
 	// the keyless TVMaze provider unless another is configured. A nil enricher
@@ -137,7 +147,12 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	srvMgr := &serverManager{store: st, pool: pool, connectTimeout: cfg.NNTP.ConnectTimeout, log: logger}
 	discovery := newDiscoveryService(pool, time.Hour)
 	restAPI := rest.New(st, nzbGen, authSvc, authSvc, scheduleAdapter{wrk}, srvMgr, logs, discovery, logger)
-	restAPI.SetSystemProbe(systemProbe{pool: pool, store: st, jwtSecret: cfg.Auth.JWTSecret})
+	restAPI.SetSystemProbe(systemProbe{
+		pool: pool, store: st, jwtSecret: cfg.Auth.JWTSecret,
+		nntpMaxConns: effectiveNNTPConns,
+		scanWorkers:  wopts.ScanConcurrency,
+		ppWorkers:    ppConcurrency(effectiveNNTPConns),
+	})
 
 	spa, err := web.Handler()
 	if err != nil {

@@ -6,6 +6,14 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Fixed
+- Scan and post-processing concurrency are now sized from the **effective**
+  NNTP connection limit — the one the live pool was actually built with (the
+  active DB-managed server when present) — rather than the startup config,
+  which could differ and mis-size the worker pools (#104). Startup logs and the
+  admin health report now expose the effective capacity and derived scan/pp
+  worker limits.
+
 ### Added
 - Bounded **parallel group scanning** (#102, implementing the design in #100).
   A scan/backfill pass now processes several groups concurrently via a worker
