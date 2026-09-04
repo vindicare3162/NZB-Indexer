@@ -837,3 +837,95 @@ func TestRunScanRecordsPerGroupOutcome(t *testing.T) {
 		t.Error("expected group 22 to be recorded")
 	}
 }
+
+// --- #125 adaptive backlog-aware scheduling tests ---
+
+func TestNextInterval(t *testing.T) {
+	w := &Worker{}
+	configured := 5 * time.Minute
+
+	// Adaptation disabled (min <= 0): always the configured interval.
+	w.opts.AdaptiveMinInterval = 0
+	if got := w.nextInterval(configured, true); got != configured {
+		t.Errorf("disabled+busy = %s, want %s", got, configured)
+	}
+
+	// Enabled but idle: configured interval.
+	w.opts.AdaptiveMinInterval = 30 * time.Second
+	if got := w.nextInterval(configured, false); got != configured {
+		t.Errorf("enabled+idle = %s, want %s", got, configured)
+	}
+
+	// Enabled + busy: the shorter busy interval.
+	if got := w.nextInterval(configured, true); got != 30*time.Second {
+		t.Errorf("enabled+busy = %s, want 30s", got)
+	}
+
+	// Busy but min >= configured: never longer than configured.
+	w.opts.AdaptiveMinInterval = 10 * time.Minute
+	if got := w.nextInterval(configured, true); got != configured {
+		t.Errorf("busy+min>=configured = %s, want %s", got, configured)
+	}
+}
+
+// drainingAsm reports a backlog (Drained=false) for the first `busyPasses`
+// calls, then reports drained.
+type drainingAsm struct {
+	mu         sync.Mutex
+	calls      int
+	busyPasses int
+}
+
+func (d *drainingAsm) Assemble(context.Context) (assembler.Result, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls++
+	drained := d.calls > d.busyPasses
+	return assembler.Result{BinariesTouched: 1, Drained: drained}, nil
+}
+func (d *drainingAsm) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
+}
+
+// TestAssembleLoopAdaptsToBacklog verifies backlog-aware scheduling (#125): with
+// a long configured interval but a short adaptive min interval, an assemble loop
+// that keeps reporting a backlog runs several passes quickly (at the short
+// cadence) rather than waiting the full interval each time.
+func TestAssembleLoopAdaptsToBacklog(t *testing.T) {
+	g := &mockGroups{groups: []store.Group{{Name: "g1"}}}
+	asm := &drainingAsm{busyPasses: 5}
+	// Configured downstream interval is effectively "never" for this test; the
+	// adaptive min interval (10ms) drives the busy cadence.
+	w := New(g, &mockScanner{}, asm, &mockBuild{}, &mockPP{}, nil, nil, Options{
+		ScanInterval:        time.Hour,
+		DownstreamInterval:  time.Hour,
+		BuildInterval:       time.Hour,
+		PostProcessInterval: time.Hour,
+		AdaptiveMinInterval: 10 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); w.assembleLoop(ctx) }()
+
+	// Within a short window the busy passes should have run at the 10ms cadence
+	// (initial pass + several ticks), far more than the 1 the fixed 1h interval
+	// would allow.
+	deadline := time.After(2 * time.Second)
+	for {
+		if asm.count() >= 5 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("assemble ran only %d passes; adaptive cadence did not speed up the backlog drain", asm.count())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	wg.Wait()
+}

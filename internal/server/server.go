@@ -138,6 +138,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	applyPersistedSchedule(ctx, st, &wopts, logger)
 	wopts.EnrichInterval = cfg.Metadata.Interval
 	wopts.ScanConcurrency = budget.ScanWorkers
+	// Backlog-aware scheduling for the downstream loops (#125).
+	wopts.AdaptiveMinInterval = cfg.Scan.AdaptiveMinInterval
 	logger.Info("effective concurrency sizing",
 		"nntp_max_conns", budget.NNTPMaxConns,
 		"db_max_conns", budget.DBMaxConns,

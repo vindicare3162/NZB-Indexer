@@ -41,6 +41,16 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Adaptive backlog-aware scheduling for the downstream pipeline loops (#125).
+  The assemble, build, and post-processing loops now schedule their next pass
+  based on whether the last pass reported more work pending — a backlog: assemble
+  uses its drained signal (#116), build and post-processing use whether the pass
+  processed anything. While a backlog remains they re-run after a short
+  configurable "busy" interval (`GOINDEX_SCAN_ADAPTIVE_MIN_INTERVAL` / `scan.adaptive_min_interval`,
+  default 30s) instead of waiting the full configured interval, so a large
+  backlog drains quickly; once a pass finds nothing, the loop backs off to its
+  normal cadence. Setting the interval to 0 disables adaptation (fixed
+  intervals). Manual triggers and live schedule reconfiguration are unaffected.
 - Scalable group management for hundreds or thousands of groups (#123). The
   admin `GET /admin/groups` endpoint is now server-side paginated, filtered, and
   sorted: `?q=` (name search), `?status=active|inactive`, `?errors=true`
