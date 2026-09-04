@@ -3,6 +3,7 @@ package postprocess
 import (
 	"context"
 	"fmt"
+	"net/textproto"
 	"os"
 	"sync"
 	"testing"
@@ -204,6 +205,10 @@ func TestPostProcessRetriesTransientFailureThenRecovers(t *testing.T) {
 		t.Fatalf("after first pass pp_status = %q, want failed", rel.PPStatus)
 	}
 
+	// A transient failure schedules a backoff retry (#132); simulate the delay
+	// elapsing so the release is due again.
+	clearRetryBackoff(t, st)
+
 	// Second pass: the same PAR2 now fetches successfully. The failed release
 	// must be re-queued and recover its name.
 	working := &fakeFetcher{bodies: map[string][]byte{par2MsgID: par2Body}}
@@ -238,14 +243,16 @@ func TestPostProcessStopsRetryingAfterMaxAttempts(t *testing.T) {
 	}}
 	p := New(failing, st, nil, Options{BatchLimit: 100})
 
-	// Run enough passes to exhaust the retry budget.
+	// Run enough passes to exhaust the retry budget, clearing the backoff timer
+	// between passes to simulate the delay elapsing each time (#132).
 	for i := 0; i < store.MaxPPAttempts+2; i++ {
 		if _, err := p.Run(ctx); err != nil {
 			t.Fatalf("pass %d: %v", i, err)
 		}
+		clearRetryBackoff(t, st)
 	}
-	// Once attempts reach the cap the release is no longer re-queued: a further
-	// pass processes nothing.
+	// Once attempts reach the cap the release is marked permanently failed and
+	// no longer re-queued: a further pass processes nothing.
 	res, err := p.Run(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -256,6 +263,115 @@ func TestPostProcessStopsRetryingAfterMaxAttempts(t *testing.T) {
 	rel, _ := st.GetReleaseByGUID(ctx, guid)
 	if rel.PPStatus != store.PPFailed {
 		t.Errorf("pp_status = %q, want failed (exhausted)", rel.PPStatus)
+	}
+}
+
+// clearRetryBackoff resets next_retry_at on all failed releases so they are due
+// immediately, simulating the backoff window elapsing between passes (#132).
+func clearRetryBackoff(t *testing.T, st *store.Store) {
+	t.Helper()
+	if _, err := st.Pool().Exec(context.Background(),
+		`UPDATE releases SET next_retry_at = NULL WHERE pp_status = 'failed'`); err != nil {
+		t.Fatalf("clear retry backoff: %v", err)
+	}
+}
+
+// TestPostProcessPermanentErrorStopsImmediately verifies a permanent NNTP error
+// (a 430 retention miss) marks the release permanently failed without consuming
+// the whole retry budget and without ever being re-queued (#132).
+func TestPostProcessPermanentErrorStopsImmediately(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+	guid, par2MsgID, nfoMsgID := seedObfuscatedRelease(t, st)
+
+	// A 430 (article expired / not carried) is permanent: retrying won't help.
+	perm := &textproto.Error{Code: 430, Msg: "no such article"}
+	failing := &fakeFetcher{err: map[string]error{par2MsgID: perm, nfoMsgID: perm}}
+	p := New(failing, st, nil, Options{BatchLimit: 100})
+
+	res, err := p.Run(ctx)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Failed != 1 {
+		t.Errorf("Failed = %d, want 1", res.Failed)
+	}
+	rel, _ := st.GetReleaseByGUID(ctx, guid)
+	if rel.PPStatus != store.PPFailed {
+		t.Errorf("pp_status = %q, want failed", rel.PPStatus)
+	}
+
+	// Even with the backoff cleared, a permanently-failed release is not
+	// re-queued: a further pass processes nothing.
+	clearRetryBackoff(t, st)
+	res2, err := p.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Processed != 0 {
+		t.Errorf("processed = %d after a permanent failure, want 0 (not re-queued)", res2.Processed)
+	}
+
+	// The last error is recorded, and an operator requeue clears the permanent
+	// flag so it can be retried again.
+	var permanent bool
+	var lastErr string
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT pp_permanent, last_error FROM releases WHERE guid = $1`, guid).Scan(&permanent, &lastErr); err != nil {
+		t.Fatal(err)
+	}
+	if !permanent {
+		t.Error("expected pp_permanent = true after a permanent error")
+	}
+	if lastErr == "" {
+		t.Error("expected last_error to be recorded")
+	}
+	if _, err := st.RequeueFailedReleases(ctx); err != nil {
+		t.Fatal(err)
+	}
+	res3, err := p.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res3.Processed != 1 {
+		t.Errorf("processed = %d after operator requeue, want 1 (permanent flag cleared)", res3.Processed)
+	}
+}
+
+// TestPostProcessBackoffDefersRetry verifies a transiently-failed release is NOT
+// re-selected on an immediate second pass because its next_retry_at is in the
+// future (#132).
+func TestPostProcessBackoffDefersRetry(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+	guid, par2MsgID, nfoMsgID := seedObfuscatedRelease(t, st)
+
+	failing := &fakeFetcher{err: map[string]error{
+		par2MsgID: os.ErrDeadlineExceeded,
+		nfoMsgID:  os.ErrDeadlineExceeded,
+	}}
+	p := New(failing, st, nil, Options{BatchLimit: 100})
+
+	if _, err := p.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// A next_retry_at in the future must be set.
+	var hasRetry bool
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT next_retry_at IS NOT NULL AND next_retry_at > now() FROM releases WHERE guid = $1`, guid).Scan(&hasRetry); err != nil {
+		t.Fatal(err)
+	}
+	if !hasRetry {
+		t.Fatal("expected next_retry_at to be scheduled in the future after a transient failure")
+	}
+
+	// Immediate second pass: the release is not yet due, so nothing is processed.
+	res, err := p.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Processed != 0 {
+		t.Errorf("processed = %d before backoff elapsed, want 0", res.Processed)
 	}
 }
 

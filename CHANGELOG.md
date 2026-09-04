@@ -41,6 +41,18 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Standardized post-processing retry policy with permanent-failure handling
+  (#132). Failed post-processing passes are now classified as transient or
+  permanent: transient failures (connection/timeout/other protocol errors) are
+  retried with capped exponential backoff (`next_retry_at`, 5m doubling to a 6h
+  cap) until the attempt budget is exhausted, while permanent failures — a
+  retention miss (NNTP 430, the article is gone) or an authentication failure —
+  mark the release permanently failed immediately and stop retrying. A new
+  migration (0017) adds `next_retry_at`, `last_error`, and `pp_permanent` to
+  `releases`; the due-release query skips permanently-failed and not-yet-due
+  releases; and the operator "Retry failed" action now also clears the permanent
+  flag, backoff timer, and last error. The NNTP error classifier from #128 is
+  reused via new exported `nntp.ClassifyError`/`nntp.IsPermanent` helpers.
 - Per-group scan progress and error reporting (#114). Each group now records the
   outcome of its most recent scan/backfill pass — when it ran, whether it was a
   forward scan or backfill, how many articles/parts it pulled, the server's
