@@ -41,6 +41,17 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Live admin updates via Server-Sent Events (#121). A new
+  `GET /api/v1/admin/events` endpoint streams `status` snapshots (the pipeline
+  status, pushed on connect and every few seconds) and `log` events (each new
+  captured log line, as it happens) over `text/event-stream`, with a heartbeat
+  to keep the connection alive. The log ring buffer gained a non-blocking
+  live subscription (`Subscribe`), and the session middleware now also accepts
+  the token via the `?token=` query parameter since `EventSource` cannot set an
+  Authorization header. The admin UI connects with `EventSource` and updates
+  status and logs live instead of polling, automatically falling back to the
+  previous 5-second polling when the stream is unavailable or errors. The client
+  connection logic lives in a unit-tested module (`web/src/lib/events.js`).
 - Standardized post-processing retry policy with permanent-failure handling
   (#132). Failed post-processing passes are now classified as transient or
   permanent: transient failures (connection/timeout/other protocol errors) are

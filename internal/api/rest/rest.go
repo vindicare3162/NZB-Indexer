@@ -107,6 +107,17 @@ type LogSource interface {
 	Recent(limit int, minLevel *slog.Level) []logbuf.Entry
 }
 
+// LogStreamer exposes a live subscription to new log entries so they can be
+// streamed to the admin UI via Server-Sent Events (#121). Optional: when nil,
+// the events endpoint still streams periodic status snapshots but no live logs.
+// The logbuf.Buffer satisfies it.
+type LogStreamer interface {
+	// Subscribe returns a channel of newly-added entries and a cancel function
+	// that unregisters the subscriber. The channel is buffered; a slow consumer
+	// misses entries rather than blocking log capture.
+	Subscribe() (<-chan logbuf.Entry, func())
+}
+
 // ServerManager applies the currently-active news server to the running NNTP
 // pool. The server package implements it; a nil manager means server changes
 // take effect only on restart.
@@ -173,6 +184,7 @@ type API struct {
 	discoverer Discoverer
 	session   *auth.Service
 	probe     SystemProbe
+	logStream LogStreamer
 
 	// Retention window/batch defaults for the admin retention endpoints (#118).
 	retentionDays       int
@@ -184,6 +196,11 @@ type API struct {
 // SetSystemProbe attaches a health probe (NNTP pool / config facts) used by the
 // admin health report. Optional; when unset those fields are omitted.
 func (a *API) SetSystemProbe(p SystemProbe) { a.probe = p }
+
+// SetLogStreamer attaches a live log subscription used by the admin
+// Server-Sent Events endpoint (#121). Optional; when unset the events stream
+// still delivers periodic status snapshots but no live log lines.
+func (a *API) SetLogStreamer(s LogStreamer) { a.logStream = s }
 
 // SetRetention configures the raw-part retention window and batch defaults used
 // by the admin retention endpoints. days<=0 means the endpoints require an
@@ -256,6 +273,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("GET /api/v1/admin/status", admin(http.HandlerFunc(a.handleStatus)))
 	mux.Handle("GET /api/v1/admin/stats", admin(http.HandlerFunc(a.handleStats)))
 	mux.Handle("GET /api/v1/admin/logs", admin(http.HandlerFunc(a.handleLogs)))
+	mux.Handle("GET /api/v1/admin/events", admin(http.HandlerFunc(a.handleEvents)))
 	mux.Handle("GET /api/v1/admin/overview", admin(http.HandlerFunc(a.handleAdminOverview)))
 	mux.Handle("GET /api/v1/admin/discover", admin(http.HandlerFunc(a.handleDiscover)))
 

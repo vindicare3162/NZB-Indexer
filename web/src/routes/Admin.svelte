@@ -4,6 +4,8 @@
   import { formatLag, lastScanLabel, hasScanError } from '../lib/groupscan.js';
   import { createToastStore } from '../lib/toasts.js';
   import { createConfirmStore } from '../lib/confirm.js';
+  import { getToken } from '../lib/api.js';
+  import { connectAdminEvents } from '../lib/events.js';
 
   // Action feedback + confirmation flows (#122). Toasts give per-action
   // success/error feedback; confirmStore drives an accessible in-page prompt
@@ -171,15 +173,40 @@
     api.jobs(50).then((j) => { jobs = j || []; }).catch(() => {});
   }
 
-  // Auto-refresh logs + pipeline status (for Current tasks) every 5s while the
-  // admin page is mounted. Jobs poll on the same cadence.
-  $effect(() => {
+  // Live updates via Server-Sent Events (#121) with a polling fallback. When
+  // the SSE stream is up, pipeline status and new log lines are pushed live, so
+  // we only poll jobs (not streamed) on a slow cadence. When the stream is down
+  // (unsupported or errored), we fall back to the previous 5s poll of
+  // status + logs + jobs.
+  let sseUp = false;
+
+  function startPolling() {
+    if (logTimer) return;
     logTimer = setInterval(() => {
-      loadLogs();
       loadJobs();
-      api.status().then((s) => { status = s; }).catch(() => {});
+      if (!sseUp) {
+        loadLogs();
+        api.status().then((s) => { status = s; }).catch(() => {});
+      }
     }, 5000);
-    return () => clearInterval(logTimer);
+  }
+
+  $effect(() => {
+    startPolling();
+    const conn = connectAdminEvents({
+      token: getToken(),
+      onUp: () => { sseUp = true; },
+      onDown: () => { sseUp = false; },
+      onStatus: (s) => { status = s; },
+      onLog: (entry) => {
+        // Prepend the new entry (newest-first) and keep the list bounded.
+        logs = [entry, ...logs].slice(0, 200);
+      },
+    });
+    return () => {
+      conn.close();
+      if (logTimer) { clearInterval(logTimer); logTimer = null; }
+    };
   });
 
   async function cancelJob(id) {
