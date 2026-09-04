@@ -159,6 +159,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	// leaves the pipeline unchanged.
 	enricher := buildEnricher(st, cfg, logger)
 	wrk := worker.New(st, sc, asm, builder, pp, enricher, logger, wopts)
+	// Persistent pipeline jobs (#113): record manual triggers as jobs, and mark
+	// any jobs left running by a previous process as interrupted (recovery).
+	wrk.SetJobStore(st)
+	if n, err := st.MarkInterruptedJobs(ctx); err != nil {
+		logger.Warn("failed to recover interrupted jobs", "err", err)
+	} else if n > 0 {
+		logger.Info("recovered interrupted jobs", "count", n)
+	}
 
 	// 5. Auth.
 	tokens, err := auth.NewTokenIssuer(cfg.Auth.JWTSecret, cfg.Auth.SessionTTL)
@@ -246,6 +254,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	go wrk.Run(workerCtx)
 	go authSvc.CleanupLoop(workerCtx, 10*time.Minute)
+	go runJobCleanupLoop(workerCtx, st, logger)
 	if cfg.Retention.Enabled && cfg.Retention.Days > 0 {
 		go runRetentionLoop(workerCtx, st, cfg.Retention, logger)
 	}
@@ -275,6 +284,30 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	cancelWorker()
 	logger.Info("goindex stopped")
 	return nil
+}
+
+// runJobCleanupLoop periodically prunes terminal job history older than 7 days
+// (#113) so the jobs table doesn't grow unbounded. Cancellable via ctx.
+func runJobCleanupLoop(ctx context.Context, st *store.Store, logger *slog.Logger) {
+	const retain = 7 * 24 * time.Hour
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	cleanup := func() {
+		if n, err := st.CleanupOldJobs(ctx, retain); err != nil {
+			logger.Warn("job history cleanup failed", "err", err)
+		} else if n > 0 {
+			logger.Debug("cleaned up old jobs", "count", n)
+		}
+	}
+	cleanup()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanup()
+		}
+	}
 }
 
 // runRetentionLoop periodically prunes raw parts for reconstructable, released,

@@ -20,6 +20,20 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Persistent pipeline jobs with IDs, progress, cancellation, and history (#113).
+  Manual scan, backfill, and post-processing triggers now create a durable job
+  record (UUID id) tracked through a lifecycle (`queued` → `running` →
+  `completed`/`failed`/`cancelled`), persisted in a new `jobs` table (migration
+  0015). The trigger endpoints (`POST /admin/scan`, `/admin/backfill`,
+  `/admin/postprocess`) return `{"status":"accepted","job_id":...}`, and three
+  new admin endpoints expose the history: `GET /admin/jobs` (recent, newest
+  first), `GET /admin/jobs/{id}`, and `POST /admin/jobs/{id}/cancel`.
+  Cancellation is cooperative: it sets a `cancel_requested` flag the worker polls
+  and also cancels the in-flight pass's context when the job is running locally.
+  Jobs interrupted by a restart are reconciled to an `interrupted` state on
+  startup, and a background loop prunes job history older than 7 days. A new
+  Jobs panel in the admin UI lists jobs with state, progress, timing, and a
+  Cancel action, polling on the existing refresh cadence.
 - Automated Newznab client-contract tests (#136) hardening compatibility with
   Prowlarr, Sonarr, and Radarr. The suite parses the actual XML and asserts the
   exact shapes clients depend on: caps (limits, per-search-type

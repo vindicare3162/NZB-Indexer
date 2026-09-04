@@ -50,6 +50,9 @@ type Store interface {
 	// fully-processed releases older than olderThan, in bounded batches. Returns
 	// the total deleted.
 	PruneRetainedPartsAll(ctx context.Context, olderThan time.Duration, batchSize, maxBatches int) (int64, error)
+	// Jobs history (#113).
+	ListJobs(ctx context.Context, limit int) ([]store.Job, error)
+	GetJob(ctx context.Context, id string) (store.Job, error)
 
 	// Groups (admin)
 	ListGroups(ctx context.Context, activeOnly bool) ([]store.Group, error)
@@ -117,14 +120,16 @@ type ServerManager interface {
 // scheduler (Task 13) implements this; a nil controller disables the endpoints.
 type JobController interface {
 	// TriggerScan requests a forward scan (optionally of a single group; empty
-	// means all active groups).
-	TriggerScan(group string) error
-	// TriggerBackfill requests a backfill pass.
-	TriggerBackfill(group string) error
-	// TriggerPostProcess requests an immediate post-processing pass, so an
-	// operator can recover names for pending releases without waiting for a
-	// scan or the downstream interval.
-	TriggerPostProcess() error
+	// means all active groups) and returns the persistent job id (#113).
+	TriggerScan(group string) (string, error)
+	// TriggerBackfill requests a backfill pass and returns the job id.
+	TriggerBackfill(group string) (string, error)
+	// TriggerPostProcess requests an immediate post-processing pass and returns
+	// the job id, so an operator can recover names for pending releases without
+	// waiting for a scan or the downstream interval.
+	TriggerPostProcess() (string, error)
+	// CancelJob requests cooperative cancellation of a job.
+	CancelJob(id string) error
 	// Status returns a snapshot of job/pipeline status and metrics as a
 	// JSON-serialisable value.
 	Status() any
@@ -133,6 +138,13 @@ type JobController interface {
 	// Reconfigure applies new pipeline intervals live. Any interval <= 0 is
 	// left unchanged.
 	Reconfigure(Schedule)
+}
+
+// JobStore is the persistence the jobs endpoints read from (#113). The
+// store.Store satisfies it; nil disables the jobs listing endpoints.
+type JobStore interface {
+	ListJobs(ctx context.Context, limit int) ([]store.Job, error)
+	GetJob(ctx context.Context, id string) (store.Job, error)
 }
 
 // Schedule holds the runtime-tunable pipeline intervals. It mirrors the
@@ -234,6 +246,9 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/v1/admin/scan", admin(http.HandlerFunc(a.handleTriggerScan)))
 	mux.Handle("POST /api/v1/admin/backfill", admin(http.HandlerFunc(a.handleTriggerBackfill)))
 	mux.Handle("POST /api/v1/admin/postprocess", admin(http.HandlerFunc(a.handleTriggerPostProcess)))
+	mux.Handle("GET /api/v1/admin/jobs", admin(http.HandlerFunc(a.handleListJobs)))
+	mux.Handle("GET /api/v1/admin/jobs/{id}", admin(http.HandlerFunc(a.handleGetJob)))
+	mux.Handle("POST /api/v1/admin/jobs/{id}/cancel", admin(http.HandlerFunc(a.handleCancelJob)))
 	mux.Handle("POST /api/v1/admin/segments/backfill", admin(http.HandlerFunc(a.handleBackfillSegments)))
 	mux.Handle("GET /api/v1/admin/retention/preview", admin(http.HandlerFunc(a.handleRetentionPreview)))
 	mux.Handle("POST /api/v1/admin/retention/prune", admin(http.HandlerFunc(a.handleRetentionPrune)))

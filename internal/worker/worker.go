@@ -5,12 +5,15 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/vindicare/goindex/internal/assembler"
 	"github.com/vindicare/goindex/internal/postprocess"
@@ -137,13 +140,23 @@ type Worker struct {
 
 	// Manual job requests are delivered into their respective loops.
 	scanTriggers chan scanTrigger
-	ppTriggers   chan struct{}
+	ppTriggers   chan string // carries the job id (empty when untracked)
 
 	// forwardDueFlag is set whenever a forward pass becomes due (ticker fired or
 	// a global forward trigger arrived) while the scan loop is busy doing
 	// backfill, so backfill yields to it promptly (#112). Guarded atomically so
 	// the watcher can set it without contending on scanMu.
 	forwardDueFlag atomic.Bool
+
+	// Persistent jobs (#113). jobs records job lifecycle (nil disables it).
+	// jobCancels maps an in-flight manual job id to a cancel func so CancelJob
+	// can cooperatively stop it; guarded by jobMu.
+	jobs       JobStore
+	jobMu      sync.Mutex
+	jobCancels map[string]context.CancelFunc
+	// runCtx is the worker's run context, used as the parent for per-job
+	// cancellable contexts. Set in Run.
+	runCtx context.Context
 
 	// optsMu guards the schedule intervals in opts, which Reconfigure updates
 	// at runtime. The loops read intervals through the accessor methods.
@@ -181,9 +194,22 @@ type Worker struct {
 }
 
 // scanTrigger is a manual scan request. backfill selects a backfill pass.
+// jobID, when set, is the persistent job to update as the pass runs (#113).
 type scanTrigger struct {
 	group    string // empty = all active groups
 	backfill bool
+	jobID    string
+}
+
+// JobStore persists pipeline job lifecycle (#113). Optional: when nil, triggers
+// run without recording jobs (returning an empty id). The store.Store
+// satisfies this.
+type JobStore interface {
+	CreateJob(ctx context.Context, id, jobType, target string) (store.Job, error)
+	StartJob(ctx context.Context, id string) error
+	FinishJob(ctx context.Context, id, state, errMsg string) error
+	IsJobCancelRequested(ctx context.Context, id string) (bool, error)
+	RequestJobCancel(ctx context.Context, id string) error
 }
 
 // New creates a Worker. enrich may be nil to disable metadata enrichment.
@@ -219,14 +245,22 @@ func New(groups GroupLister, scan Scanner, asm Assembler, build ReleaseBuilder, 
 		log:          log,
 		opts:         opts,
 		scanTriggers: make(chan scanTrigger, 16),
-		ppTriggers:   make(chan struct{}, 16),
+		ppTriggers:   make(chan string, 16),
 		scanReset:    make(chan struct{}, 1),
 		asmReset:     make(chan struct{}, 1),
 		buildReset:   make(chan struct{}, 1),
 		ppReset:      make(chan struct{}, 1),
 		active:       map[string]bool{},
+		jobCancels:   map[string]context.CancelFunc{},
 	}
 }
+
+// SetJobStore attaches a job store so manual triggers are recorded as
+// persistent jobs with IDs, progress, and cancellation (#113). Optional.
+func (w *Worker) SetJobStore(js JobStore) { w.jobs = js }
+
+// newJobID returns a fresh job identifier.
+func newJobID() string { return uuid.NewString() }
 
 // scanInterval, downstreamInterval, buildInterval, and postProcessInterval
 // return the current schedule intervals under the opts lock.
@@ -314,6 +348,7 @@ func (w *Worker) Reconfigure(s Schedule) {
 // Because the loops are independent, neither a long-running scan nor a large
 // assemble backlog can starve post-processing (name recovery).
 func (w *Worker) Run(ctx context.Context) {
+	w.runCtx = ctx
 	w.log.Info("worker started",
 		"scan_interval", w.opts.ScanInterval,
 		"downstream_interval", w.opts.DownstreamInterval,
@@ -367,19 +402,7 @@ func (w *Worker) scanLoop(ctx context.Context) {
 			sched.runForwardPass(ctx, "")
 			w.drainBackfillYieldingToForward(ctx, sched)
 		case t := <-w.scanTriggers:
-			if t.backfill {
-				// A manual backfill trigger for a specific group runs directly;
-				// a global backfill trigger joins the yielding drain.
-				if t.group != "" {
-					w.doScan(ctx, t.group, true)
-				} else {
-					w.drainBackfillYieldingToForward(ctx, sched)
-				}
-			} else {
-				w.doScan(ctx, t.group, false)
-				// After servicing forward demand, use spare capacity for backfill.
-				w.drainBackfillYieldingToForward(ctx, sched)
-			}
+			w.runTrackedScan(ctx, t, sched)
 		case <-w.scanReset:
 			ticker.Reset(w.scanInterval())
 		}
@@ -499,8 +522,8 @@ func (w *Worker) postProcessLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			w.runPostProcess(ctx)
-		case <-w.ppTriggers:
-			w.runPostProcess(ctx)
+		case jobID := <-w.ppTriggers:
+			w.runTrackedPostProcess(ctx, jobID)
 		case <-w.ppReset:
 			ticker.Reset(w.postProcessInterval())
 		}
@@ -746,39 +769,169 @@ func (w *Worker) targetGroups(ctx context.Context, group string) ([]store.Group,
 	return w.groups.ListGroups(ctx, true)
 }
 
+// --- persistent job tracking (#113) ---
+
+// createJob records a queued job and returns its id, or "" when no job store is
+// attached (untracked operation).
+func (w *Worker) createJob(jobType, target string) string {
+	if w.jobs == nil {
+		return ""
+	}
+	id := newJobID()
+	if _, err := w.jobs.CreateJob(context.Background(), id, jobType, target); err != nil {
+		w.log.Warn("failed to record job", "type", jobType, "err", err)
+		return ""
+	}
+	return id
+}
+
+// failJobQueued marks a just-created job as failed when it couldn't be enqueued
+// (queue full), so it doesn't linger as queued forever.
+func (w *Worker) failJobQueued(jobID string) {
+	if w.jobs == nil || jobID == "" {
+		return
+	}
+	_ = w.jobs.FinishJob(context.Background(), jobID, store.JobFailed, "worker busy: trigger queue full")
+}
+
+// withJob runs fn under a per-job cancellable context derived from the worker
+// run context, recording the job's running/terminal lifecycle. The job is
+// marked cancelled when cancellation was requested, failed on error, else
+// completed. When jobID is empty (untracked) it simply runs fn(ctx).
+func (w *Worker) withJob(parent context.Context, jobID string, fn func(ctx context.Context) error) {
+	if w.jobs == nil || jobID == "" {
+		_ = fn(parent)
+		return
+	}
+
+	jobCtx, cancel := context.WithCancel(parent)
+	w.jobMu.Lock()
+	w.jobCancels[jobID] = cancel
+	w.jobMu.Unlock()
+	defer func() {
+		cancel()
+		w.jobMu.Lock()
+		delete(w.jobCancels, jobID)
+		w.jobMu.Unlock()
+	}()
+
+	// If cancellation was already requested before we started, skip the work.
+	if req, _ := w.jobs.IsJobCancelRequested(context.Background(), jobID); req {
+		_ = w.jobs.FinishJob(context.Background(), jobID, store.JobCancelled, "")
+		return
+	}
+	_ = w.jobs.StartJob(context.Background(), jobID)
+
+	err := fn(jobCtx)
+
+	// Determine terminal state. A cancel request (or a cancelled context)
+	// resolves to cancelled; otherwise error->failed, success->completed.
+	if req, _ := w.jobs.IsJobCancelRequested(context.Background(), jobID); req || jobCtx.Err() != nil {
+		_ = w.jobs.FinishJob(context.Background(), jobID, store.JobCancelled, "")
+		return
+	}
+	if err != nil {
+		_ = w.jobs.FinishJob(context.Background(), jobID, store.JobFailed, err.Error())
+		return
+	}
+	_ = w.jobs.FinishJob(context.Background(), jobID, store.JobCompleted, "")
+}
+
+// runTrackedScan runs a manual scan/backfill trigger under job tracking.
+func (w *Worker) runTrackedScan(parent context.Context, t scanTrigger, sched *scanScheduler) {
+	w.withJob(parent, t.jobID, func(ctx context.Context) error {
+		if t.backfill {
+			if t.group != "" {
+				w.doScan(ctx, t.group, true)
+			} else {
+				w.drainBackfillYieldingToForward(ctx, sched)
+			}
+		} else {
+			w.doScan(ctx, t.group, false)
+			w.drainBackfillYieldingToForward(ctx, sched)
+		}
+		return w.lastPassError()
+	})
+}
+
+// runTrackedPostProcess runs a manual post-process trigger under job tracking.
+func (w *Worker) runTrackedPostProcess(parent context.Context, jobID string) {
+	w.withJob(parent, jobID, func(ctx context.Context) error {
+		w.runPostProcess(ctx)
+		return w.lastPassError()
+	})
+}
+
+// lastPassError returns the most recent recorded pipeline error, if any, so a
+// tracked job reflects failures surfaced via recordError. Returns nil when the
+// last recorded error is empty.
+func (w *Worker) lastPassError() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.metrics.LastError == "" {
+		return nil
+	}
+	return errors.New(w.metrics.LastError)
+}
+
 // --- rest.JobController implementation ---
 
-// TriggerScan requests a forward scan (non-blocking).
-func (w *Worker) TriggerScan(group string) error {
+// TriggerScan requests a forward scan (non-blocking) and returns the persistent
+// job id (#113). Empty id when no job store is attached.
+func (w *Worker) TriggerScan(group string) (string, error) {
+	jobID := w.createJob("scan", group)
 	select {
-	case w.scanTriggers <- scanTrigger{group: group, backfill: false}:
-		return nil
+	case w.scanTriggers <- scanTrigger{group: group, backfill: false, jobID: jobID}:
+		return jobID, nil
 	default:
-		return fmt.Errorf("worker busy: scan trigger queue full")
+		w.failJobQueued(jobID)
+		return "", fmt.Errorf("worker busy: scan trigger queue full")
 	}
 }
 
-// TriggerBackfill requests a backfill pass (non-blocking).
-func (w *Worker) TriggerBackfill(group string) error {
+// TriggerBackfill requests a backfill pass (non-blocking) and returns the
+// persistent job id (#113).
+func (w *Worker) TriggerBackfill(group string) (string, error) {
+	jobID := w.createJob("backfill", group)
 	select {
-	case w.scanTriggers <- scanTrigger{group: group, backfill: true}:
-		return nil
+	case w.scanTriggers <- scanTrigger{group: group, backfill: true, jobID: jobID}:
+		return jobID, nil
 	default:
-		return fmt.Errorf("worker busy: scan trigger queue full")
+		w.failJobQueued(jobID)
+		return "", fmt.Errorf("worker busy: scan trigger queue full")
 	}
 }
 
-// TriggerPostProcess requests an immediate post-processing pass (non-blocking).
-// This lets an operator recover names for pending releases without waiting for
-// a scan or the post-process interval. It contends only with the post-process
-// loop, so it runs even while a large assemble backlog is being worked.
-func (w *Worker) TriggerPostProcess() error {
+// TriggerPostProcess requests an immediate post-processing pass (non-blocking)
+// and returns the persistent job id (#113). This lets an operator recover names
+// for pending releases without waiting for a scan or the post-process interval.
+func (w *Worker) TriggerPostProcess() (string, error) {
+	jobID := w.createJob("postprocess", "")
 	select {
-	case w.ppTriggers <- struct{}{}:
-		return nil
+	case w.ppTriggers <- jobID:
+		return jobID, nil
 	default:
-		return fmt.Errorf("worker busy: post-process trigger queue full")
+		w.failJobQueued(jobID)
+		return "", fmt.Errorf("worker busy: post-process trigger queue full")
 	}
+}
+
+// CancelJob requests cooperative cancellation of a job: it flags the job in the
+// store and cancels the in-flight pass's context when it is currently running
+// on this worker (#113).
+func (w *Worker) CancelJob(id string) error {
+	if w.jobs == nil {
+		return fmt.Errorf("jobs not available")
+	}
+	if err := w.jobs.RequestJobCancel(context.Background(), id); err != nil {
+		return err
+	}
+	w.jobMu.Lock()
+	if cancel, ok := w.jobCancels[id]; ok {
+		cancel()
+	}
+	w.jobMu.Unlock()
+	return nil
 }
 
 // Status returns a snapshot of pipeline metrics.
