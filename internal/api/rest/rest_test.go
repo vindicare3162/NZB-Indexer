@@ -33,6 +33,9 @@ type mockStore struct {
 	segmentsBackfilled bool
 	pingErr            error
 	statsErr           error
+	retentionPreviewAge time.Duration
+	retentionPruneAge   time.Duration
+	retentionPruneBatch int
 	savedSettings  map[string]string
 	metadata       map[int64]store.ReleaseMetadata
 	identifiers    map[int64][]store.ReleaseIdentifier
@@ -94,6 +97,15 @@ func (m *mockStore) RequeueFailedReleases(context.Context) (int64, error) {
 func (m *mockStore) BackfillReleaseSegments(context.Context, int) (int, int, error) {
 	m.segmentsBackfilled = true
 	return 5, 1, nil
+}
+func (m *mockStore) RetentionCandidates(_ context.Context, olderThan time.Duration) (store.RetentionReport, error) {
+	m.retentionPreviewAge = olderThan
+	return store.RetentionReport{CandidateParts: 42, CandidateBytes: 1 << 20}, nil
+}
+func (m *mockStore) PruneRetainedPartsAll(_ context.Context, olderThan time.Duration, batchSize, maxBatches int) (int64, error) {
+	m.retentionPruneAge = olderThan
+	m.retentionPruneBatch = batchSize
+	return 17, nil
 }
 func (m *mockStore) DatabaseHealth(context.Context) (store.DBHealth, error) {
 	return store.DBHealth{SizeBytes: 1 << 20, CacheHitRatio: 0.99, PoolTotal: 2, PoolIdle: 1, PoolMax: 10}, nil

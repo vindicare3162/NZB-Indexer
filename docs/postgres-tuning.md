@@ -90,8 +90,23 @@ least to most invasive:
 
 Recommendation: keep option 1 until storage is a real constraint; when it is,
 adopt option 2 (retention on released binaries' parts) after confirming NZB
-regen is satisfied by `release_files`, and consider option 3 (partitioning) only
-at very large scale.
+regen is satisfied by durable segments, and consider option 3 (partitioning)
+only at very large scale.
+
+**Option 2 is now implemented (#118).** Raw-part retention is opt-in
+(`GOINDEX_RETENTION_ENABLED`, `GOINDEX_RETENTION_DAYS`, plus `_INTERVAL`,
+`_BATCH_SIZE`, `_MAX_BATCHES_PER_RUN`) and conservative by default (disabled).
+A part is prunable only when its binary is released, the release is fully
+post-processed (`pp_status='done'`), the release has durable segments
+(`releases.segments <> '[]'`, from #105) so its NZB is reconstructable, and it
+is older than the window. Everything else is retained: unassigned backlog,
+incomplete/unreleased binaries, releases pending/failed post-processing, and
+non-reconstructable releases. A dry-run preview
+(`GET /api/v1/admin/retention/preview`) reports candidate counts, estimated
+bytes, oldest/newest, and why rows are retained; the prune
+(`POST /api/v1/admin/retention/prune`, or the background loop) deletes in
+bounded, resumable, cancellable batches so it never holds one large
+transaction.
 
 ## Autovacuum and statistics
 

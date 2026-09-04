@@ -36,6 +36,12 @@
   let backfillFormError = $state('');
   let backfillSaving = $state(false);
 
+  // Raw-part retention (#118).
+  let retentionDays = $state('');
+  let retentionReport = $state(null);
+  let retentionReportDays = $state(0);
+  let retentionPruning = $state(false);
+
   // Guards against overlapping/stale overview loads: each call takes a token and
   // only the most recent response is applied.
   let overviewToken = 0;
@@ -278,6 +284,33 @@
       const res = await api.backfillSegments();
       notice = `Segment backfill: ${res.repaired} repaired, ${res.unresolved} unresolved`;
     } catch (e) { error = e.message; }
+  }
+  async function retentionPreview() {
+    error = '';
+    notice = '';
+    retentionReport = null;
+    const days = retentionDays ? Number(retentionDays) : 0;
+    try {
+      const res = await api.retentionPreview(days);
+      retentionReport = res.report;
+      retentionReportDays = res.days;
+    } catch (e) { error = e.message; }
+  }
+  async function retentionPrune() {
+    error = '';
+    notice = '';
+    const days = retentionDays ? Number(retentionDays) : 0;
+    if (!confirm(`Delete raw parts for reconstructable released items older than ${days || 'the configured window'} days? Durable NZB segments are kept, so downloads still work. This cannot be undone.`)) {
+      return;
+    }
+    retentionPruning = true;
+    try {
+      const res = await api.retentionPrune(days);
+      notice = `Retention prune: ${res.parts_deleted} raw part(s) deleted`;
+      retentionReport = null;
+      api.stats().then((s) => { stats = s; }).catch(() => {});
+    } catch (e) { error = e.message; }
+    finally { retentionPruning = false; }
   }
   async function setBackfillTarget(g) {
     // Open the inline editor for this group, seeded with its current overrides.
@@ -536,6 +569,38 @@
     <button class="secondary" onclick={() => retryFailedPP()}>Retry failed post-processing</button>
     <button class="secondary" onclick={() => backfillSegments()}>Backfill NZB segments</button>
   </div>
+</div>
+
+<div class="panel">
+  <h3 style="margin-top:0">Raw-part retention</h3>
+  <p class="muted">
+    Prune raw article rows for released items that are fully post-processed and reconstructable from durable
+    NZB segments, older than the retention window. Downloads for pruned releases still work because their
+    segments are stored durably. Preview first to see what would be deleted. Leave days blank to use the
+    configured window.
+  </p>
+  <div class="row" style="align-items:center; gap:0.6rem; flex-wrap:wrap">
+    <label>Retention days <input type="number" min="1" placeholder="configured" bind:value={retentionDays} style="width:8rem" /></label>
+    <button class="secondary" onclick={retentionPreview}>Preview</button>
+    <button class="danger" onclick={retentionPrune} disabled={retentionPruning}>{retentionPruning ? 'Pruning…' : 'Prune now'}</button>
+  </div>
+  {#if retentionReport}
+    <div class="panel" style="margin-top:0.8rem">
+      <p style="margin:0 0 0.4rem"><strong>Dry-run</strong> (window: {retentionReportDays} days) — nothing deleted yet.</p>
+      <table>
+        <tbody>
+          <tr><td>Candidate parts</td><td>{retentionReport.candidate_parts.toLocaleString()}</td></tr>
+          <tr><td>Estimated reclaimable</td><td>{fmtBytes(retentionReport.candidate_bytes)}</td></tr>
+          <tr><td>Across releases / groups</td><td>{retentionReport.candidate_releases} / {retentionReport.candidate_groups}</td></tr>
+          {#if retentionReport.oldest_candidate}
+            <tr><td>Oldest / newest candidate</td><td>{fmtTime(retentionReport.oldest_candidate)} – {fmtTime(retentionReport.newest_candidate)}</td></tr>
+          {/if}
+          <tr><td class="muted">Retained: unassigned backlog</td><td class="muted">{retentionReport.retained.unassigned.toLocaleString()}</td></tr>
+          <tr><td class="muted">Retained: not yet reconstructable</td><td class="muted">{retentionReport.retained.not_reconstructable.toLocaleString()}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  {/if}
 </div>
 
 <div class="panel">

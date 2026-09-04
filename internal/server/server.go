@@ -173,6 +173,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		scanWorkers:  budget.ScanWorkers,
 		ppWorkers:    budget.PostProcessWorkers,
 	})
+	// Raw-part retention window/batch defaults for the admin retention endpoints.
+	restAPI.SetRetention(cfg.Retention.Days, cfg.Retention.BatchSize, cfg.Retention.MaxBatchesPerRun)
 
 	spa, err := web.Handler()
 	if err != nil {
@@ -234,6 +236,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	go wrk.Run(workerCtx)
 	go authSvc.CleanupLoop(workerCtx, 10*time.Minute)
+	if cfg.Retention.Enabled && cfg.Retention.Days > 0 {
+		go runRetentionLoop(workerCtx, st, cfg.Retention, logger)
+	}
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -260,6 +265,44 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	cancelWorker()
 	logger.Info("goindex stopped")
 	return nil
+}
+
+// runRetentionLoop periodically prunes raw parts for reconstructable, released,
+// fully-processed releases older than the retention window (#118). It runs on
+// its own goroutine, bounded per run and cancellable via ctx, so it never holds
+// an unbounded transaction and stops promptly on shutdown. Results are logged.
+func runRetentionLoop(ctx context.Context, st *store.Store, rc config.RetentionConfig, logger *slog.Logger) {
+	interval := rc.Interval
+	if interval <= 0 {
+		interval = 6 * time.Hour
+	}
+	olderThan := time.Duration(rc.Days) * 24 * time.Hour
+	logger.Info("raw-part retention enabled",
+		"days", rc.Days, "interval", interval, "batch_size", rc.BatchSize,
+		"max_batches_per_run", rc.MaxBatchesPerRun)
+
+	runOnce := func() {
+		deleted, err := st.PruneRetainedPartsAll(ctx, olderThan, rc.BatchSize, rc.MaxBatchesPerRun)
+		if err != nil {
+			logger.Error("retention prune failed", "err", err)
+			return
+		}
+		if deleted > 0 {
+			logger.Info("retention prune completed", "days", rc.Days, "parts_deleted", deleted)
+		}
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	runOnce() // an initial pass at startup
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runOnce()
+		}
+	}
 }
 
 // serverToNNTPConfig converts a stored news server into an nntp.Config.

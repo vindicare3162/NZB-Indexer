@@ -40,6 +40,13 @@ type Store interface {
 	// BackfillReleaseSegments snapshots durable segments for legacy releases
 	// that lack them (retention prerequisite). Returns repaired + unresolved.
 	BackfillReleaseSegments(ctx context.Context, limit int) (repaired, unresolved int, err error)
+	// RetentionCandidates reports (dry-run) the raw parts a retention pass would
+	// prune for releases older than the given age.
+	RetentionCandidates(ctx context.Context, olderThan time.Duration) (store.RetentionReport, error)
+	// PruneRetainedParts deletes raw parts for reconstructable, released,
+	// fully-processed releases older than olderThan, in bounded batches. Returns
+	// the total deleted.
+	PruneRetainedPartsAll(ctx context.Context, olderThan time.Duration, batchSize, maxBatches int) (int64, error)
 
 	// Groups (admin)
 	ListGroups(ctx context.Context, activeOnly bool) ([]store.Group, error)
@@ -151,12 +158,26 @@ type API struct {
 	discoverer Discoverer
 	session   *auth.Service
 	probe     SystemProbe
+
+	// Retention window/batch defaults for the admin retention endpoints (#118).
+	retentionDays       int
+	retentionBatchSize  int
+	retentionMaxBatches int
 	log       *slog.Logger
 }
 
 // SetSystemProbe attaches a health probe (NNTP pool / config facts) used by the
 // admin health report. Optional; when unset those fields are omitted.
 func (a *API) SetSystemProbe(p SystemProbe) { a.probe = p }
+
+// SetRetention configures the raw-part retention window and batch defaults used
+// by the admin retention endpoints. days<=0 means the endpoints require an
+// explicit ?days= override.
+func (a *API) SetRetention(days, batchSize, maxBatches int) {
+	a.retentionDays = days
+	a.retentionBatchSize = batchSize
+	a.retentionMaxBatches = maxBatches
+}
 
 // New creates a REST API. servers, logs, and discoverer may be nil, disabling
 // their respective endpoints.
@@ -211,6 +232,8 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/v1/admin/backfill", admin(http.HandlerFunc(a.handleTriggerBackfill)))
 	mux.Handle("POST /api/v1/admin/postprocess", admin(http.HandlerFunc(a.handleTriggerPostProcess)))
 	mux.Handle("POST /api/v1/admin/segments/backfill", admin(http.HandlerFunc(a.handleBackfillSegments)))
+	mux.Handle("GET /api/v1/admin/retention/preview", admin(http.HandlerFunc(a.handleRetentionPreview)))
+	mux.Handle("POST /api/v1/admin/retention/prune", admin(http.HandlerFunc(a.handleRetentionPrune)))
 	mux.Handle("POST /api/v1/admin/postprocess/retry-failed", admin(http.HandlerFunc(a.handleRetryFailed)))
 	mux.Handle("GET /api/v1/admin/status", admin(http.HandlerFunc(a.handleStatus)))
 	mux.Handle("GET /api/v1/admin/stats", admin(http.HandlerFunc(a.handleStats)))
