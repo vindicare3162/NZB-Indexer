@@ -82,6 +82,13 @@ type Options struct {
 	// parallel. Zero or 1 means sequential (original behaviour); higher fans
 	// out across a bounded worker pool, still capped by the NNTP pool size.
 	ScanConcurrency int
+	// AdaptiveMinInterval enables backlog-aware scheduling for the downstream
+	// loops (assemble/build/post-process) (#125). When > 0, a pass that reports
+	// it likely has more work pending schedules the next pass after this short
+	// "busy" interval instead of the full configured interval, so a backlog is
+	// worked down quickly; once a pass finds nothing, the loop backs off to the
+	// configured interval. Zero disables adaptation (fixed intervals).
+	AdaptiveMinInterval time.Duration
 }
 
 // Metrics is a snapshot of pipeline activity, exposed via Status().
@@ -304,6 +311,30 @@ func (w *Worker) postProcessInterval() time.Duration {
 	return w.opts.PostProcessInterval
 }
 
+// adaptiveMinInterval returns the configured backlog-aware "busy" interval
+// (#125). Zero means adaptation is disabled.
+func (w *Worker) adaptiveMinInterval() time.Duration {
+	w.optsMu.RLock()
+	defer w.optsMu.RUnlock()
+	return w.opts.AdaptiveMinInterval
+}
+
+// nextInterval computes the delay before a loop's next pass given whether the
+// last pass reported more work likely pending (#125). When adaptation is on and
+// the loop is busy, it uses the shorter of the busy interval and the configured
+// interval; otherwise it uses the configured interval. This lets a backlog be
+// worked down quickly while an idle pipeline runs at its normal cadence.
+func (w *Worker) nextInterval(configured time.Duration, busy bool) time.Duration {
+	minI := w.adaptiveMinInterval()
+	if minI <= 0 || !busy {
+		return configured
+	}
+	if minI < configured {
+		return minI
+	}
+	return configured
+}
+
 // Schedule is the set of runtime-tunable pipeline intervals.
 type Schedule struct {
 	ScanInterval        time.Duration `json:"scan_interval"`
@@ -486,14 +517,18 @@ func (w *Worker) assembleLoop(ctx context.Context) {
 	ticker := time.NewTicker(w.downstreamInterval())
 	defer ticker.Stop()
 
-	w.runAssemble(ctx)
+	// After each pass, schedule the next one adaptively (#125): sooner while a
+	// backlog remains, at the configured cadence once drained.
+	busy := w.runAssemble(ctx)
+	ticker.Reset(w.nextInterval(w.downstreamInterval(), busy))
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.runAssemble(ctx)
+			busy = w.runAssemble(ctx)
+			ticker.Reset(w.nextInterval(w.downstreamInterval(), busy))
 		case <-w.asmReset:
 			ticker.Reset(w.downstreamInterval())
 		}
@@ -508,14 +543,16 @@ func (w *Worker) buildLoop(ctx context.Context) {
 	ticker := time.NewTicker(w.buildInterval())
 	defer ticker.Stop()
 
-	w.runBuild(ctx)
+	busy := w.runBuild(ctx)
+	ticker.Reset(w.nextInterval(w.buildInterval(), busy))
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.runBuild(ctx)
+			busy = w.runBuild(ctx)
+			ticker.Reset(w.nextInterval(w.buildInterval(), busy))
 		case <-w.buildReset:
 			ticker.Reset(w.buildInterval())
 		}
@@ -530,14 +567,16 @@ func (w *Worker) postProcessLoop(ctx context.Context) {
 	ticker := time.NewTicker(w.postProcessInterval())
 	defer ticker.Stop()
 
-	w.runPostProcess(ctx)
+	busy := w.runPostProcess(ctx)
+	ticker.Reset(w.nextInterval(w.postProcessInterval(), busy))
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.runPostProcess(ctx)
+			busy = w.runPostProcess(ctx)
+			ticker.Reset(w.nextInterval(w.postProcessInterval(), busy))
 		case jobID := <-w.ppTriggers:
 			w.runTrackedPostProcess(ctx, jobID)
 		case <-w.ppReset:
@@ -700,56 +739,67 @@ func (w *Worker) runScan(ctx context.Context, group string, backfill bool) {
 // runAssemble folds parts into binaries under the assemble mutex, so a
 // scheduled pass and a manual trigger cannot overlap. It runs independently of
 // building and post-processing.
-func (w *Worker) runAssemble(ctx context.Context) {
+// runAssemble returns whether the pass likely left more work pending (a backlog
+// remains), so the loop can schedule the next pass sooner (#125).
+func (w *Worker) runAssemble(ctx context.Context) (busy bool) {
 	w.asmMu.Lock()
 	defer w.asmMu.Unlock()
 
 	if ctx.Err() != nil {
-		return
+		return false
 	}
 	w.stageStart("assemble")
 	defer w.stageEnd("assemble")
 	asmRes, err := w.asm.Assemble(ctx)
 	if err != nil {
 		w.recordError(fmt.Errorf("assemble: %w", err))
-	} else {
-		w.mu.Lock()
-		w.metrics.BinariesTouched += int64(asmRes.BinariesTouched)
-		w.mu.Unlock()
+		return false
 	}
+	w.mu.Lock()
+	w.metrics.BinariesTouched += int64(asmRes.BinariesTouched)
+	w.mu.Unlock()
+	// A pass that did not fully drain the backlog has more to do.
+	return !asmRes.Drained
 }
 
 // runBuild promotes complete binaries into releases under the build mutex. It
 // runs independently of assembly, so complete binaries become releases
 // promptly even while a large parts backlog keeps the assemble loop busy.
-func (w *Worker) runBuild(ctx context.Context) {
+// runBuild returns whether the pass processed any binaries, a proxy for "more
+// complete binaries may remain" so the loop can promote them promptly (#125).
+func (w *Worker) runBuild(ctx context.Context) (busy bool) {
 	w.buildMu.Lock()
 	defer w.buildMu.Unlock()
 
 	if ctx.Err() != nil {
-		return
+		return false
 	}
 	w.stageStart("release")
 	defer w.stageEnd("release")
 	buildRes, err := w.build.Build(ctx)
 	if err != nil {
 		w.recordError(fmt.Errorf("build releases: %w", err))
-	} else {
-		w.mu.Lock()
-		w.metrics.ReleasesCreated += int64(buildRes.Created)
-		w.mu.Unlock()
+		return false
 	}
+	w.mu.Lock()
+	w.metrics.ReleasesCreated += int64(buildRes.Created)
+	w.mu.Unlock()
+	// If the pass promoted binaries, more complete ones may be waiting.
+	return buildRes.Processed > 0
 }
 
 // runPostProcess runs one post-processing pass under the post-process mutex,
 // independently of scanning and assemble/build. It records metrics and counts
 // a completed pass as a cycle.
-func (w *Worker) runPostProcess(ctx context.Context) {
+// runPostProcess returns whether the pass processed any releases, a proxy for
+// "more pending releases may remain" so the loop can drain the queue promptly
+// (#125).
+func (w *Worker) runPostProcess(ctx context.Context) (busy bool) {
 	w.ppMu.Lock()
 	defer w.ppMu.Unlock()
 
 	if ctx.Err() != nil {
-		return
+		return false
 	}
 	start := time.Now()
 	w.mu.Lock()
@@ -767,7 +817,7 @@ func (w *Worker) runPostProcess(ctx context.Context) {
 	ppRes, err := w.pp.Run(ctx)
 	if err != nil {
 		w.recordError(fmt.Errorf("post-process: %w", err))
-		return
+		return false
 	}
 	w.mu.Lock()
 	w.metrics.ReleasesRenamed += int64(ppRes.Renamed)
@@ -776,6 +826,8 @@ func (w *Worker) runPostProcess(ctx context.Context) {
 	end := time.Now()
 	w.metrics.LastCycleEnd = &end
 	w.mu.Unlock()
+	// If the pass processed anything, more pending releases may remain.
+	return ppRes.Processed > 0
 }
 
 // targetGroups resolves the group set for a scan: one named group or all active.

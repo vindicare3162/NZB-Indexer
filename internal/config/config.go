@@ -171,6 +171,12 @@ type ScanConfig struct {
 	// BackfillMaxArticles caps how many articles a single backfill pass
 	// walks backwards. Zero means unlimited (bounded only by BackfillDays).
 	BackfillMaxArticles int `yaml:"backfill_max_articles"`
+	// AdaptiveMinInterval enables backlog-aware scheduling (#125): when > 0, a
+	// downstream pass (assemble/build/post-process) that still has work pending
+	// re-runs after this short interval instead of waiting the full configured
+	// interval, so backlogs drain quickly and an idle pipeline stays at its
+	// normal cadence. Zero disables adaptation (fixed intervals).
+	AdaptiveMinInterval time.Duration `yaml:"adaptive_min_interval"`
 }
 
 // AuthConfig configures authentication.
@@ -234,6 +240,7 @@ func Default() Config {
 			ForwardMaxArticles:  1000000,
 			BackfillDays:        0,
 			BackfillMaxArticles: 0,
+			AdaptiveMinInterval: 30 * time.Second,
 		},
 		Auth: AuthConfig{
 			SessionTTL:       24 * time.Hour,
@@ -316,6 +323,7 @@ func applyEnv(cfg *Config) {
 	envDur("GOINDEX_SCAN_DOWNSTREAM_INTERVAL", &cfg.Scan.DownstreamInterval)
 	envDur("GOINDEX_SCAN_BUILD_INTERVAL", &cfg.Scan.BuildInterval)
 	envDur("GOINDEX_SCAN_POSTPROCESS_INTERVAL", &cfg.Scan.PostProcessInterval)
+	envDur("GOINDEX_SCAN_ADAPTIVE_MIN_INTERVAL", &cfg.Scan.AdaptiveMinInterval)
 	envInt("GOINDEX_SCAN_FORWARD_MAX_ARTICLES", &cfg.Scan.ForwardMaxArticles)
 	envInt("GOINDEX_SCAN_BACKFILL_DAYS", &cfg.Scan.BackfillDays)
 	envInt("GOINDEX_SCAN_BACKFILL_MAX_ARTICLES", &cfg.Scan.BackfillMaxArticles)
