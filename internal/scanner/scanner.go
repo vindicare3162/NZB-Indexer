@@ -68,6 +68,10 @@ type ScanResult struct {
 	NewHigh        int64
 	NewLow         int64
 	BackfillDone   bool
+	// ServerHigh is the server's current high-water article number observed
+	// during this pass (0 when the server bounds could not be read). Combined
+	// with the group's persisted forward watermark it gives the group's lag.
+	ServerHigh int64
 }
 
 // ScanForward pulls new articles for a group from its stored high-water mark up
@@ -84,6 +88,7 @@ func (s *Scanner) ScanForward(ctx context.Context, groupName string) (ScanResult
 	if err != nil {
 		return res, fmt.Errorf("select group %q: %w", groupName, err)
 	}
+	res.ServerHigh = info.High
 
 	// Determine the starting point. On first scan (last=0) start from the
 	// server low so we don't attempt the entire history as "forward".
@@ -162,6 +167,7 @@ func (s *Scanner) ScanBackfill(ctx context.Context, groupName string) (ScanResul
 	if err != nil {
 		return res, fmt.Errorf("select group %q: %w", groupName, err)
 	}
+	res.ServerHigh = info.High
 
 	// The upper bound of backfill is just below where we've already ingested.
 	upper := g.BackfillLow - 1

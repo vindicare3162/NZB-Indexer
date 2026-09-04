@@ -25,9 +25,28 @@ type Group struct {
 	BackfillTargetDays *int `json:"backfill_target_days,omitempty"`
 	// BackfillTargetArticles overrides the global per-pass article cap for this
 	// group when non-nil (0 = unlimited).
-	BackfillTargetArticles *int64    `json:"backfill_target_articles,omitempty"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	BackfillTargetArticles *int64 `json:"backfill_target_articles,omitempty"`
+
+	// Per-group scan progress/error reporting (#114). These summarise the most
+	// recent scan/backfill pass for the group.
+	// LastScanAt is when the most recent pass completed (nil = never scanned).
+	LastScanAt *time.Time `json:"last_scan_at,omitempty"`
+	// LastScanBackfill is true when the most recent pass was a backfill.
+	LastScanBackfill bool `json:"last_scan_backfill"`
+	// LastScanArticles/LastScanParts are the articles pulled and parts inserted
+	// by the most recent pass.
+	LastScanArticles int64 `json:"last_scan_articles"`
+	LastScanParts    int64 `json:"last_scan_parts"`
+	// ServerHigh is the server's high-water article number observed during the
+	// most recent pass; ServerHigh - LastScannedHigh is the forward lag.
+	ServerHigh int64 `json:"server_high"`
+	// LastScanError is the error message from the most recent pass ('' on
+	// success); LastScanErrorAt is when that error occurred (nil = last pass ok).
+	LastScanError   string     `json:"last_scan_error,omitempty"`
+	LastScanErrorAt *time.Time `json:"last_scan_error_at,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Part is a single article header row belonging to a multi-part binary.

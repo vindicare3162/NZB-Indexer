@@ -1,6 +1,7 @@
 <script>
   import { api } from '../lib/api.js';
   import { buildBackfillPayload, describeBackfillField } from '../lib/backfill.js';
+  import { formatLag, lastScanLabel, hasScanError } from '../lib/groupscan.js';
 
   let groups = $state([]);
   let users = $state([]);
@@ -594,13 +595,20 @@
   </details>
   {#if groups.length > 0}
     <table style="margin-top:0.8rem">
-      <thead><tr><th>Group</th><th>Active</th><th>Fwd pos</th><th>Backfill</th><th>Target</th><th></th></tr></thead>
+      <thead><tr><th>Group</th><th>Active</th><th>Fwd pos</th><th>Lag</th><th>Last scan</th><th>Backfill</th><th>Target</th><th></th></tr></thead>
       <tbody>
         {#each groups as g}
           <tr>
             <td>{g.name}</td>
             <td>{g.active ? 'yes' : 'no'}</td>
             <td>{g.last_scanned_high}</td>
+            <td class="muted">{formatLag(g)}</td>
+            <td class="muted" style="white-space:nowrap">
+              {lastScanLabel(g)}
+              {#if hasScanError(g)}
+                <span class="badge" style="background:#cf222e" title={g.last_scan_error}>error</span>
+              {/if}
+            </td>
             <td>{g.backfill_complete ? 'done' : g.backfill_low}</td>
             <td class="muted">{backfillTargetLabel(g)}</td>
             <td class="row">
@@ -613,7 +621,7 @@
           </tr>
           {#if editingBackfillId === g.id}
             <tr>
-              <td colspan="6">
+              <td colspan="8">
                 <form class="panel" style="margin:0" onsubmit={(e) => { e.preventDefault(); saveBackfillTarget(g); }}>
                   <h4 style="margin:0 0 0.4rem">Backfill target — {g.name}</h4>
                   <p class="muted" style="margin:0 0 0.6rem; font-size:0.85rem">

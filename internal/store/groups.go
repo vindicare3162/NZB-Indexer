@@ -10,13 +10,15 @@ import (
 
 // groupColumns is the shared SELECT/RETURNING column list for groups, kept in
 // one place so all group queries scan the same shape.
-const groupColumns = `id, name, active, last_scanned_high, backfill_low, backfill_complete, backfill_target_days, backfill_target_articles, created_at, updated_at`
+const groupColumns = `id, name, active, last_scanned_high, backfill_low, backfill_complete, backfill_target_days, backfill_target_articles, last_scan_at, last_scan_backfill, last_scan_articles, last_scan_parts, server_high, last_scan_error, last_scan_error_at, created_at, updated_at`
 
 // scanGroup scans a row in groupColumns order into a Group.
 func scanGroup(row pgx.Row) (Group, error) {
 	var g Group
 	err := row.Scan(&g.ID, &g.Name, &g.Active, &g.LastScannedHigh, &g.BackfillLow,
 		&g.BackfillComplete, &g.BackfillTargetDays, &g.BackfillTargetArticles,
+		&g.LastScanAt, &g.LastScanBackfill, &g.LastScanArticles, &g.LastScanParts,
+		&g.ServerHigh, &g.LastScanError, &g.LastScanErrorAt,
 		&g.CreatedAt, &g.UpdatedAt)
 	return g, err
 }
@@ -149,6 +151,45 @@ func (s *Store) UpdateGroupBackfillPosition(ctx context.Context, id, low int64, 
 		id, low, complete)
 	if err != nil {
 		return fmt.Errorf("update backfill position: %w", err)
+	}
+	return nil
+}
+
+// GroupScanOutcome captures the result of one scan/backfill pass for a group,
+// recorded per group for progress/error reporting (#114).
+type GroupScanOutcome struct {
+	Backfill bool
+	Articles int64
+	Parts    int64
+	// ServerHigh is the server's high-water article number observed this pass
+	// (0 when it could not be read); persisted only when > 0 so a failed pass
+	// that never read the bounds keeps the last known value.
+	ServerHigh int64
+	// Err is the pass error message ('' on success).
+	Err string
+}
+
+// RecordGroupScan records the outcome of the most recent scan/backfill pass for
+// a group: when it ran, how much it pulled, the observed server head, and any
+// error. On success it clears the previous error; on failure it records the
+// error and its timestamp while leaving the counters/watermarks (already
+// persisted incrementally by the scanner) intact. server_high is only updated
+// when a positive value was observed, so a failure that never read the group
+// bounds does not zero out the last known head.
+func (s *Store) RecordGroupScan(ctx context.Context, id int64, o GroupScanOutcome) error {
+	const q = `
+UPDATE groups SET
+    last_scan_at       = now(),
+    last_scan_backfill = $2,
+    last_scan_articles = $3,
+    last_scan_parts    = $4,
+    server_high        = CASE WHEN $5::bigint > 0 THEN $5::bigint ELSE server_high END,
+    last_scan_error    = $6,
+    last_scan_error_at = CASE WHEN $6 <> '' THEN now() ELSE NULL END,
+    updated_at         = now()
+WHERE id = $1`
+	if _, err := s.pool.Exec(ctx, q, id, o.Backfill, o.Articles, o.Parts, o.ServerHigh, o.Err); err != nil {
+		return fmt.Errorf("record group scan: %w", err)
 	}
 	return nil
 }
