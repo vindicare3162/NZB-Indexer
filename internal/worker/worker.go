@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vindicare/goindex/internal/assembler"
@@ -137,6 +138,12 @@ type Worker struct {
 	// Manual job requests are delivered into their respective loops.
 	scanTriggers chan scanTrigger
 	ppTriggers   chan struct{}
+
+	// forwardDueFlag is set whenever a forward pass becomes due (ticker fired or
+	// a global forward trigger arrived) while the scan loop is busy doing
+	// backfill, so backfill yields to it promptly (#112). Guarded atomically so
+	// the watcher can set it without contending on scanMu.
+	forwardDueFlag atomic.Bool
 
 	// optsMu guards the schedule intervals in opts, which Reconfigure updates
 	// at runtime. The loops read intervals through the accessor methods.
@@ -328,30 +335,108 @@ func (w *Worker) Run(ctx context.Context) {
 	w.log.Info("worker stopped")
 }
 
-// scanLoop runs an initial scan, then on ScanInterval and on manual triggers.
+// scanLoop drives scanning with forward priority (#112): forward passes always
+// run before backfill, and backfill runs one group at a time, yielding to any
+// forward pass that becomes due. This ensures newly posted content is indexed
+// promptly even during a large historical backfill, while backfill still makes
+// progress when forward demand is low. Forward and backfill share this single
+// goroutine, so no group is ever scanned forward and backward concurrently.
 func (w *Worker) scanLoop(ctx context.Context) {
 	ticker := time.NewTicker(w.scanInterval())
 	defer ticker.Stop()
 
-	w.doScan(ctx, "", false)
-	if w.opts.EnableBackfill {
-		w.doScan(ctx, "", true)
+	sched := &scanScheduler{
+		runner: workerScanRunner{w},
+		// forwardDue reports whether a forward pass has become due while backfill
+		// is running. It non-blockingly polls the ticker and forward triggers so
+		// backfill (which holds this single goroutine) yields to forward
+		// promptly, between groups.
+		forwardDue:      func() bool { return w.forwardBecameDue(ticker) },
+		backfillEnabled: func() bool { return w.opts.EnableBackfill },
 	}
+
+	// Initial forward pass first, then drain backfill (yielding to forward).
+	sched.runForwardPass(ctx, "")
+	w.drainBackfillYieldingToForward(ctx, sched)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.doScan(ctx, "", false)
-			if w.opts.EnableBackfill {
-				w.doScan(ctx, "", true)
-			}
+			sched.runForwardPass(ctx, "")
+			w.drainBackfillYieldingToForward(ctx, sched)
 		case t := <-w.scanTriggers:
-			w.doScan(ctx, t.group, t.backfill)
+			if t.backfill {
+				// A manual backfill trigger for a specific group runs directly;
+				// a global backfill trigger joins the yielding drain.
+				if t.group != "" {
+					w.doScan(ctx, t.group, true)
+				} else {
+					w.drainBackfillYieldingToForward(ctx, sched)
+				}
+			} else {
+				w.doScan(ctx, t.group, false)
+				// After servicing forward demand, use spare capacity for backfill.
+				w.drainBackfillYieldingToForward(ctx, sched)
+			}
 		case <-w.scanReset:
 			ticker.Reset(w.scanInterval())
 		}
+	}
+}
+
+// forwardBecameDue non-blockingly checks whether a forward pass is now due: the
+// scan ticker fired, or a global forward trigger is queued. When true it also
+// records the fact in forwardDueFlag so the caller can service it. Group-scoped
+// or backfill triggers are left on the queue for the main select to handle.
+func (w *Worker) forwardBecameDue(ticker *time.Ticker) bool {
+	if w.forwardDueFlag.Load() {
+		return true
+	}
+	select {
+	case <-ticker.C:
+		w.forwardDueFlag.Store(true)
+		return true
+	default:
+	}
+	// Peek for a queued global forward trigger without discarding other work.
+	select {
+	case t := <-w.scanTriggers:
+		if !t.backfill && t.group == "" {
+			w.forwardDueFlag.Store(true)
+			return true
+		}
+		// Not a global forward trigger: put it back for the main loop. The
+		// buffered channel has capacity, so this does not block in practice.
+		select {
+		case w.scanTriggers <- t:
+		default:
+		}
+	default:
+	}
+	return false
+}
+
+// drainBackfillYieldingToForward runs the backfill drain and, whenever it
+// yields because a forward pass became due, services that forward pass and
+// resumes backfill — so forward work is never starved and backfill still
+// completes over time.
+func (w *Worker) drainBackfillYieldingToForward(ctx context.Context, sched *scanScheduler) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		yielded := sched.drainBackfill(ctx)
+		if !yielded {
+			return
+		}
+		// Forward became due mid-backfill: consume the pending signal and run
+		// the forward pass, then resume backfill. This is the scheduling
+		// decision that guarantees forward is never starved by backfill (#112).
+		w.forwardDueFlag.Store(false)
+		w.log.Debug("scan scheduler: yielding backfill to overdue forward pass")
+		sched.runForwardPass(ctx, "")
 	}
 }
 
@@ -460,6 +545,34 @@ func (w *Worker) doScan(ctx context.Context, group string, backfill bool) {
 	w.scanMu.Lock()
 	defer w.scanMu.Unlock()
 	w.runScan(ctx, group, backfill)
+}
+
+// workerScanRunner adapts the Worker to the scanScheduler's scanRunner, giving
+// forward priority over backfill (#112).
+type workerScanRunner struct{ w *Worker }
+
+func (r workerScanRunner) runForward(ctx context.Context, group string) {
+	r.w.doScan(ctx, group, false)
+}
+
+// listBackfillGroups returns the names of the groups eligible for backfill.
+func (r workerScanRunner) listBackfillGroups(ctx context.Context) []string {
+	groups, err := r.w.groups.ListGroups(ctx, true)
+	if err != nil {
+		r.w.recordError(fmt.Errorf("list backfill groups: %w", err))
+		return nil
+	}
+	names := make([]string, 0, len(groups))
+	for _, g := range groups {
+		names = append(names, g.Name)
+	}
+	return names
+}
+
+// scanBackfillGroup backfills exactly one group under the scan mutex, so it
+// never overlaps a forward scan of the same (or any) group.
+func (r workerScanRunner) scanBackfillGroup(ctx context.Context, group string) {
+	r.w.doScan(ctx, group, true)
 }
 
 // runScan scans a single named group or all active groups.

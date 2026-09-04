@@ -6,6 +6,19 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Changed
+- Forward scans are now prioritized over historical backfill (#112). Previously
+  each scan cycle ran a full forward pass and then a full backfill pass
+  sequentially, so a large backfill could delay indexing of newly posted
+  content. Scanning now drains backfill one group at a time and yields to any
+  forward pass that becomes due (ticker or manual trigger), so forward work is
+  never delayed by more than the current backfill group, while backfill still
+  makes progress when forward demand is low. Forward and backfill continue to
+  share a single scan goroutine, so no group is ever scanned forward and
+  backward concurrently and per-group watermarks stay correct. Scheduling is
+  implemented by a decoupled, deterministically-tested scanner (`scanScheduler`)
+  covering long backfill, overdue forward work, cancellation, and fairness.
+
 ### Added
 - Efficient release-search pagination (#120). Release search now supports
   **keyset (cursor) pagination** for the JSON API: passing the `next_cursor`
