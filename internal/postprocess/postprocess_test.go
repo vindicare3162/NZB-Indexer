@@ -395,6 +395,51 @@ func TestPostProcessRenamesObfuscatedViaContentProbe(t *testing.T) {
 	}
 }
 
+// TestPostProcessRejectsObfuscatedRecoveredName verifies that when the PAR2's
+// own internal filename is itself obfuscated (random hex), post-processing does
+// NOT rename the release to that junk and does NOT clear the obfuscated flag —
+// otherwise the release would leak into default (non-obfuscated) search.
+func TestPostProcessRejectsObfuscatedRecoveredName(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+
+	guid, par2MsgID := seedFullyObfuscatedRelease(t, st)
+
+	// PAR2 recovers a name that is itself obfuscated hex — not a real name.
+	par2Raw := buildFileDescPacket("9c914cea0eb54d4892abd3a5b681032a.par2")
+	fetch := &fakeFetcher{
+		bodies: map[string][]byte{
+			par2MsgID:     encodeYenc("blob", par2Raw),
+			"obf-data1@x": encodeYenc("blob", []byte("media bytes")),
+			"obf-data3@x": encodeYenc("blob", []byte("more media bytes")),
+		},
+	}
+
+	p := New(fetch, st, nil, Options{BatchLimit: 100, MaxFetchPerRelease: 5})
+	if _, err := p.Run(ctx); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	rel, err := st.GetReleaseByGUID(ctx, guid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The obfuscated recovered name must be rejected: the release keeps its
+	// original obfuscated name and stays flagged, so default search hides it.
+	if !release.IsObfuscated(rel.Name) {
+		t.Errorf("release name %q should still be obfuscated (junk PAR2 name rejected)", rel.Name)
+	}
+	// The obfuscated flag must remain set (queried directly; not on the model).
+	var obf bool
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT obfuscated FROM releases WHERE guid = $1`, guid).Scan(&obf); err != nil {
+		t.Fatal(err)
+	}
+	if !obf {
+		t.Error("obfuscated flag must NOT be cleared when the recovered name is itself obfuscated")
+	}
+}
+
 func TestPostProcessSkipsContentProbeForReadableNames(t *testing.T) {
 	st := freshStore(t)
 	ctx := context.Background()

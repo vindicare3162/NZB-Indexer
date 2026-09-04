@@ -40,6 +40,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   PostgreSQL 18.
 
 ### Fixed
+- Obfuscated releases no longer leak into default search after post-processing
+  (#92). When a release's PAR2 carried an internal filename that was itself
+  random hex, post-processing "recovered" that junk name and cleared the
+  `obfuscated` flag, so the release surfaced in default (non-obfuscated) search.
+  Post-processing now rejects a recovered name that is itself obfuscated,
+  leaving the release flagged and hidden by default.
 - Loose-file collections — a post of many individual files (e.g. `index.html`,
   `script.js`, `.course_id`, plus a PAR2 set) with a shared `[n/total]` counter
   — are now grouped into a single release instead of one release per file
