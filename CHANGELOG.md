@@ -6,6 +6,26 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Added
+- Opt-in time-partitioning strategy for the high-volume `parts` table (#119).
+  At large scale, native declarative RANGE partitioning by ingest month
+  (`created_at`) lets retention drop an entire expired month as an instant
+  metadata-only `DROP TABLE` instead of a table-wide `DELETE`, and keeps
+  autovacuum per-partition. New store partition management (safe no-ops when
+  `parts` is not partitioned): `EnsurePartsPartitions` (idempotently create the
+  current + N future monthly partitions so new rows always route into a
+  predictable partition), `ListPartsPartitions`, `DropExpiredPartsPartitions`
+  (drop only partitions whose whole range is older than the retention cutoff),
+  and `CheckPartsPartitionCoverage` (actionable error for monitoring when the
+  partition for "now" is missing, before ingestion would fail). Partitioning is
+  operator-driven (it changes the natural key and migrates existing rows), so it
+  is not applied automatically; `docs/parts-partitioning.md` documents the
+  partition key, application compatibility, and a resumable, low-downtime
+  conversion procedure for existing installs. Integration tests cover partition
+  detection, routing, coverage/missing-partition detection, idempotent creation,
+  expiry (dropping only fully-expired partitions while retaining a straddling
+  one), and listing/bounds parsing.
+
 ### Changed
 - Article/part ingestion now uses PostgreSQL COPY for bulk loading (#115).
   Instead of one `INSERT` per article, a scan batch is loaded via `COPY` into a
