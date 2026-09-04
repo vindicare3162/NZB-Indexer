@@ -59,10 +59,13 @@
   const scanProgress = $derived((status && status.scan_progress) || null);
 
   // Compose a label for a stage, appending scan progress for scan/backfill.
+  // Groups scan in parallel, so show completed/total plus the in-flight groups.
   function stageLabel(s) {
     const base = stageLabels[s] || s;
     if ((s === 'scan' || s === 'backfill') && scanProgress) {
-      return `${base}: ${scanProgress.group} (${scanProgress.index}/${scanProgress.total})`;
+      const inflight = (scanProgress.in_flight || []).join(', ');
+      const counts = `${scanProgress.completed}/${scanProgress.total}`;
+      return inflight ? `${base}: ${counts} — ${inflight}` : `${base}: ${counts}`;
     }
     return base;
   }

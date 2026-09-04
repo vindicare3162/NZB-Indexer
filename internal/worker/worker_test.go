@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -469,14 +470,14 @@ func TestScanProgressReported(t *testing.T) {
 	done := make(chan struct{})
 	go func() { w.doScan(context.Background(), "", false); close(done) }()
 
-	// The scanner blocks inside the first group's ScanForward.
+	// The scanner blocks inside the first group's ScanForward (concurrency 1).
 	<-started
 	sp := w.MetricsSnapshot().ScanProgress
 	if sp == nil {
 		t.Fatal("expected scan progress while scanning")
 	}
-	if sp.Group != "g1" || sp.Index != 1 || sp.Total != 3 || sp.Backfill {
-		t.Errorf("scan progress = %+v, want group=g1 index=1 total=3 backfill=false", sp)
+	if len(sp.InFlight) != 1 || sp.InFlight[0] != "g1" || sp.Total != 3 || sp.Backfill {
+		t.Errorf("scan progress = %+v, want in_flight=[g1] total=3 backfill=false", sp)
 	}
 
 	// Let the (single blocking) forward scan proceed to completion.
@@ -484,5 +485,97 @@ func TestScanProgressReported(t *testing.T) {
 	<-done
 	if sp := w.MetricsSnapshot().ScanProgress; sp != nil {
 		t.Errorf("scan progress should be cleared after the pass, got %+v", sp)
+	}
+}
+
+// gateScanner blocks every ScanForward until released, and records the peak
+// number of concurrent in-flight scans, to verify parallel group scanning.
+type gateScanner struct {
+	release chan struct{}
+	mu      sync.Mutex
+	inFlight, peak int
+	forward  int32
+}
+
+func (gs *gateScanner) enter() {
+	gs.mu.Lock()
+	gs.inFlight++
+	if gs.inFlight > gs.peak {
+		gs.peak = gs.inFlight
+	}
+	gs.mu.Unlock()
+}
+func (gs *gateScanner) leave() {
+	gs.mu.Lock()
+	gs.inFlight--
+	gs.mu.Unlock()
+}
+func (gs *gateScanner) ScanForward(ctx context.Context, _ string) (scanner.ScanResult, error) {
+	atomic.AddInt32(&gs.forward, 1)
+	gs.enter()
+	defer gs.leave()
+	select {
+	case <-gs.release:
+	case <-ctx.Done():
+	}
+	return scanner.ScanResult{ArticlesPulled: 1, PartsInserted: 1}, nil
+}
+func (gs *gateScanner) ScanBackfill(context.Context, string) (scanner.ScanResult, error) {
+	return scanner.ScanResult{}, nil
+}
+
+// TestParallelScanConcurrency verifies groups scan in parallel up to
+// ScanConcurrency, that all groups are scanned exactly once, and that progress
+// reports multiple in-flight groups.
+func TestParallelScanConcurrency(t *testing.T) {
+	groups := []store.Group{}
+	for i := 0; i < 6; i++ {
+		groups = append(groups, store.Group{Name: fmt.Sprintf("g%d", i)})
+	}
+	g := &mockGroups{groups: groups}
+	release := make(chan struct{})
+	s := &gateScanner{release: release}
+	w := New(g, s, &mockAsm{}, &mockBuild{}, &mockPP{}, nil, nil,
+		Options{ScanInterval: time.Hour, ScanConcurrency: 3})
+
+	done := make(chan struct{})
+	go func() { w.doScan(context.Background(), "", false); close(done) }()
+
+	// Wait until 3 groups are concurrently in flight (bounded by concurrency).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sp := w.MetricsSnapshot().ScanProgress
+		if sp != nil && len(sp.InFlight) == 3 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	sp := w.MetricsSnapshot().ScanProgress
+	if sp == nil || len(sp.InFlight) != 3 {
+		t.Fatalf("expected 3 in-flight groups, got %+v", sp)
+	}
+	if sp.Total != 6 {
+		t.Errorf("total = %d, want 6", sp.Total)
+	}
+
+	close(release)
+	<-done
+
+	// All 6 groups scanned exactly once, and peak concurrency never exceeded 3.
+	if got := atomic.LoadInt32(&s.forward); got != 6 {
+		t.Errorf("forward scans = %d, want 6 (each group once)", got)
+	}
+	s.mu.Lock()
+	peak := s.peak
+	s.mu.Unlock()
+	if peak != 3 {
+		t.Errorf("peak concurrency = %d, want 3 (bounded by ScanConcurrency)", peak)
+	}
+	if p := w.MetricsSnapshot().ScanProgress; p != nil {
+		t.Errorf("scan progress should clear after pass, got %+v", p)
+	}
+	m := w.MetricsSnapshot()
+	if m.ArticlesPulled != 6 || m.PartsInserted != 6 {
+		t.Errorf("aggregated metrics pulled=%d parts=%d, want 6/6", m.ArticlesPulled, m.PartsInserted)
 	}
 }

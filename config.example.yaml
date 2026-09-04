@@ -40,6 +40,12 @@ scan:
     - alt.binaries.example
   # Articles per XOVER request.
   batch_size: 10000
+  # How many groups to scan in parallel within one pass
+  # (env: GOINDEX_SCAN_CONCURRENCY). 0 = auto (derived from nntp.max_conns);
+  # 1 = sequential. Real parallelism is still capped by the NNTP connection
+  # pool (nntp.max_conns), which scanning shares with post-processing, so raise
+  # both together — and stay within your provider's connection limit.
+  concurrency: 0
   # How often forward scans run (env: GOINDEX_SCAN_INTERVAL).
   interval: 15m
   # How often the assemble loop runs (env: GOINDEX_SCAN_DOWNSTREAM_INTERVAL).

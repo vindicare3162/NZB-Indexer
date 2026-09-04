@@ -7,6 +7,14 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Bounded **parallel group scanning** (#102, implementing the design in #100).
+  A scan/backfill pass now processes several groups concurrently via a worker
+  pool instead of one at a time, so large group counts (50-500) no longer
+  serialise. Sized by `GOINDEX_SCAN_CONCURRENCY` (0 = auto, derived from the
+  NNTP pool size; 1 = sequential/previous behaviour); real parallelism is still
+  capped by `nntp.max_conns`, which scanning shares with post-processing. The
+  "Current tasks" panel now shows overall `completed/total` plus the in-flight
+  groups.
 - "Current tasks" now shows scan/backfill **progress** — the group currently
   being scanned and its position in the list, e.g. `Scanning:
   alt.binaries.teevee (12/500)` (#98). Groups are scanned sequentially, so this

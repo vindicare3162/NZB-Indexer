@@ -112,6 +112,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	}
 	applyPersistedSchedule(ctx, st, &wopts, logger)
 	wopts.EnrichInterval = cfg.Metadata.Interval
+	wopts.ScanConcurrency = scanConcurrency(cfg.Scan.Concurrency, cfg.NNTP.MaxConns)
 
 	// Optional metadata enrichment. Disabled by default; when enabled it uses
 	// the keyless TVMaze provider unless another is configured. A nil enricher
@@ -216,6 +217,25 @@ func ppConcurrency(maxConns int) int {
 	}
 	if n > 4 {
 		n = 4
+	}
+	return n
+}
+
+// scanConcurrency chooses how many groups to scan in parallel. When the
+// operator sets an explicit value (>0) it is honoured (still capped in practice
+// by the NNTP pool). Otherwise it derives a default of about half the NNTP
+// connection budget, bounded to [1, 8], leaving headroom for post-processing
+// (which takes ~half, [1,4]) since both draw from the same pool.
+func scanConcurrency(configured, maxConns int) int {
+	if configured > 0 {
+		return configured
+	}
+	n := maxConns / 2
+	if n < 1 {
+		n = 1
+	}
+	if n > 8 {
+		n = 8
 	}
 	return n
 }
