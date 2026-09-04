@@ -94,15 +94,15 @@ func (h *Handler) handleCaps(w http.ResponseWriter, r *http.Request) {
 			URL:       h.baseURL,
 		},
 		Limits: capsLimits{Max: h.maxLim, Default: h.defLim},
-		// Advertise only params the handler resolves effectively. As a
-		// header-only indexer with no external-id -> release mapping, id-based
-		// searches (rid/tvdbid/imdbid) can't be resolved, so they are not
-		// advertised; clients then lead with text/season/episode searches that
-		// actually work. (imdbid is still accepted as a text token.)
+		// Advertise the params the handler actually resolves. External
+		// identifiers (imdbid/tvdbid/tmdbid) are now matched against stored,
+		// normalized release identifiers, so they are advertised on the relevant
+		// search types. They only return results for releases that carry the
+		// corresponding identifier (populated by metadata enrichment).
 		Searching: capsSearching{
 			Search:      capsSearch{Available: "yes", SupportedParams: "q,cat,limit,offset"},
-			TVSearch:    capsSearch{Available: "yes", SupportedParams: "q,cat,season,ep,limit,offset"},
-			MovieSearch: capsSearch{Available: "yes", SupportedParams: "q,cat,limit,offset"},
+			TVSearch:    capsSearch{Available: "yes", SupportedParams: "q,cat,season,ep,imdbid,tvdbid,tmdbid,limit,offset"},
+			MovieSearch: capsSearch{Available: "yes", SupportedParams: "q,cat,imdbid,tmdbid,limit,offset"},
 			AudioSearch: capsSearch{Available: "yes", SupportedParams: "q,cat,limit,offset"},
 			BookSearch:  capsSearch{Available: "yes", SupportedParams: "q,cat,limit,offset"},
 		},
@@ -116,21 +116,22 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	query := buildQuery(q)
+	identifiers := parseIdentifiers(q)
 
-	// An external-id search (imdbid/tvdbid/rid/...) that produced no query
-	// tokens cannot be resolved by a header-only indexer. Return an empty feed
-	// rather than falling through to "match everything", which would make a
-	// client treat every release as a match.
-	if query == "" && hasIDParam(q) {
+	// An external-id search that produced neither query tokens NOR a resolvable
+	// identifier cannot be answered. Return an empty feed rather than matching
+	// everything (which a client would treat as every release matching).
+	if query == "" && len(identifiers) == 0 && hasIDParam(q) {
 		h.writeEmptyFeed(w)
 		return
 	}
 
 	filter := store.SearchFilter{
-		Query:      query,
-		Categories: parseCategories(q.Get("cat")),
-		Limit:      h.clampLimit(q.Get("limit")),
-		Offset:     parseInt(q.Get("offset"), 0),
+		Query:       query,
+		Categories:  parseCategories(q.Get("cat")),
+		Identifiers: identifiers,
+		Limit:       h.clampLimit(q.Get("limit")),
+		Offset:      parseInt(q.Get("offset"), 0),
 	}
 
 	releases, total, err := h.repo.SearchReleases(r.Context(), filter)

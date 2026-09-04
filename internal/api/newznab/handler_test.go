@@ -88,17 +88,22 @@ func TestCaps(t *testing.T) {
 	if c.Searching.TVSearch.Available != "yes" {
 		t.Error("tv-search should be available")
 	}
-	// Advertised params must match what the handler actually resolves: TV keeps
-	// season/ep; unsupported external ids (rid/tvdbid/imdbid) are not advertised.
+	// Advertised params match what the handler resolves: TV keeps season/ep and
+	// now advertises the supported external ids (imdbid/tvdbid/tmdbid), which are
+	// matched against stored normalized release identifiers (#108). Unsupported
+	// legacy ids (rid) are still not advertised.
 	tv := c.Searching.TVSearch.SupportedParams
 	if !strings.Contains(tv, "season") || !strings.Contains(tv, "ep") {
 		t.Errorf("tv-search params missing season/ep: %q", tv)
 	}
-	if strings.Contains(tv, "rid") || strings.Contains(tv, "tvdbid") {
-		t.Errorf("tv-search should not advertise unsupported ids: %q", tv)
+	if !strings.Contains(tv, "tvdbid") || !strings.Contains(tv, "imdbid") {
+		t.Errorf("tv-search should advertise supported ids: %q", tv)
 	}
-	if strings.Contains(c.Searching.MovieSearch.SupportedParams, "imdbid") {
-		t.Errorf("movie-search should not advertise imdbid: %q", c.Searching.MovieSearch.SupportedParams)
+	if strings.Contains(tv, "rid") {
+		t.Errorf("tv-search should not advertise unsupported id 'rid': %q", tv)
+	}
+	if !strings.Contains(c.Searching.MovieSearch.SupportedParams, "imdbid") {
+		t.Errorf("movie-search should advertise imdbid: %q", c.Searching.MovieSearch.SupportedParams)
 	}
 	// Movies parent with an HD subcat.
 	var moviesFound bool
@@ -238,41 +243,50 @@ func TestUnknownFunction(t *testing.T) {
 	}
 }
 
-func TestMovieSearchIMDBToken(t *testing.T) {
+func TestMovieSearchIMDBIdentifier(t *testing.T) {
 	repo := &mockRepo{releases: nil, total: 0}
 	h := newTestHandler(repo, &mockNZB{})
 
-	// q + imdbid: the id is normalized to tt<digits> and added as a token.
+	// q + imdbid: the id becomes a normalized identifier filter, NOT a text
+	// token. The q text stays the query.
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?t=movie&q=Some.Movie.2024&imdbid=tt0111161", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if !strings.Contains(repo.lastFilt.Query, "tt0111161") {
-		t.Errorf("query = %q, want it to contain tt0111161", repo.lastFilt.Query)
+	if repo.lastFilt.Query != "Some.Movie.2024" {
+		t.Errorf("query = %q, want just the q text (imdbid should not be a token)", repo.lastFilt.Query)
 	}
-	if !strings.Contains(repo.lastFilt.Query, "Some.Movie.2024") {
-		t.Errorf("query = %q, want it to contain the q text", repo.lastFilt.Query)
+	wantID := store.ReleaseIdentifier{Source: store.IDSourceIMDB, Identifier: "tt0111161"}
+	if len(repo.lastFilt.Identifiers) != 1 || repo.lastFilt.Identifiers[0] != wantID {
+		t.Errorf("identifiers = %+v, want [%+v]", repo.lastFilt.Identifiers, wantID)
 	}
 
-	// Bare imdbid (no tt prefix) normalizes the same way.
+	// Bare imdbid (no tt prefix) normalizes to the same identifier and, with no
+	// q text, drives the search purely by identifier (not an empty feed).
 	repo.lastFilt = store.SearchFilter{}
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?t=movie&imdbid=0111161", nil))
-	if repo.lastFilt.Query != "tt0111161" {
-		t.Errorf("bare imdbid query = %q, want tt0111161", repo.lastFilt.Query)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if repo.lastFilt.Query != "" {
+		t.Errorf("bare imdbid query = %q, want empty", repo.lastFilt.Query)
+	}
+	if len(repo.lastFilt.Identifiers) != 1 || repo.lastFilt.Identifiers[0] != wantID {
+		t.Errorf("bare imdbid identifiers = %+v, want [%+v]", repo.lastFilt.Identifiers, wantID)
 	}
 }
 
 func TestIDOnlySearchReturnsEmptyNotEverything(t *testing.T) {
-	// An id-only search with no resolvable token must NOT hit SearchReleases
-	// (which would browse-all); it returns an empty feed.
+	// An id-only search with no resolvable token/identifier must NOT hit
+	// SearchReleases (which would browse-all); it returns an empty feed. 'rid'
+	// is a legacy id we don't map to a stored identifier, so it's unresolvable.
 	repo := &mockRepo{releases: []store.Release{{GUID: "x", Name: "Should.Not.Appear"}}, total: 999}
 	h := newTestHandler(repo, &mockNZB{})
 
 	rec := httptest.NewRecorder()
-	// tvdbid can't be resolved by a header indexer and there's no q.
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?t=tvsearch&tvdbid=12345", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?t=tvsearch&rid=12345", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
@@ -286,6 +300,27 @@ func TestIDOnlySearchReturnsEmptyNotEverything(t *testing.T) {
 	// SearchReleases should not have been called (Limit would be non-zero if it had).
 	if repo.lastFilt.Limit != 0 || repo.lastFilt.Query != "" {
 		t.Errorf("SearchReleases should not have been called for an unresolved id-only search, got filter %+v", repo.lastFilt)
+	}
+}
+
+func TestResolvableIDOnlySearchFiltersByIdentifier(t *testing.T) {
+	// A resolvable id-only search (e.g. tvdbid) DOES search, filtering by the
+	// normalized identifier rather than returning an empty feed.
+	repo := &mockRepo{releases: nil, total: 0}
+	h := newTestHandler(repo, &mockNZB{})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?t=tvsearch&tvdbid=81189", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	// SearchReleases should have run (Limit set) with the tvdb identifier filter.
+	if repo.lastFilt.Limit == 0 {
+		t.Error("resolvable id search should have called SearchReleases")
+	}
+	want := store.ReleaseIdentifier{Source: store.IDSourceTVDB, Identifier: "81189"}
+	if len(repo.lastFilt.Identifiers) != 1 || repo.lastFilt.Identifiers[0] != want {
+		t.Errorf("identifiers = %+v, want [%+v]", repo.lastFilt.Identifiers, want)
 	}
 }
 

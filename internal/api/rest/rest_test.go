@@ -34,6 +34,7 @@ type mockStore struct {
 	pingErr            error
 	savedSettings  map[string]string
 	metadata       map[int64]store.ReleaseMetadata
+	identifiers    map[int64][]store.ReleaseIdentifier
 
 	createdGroup  string
 	deletedGroup  int64
@@ -77,6 +78,12 @@ func (m *mockStore) GetReleaseMetadata(_ context.Context, releaseID int64) (stor
 }
 func (m *mockStore) GetReleaseFiles(context.Context, int64) ([]store.ReleaseFile, error) {
 	return m.files, nil
+}
+func (m *mockStore) GetReleaseIdentifiers(_ context.Context, releaseID int64) ([]store.ReleaseIdentifier, error) {
+	if m.identifiers != nil {
+		return m.identifiers[releaseID], nil
+	}
+	return nil, nil
 }
 func (m *mockStore) ListCategories(context.Context) ([]store.Category, error) { return m.cats, nil }
 func (m *mockStore) RequeueFailedReleases(context.Context) (int64, error) {
