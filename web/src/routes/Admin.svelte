@@ -1,5 +1,6 @@
 <script>
   import { api } from '../lib/api.js';
+  import { buildBackfillPayload, describeBackfillField } from '../lib/backfill.js';
 
   let groups = $state([]);
   let users = $state([]);
@@ -26,6 +27,14 @@
   let health = $state(null);
   let error = $state('');
   let notice = $state('');
+
+  // Inline backfill-target editor state. editingBackfillId is the group id
+  // currently being edited (null = none); the fields are strings so blank is
+  // distinguishable from 0.
+  let editingBackfillId = $state(null);
+  let backfillForm = $state({ days: '', articles: '' });
+  let backfillFormError = $state('');
+  let backfillSaving = $state(false);
 
   function loadAll() {
     api.groups().then((g) => { groups = g || []; }).catch((e) => { error = e.message; });
@@ -242,18 +251,36 @@
     } catch (e) { error = e.message; }
   }
   async function setBackfillTarget(g) {
+    // Open the inline editor for this group, seeded with its current overrides.
     error = '';
-    const daysStr = prompt(`Backfill target for ${g.name}\n\nDays back to index (blank = use global default, 0 = no day limit):`, g.backfill_target_days ?? '');
-    if (daysStr === null) return;
-    const artStr = prompt(`Max articles per backfill pass (blank = default, 0 = unlimited):`, g.backfill_target_articles ?? '');
-    if (artStr === null) return;
-    const days = daysStr.trim() === '' ? null : parseInt(daysStr, 10);
-    const articles = artStr.trim() === '' ? null : parseInt(artStr, 10);
+    backfillFormError = '';
+    editingBackfillId = g.id;
+    backfillForm = {
+      days: g.backfill_target_days != null ? String(g.backfill_target_days) : '',
+      articles: g.backfill_target_articles != null ? String(g.backfill_target_articles) : '',
+    };
+  }
+  function cancelBackfillEdit() {
+    editingBackfillId = null;
+    backfillFormError = '';
+  }
+  async function saveBackfillTarget(g) {
+    error = '';
+    backfillFormError = '';
+    const { payload, error: verr } = buildBackfillPayload(backfillForm.days, backfillForm.articles);
+    if (verr) { backfillFormError = verr; return; }
+    backfillSaving = true;
     try {
-      await api.setGroupBackfill(g.id, days, articles);
-      notice = `Backfill target set for ${g.name}`;
+      await api.setGroupBackfill(g.id, payload.days, payload.articles);
+      notice = `Backfill target saved for ${g.name}`;
+      editingBackfillId = null;
       loadAll();
-    } catch (e) { error = e.message; }
+    } catch (e) {
+      // Keep the editor open so the operator can retry without re-entering.
+      backfillFormError = e.message || 'Failed to save backfill target';
+    } finally {
+      backfillSaving = false;
+    }
   }
   function backfillTargetLabel(g) {
     const parts = [];
@@ -430,10 +457,45 @@
               <button class="secondary" onclick={() => toggleGroup(g)}>{g.active ? 'Disable' : 'Enable'}</button>
               <button class="secondary" onclick={() => scan(g.name)}>Scan</button>
               <button class="secondary" onclick={() => backfill(g.name)}>Backfill</button>
-              <button class="secondary" onclick={() => setBackfillTarget(g)}>Target</button>
+              <button class="secondary" aria-expanded={editingBackfillId === g.id} onclick={() => editingBackfillId === g.id ? cancelBackfillEdit() : setBackfillTarget(g)}>Target</button>
               <button class="danger" onclick={() => removeGroup(g.id)}>Delete</button>
             </td>
           </tr>
+          {#if editingBackfillId === g.id}
+            <tr>
+              <td colspan="6">
+                <form class="panel" style="margin:0" onsubmit={(e) => { e.preventDefault(); saveBackfillTarget(g); }}>
+                  <h4 style="margin:0 0 0.4rem">Backfill target — {g.name}</h4>
+                  <p class="muted" style="margin:0 0 0.6rem; font-size:0.85rem">
+                    Backfill limits control how much history is indexed for this group, affecting storage and provider load.
+                    Leave a field <strong>blank</strong> to use the global default, enter <strong>0</strong> for no limit (unlimited),
+                    or a positive number to set an explicit limit. The two limits are independent.
+                  </p>
+                  <div class="row" style="gap:1rem; align-items:flex-start; flex-wrap:wrap">
+                    <label style="display:flex; flex-direction:column; gap:0.2rem">
+                      Days back to index
+                      <input type="number" min="0" step="1" inputmode="numeric" placeholder="default"
+                             bind:value={backfillForm.days} style="width:9rem" />
+                      <span class="muted" style="font-size:0.75rem">{describeBackfillField(backfillForm.days.trim() === '' ? null : Number(backfillForm.days), 'days')}</span>
+                    </label>
+                    <label style="display:flex; flex-direction:column; gap:0.2rem">
+                      Max articles per pass
+                      <input type="number" min="0" step="1" inputmode="numeric" placeholder="default"
+                             bind:value={backfillForm.articles} style="width:11rem" />
+                      <span class="muted" style="font-size:0.75rem">{describeBackfillField(backfillForm.articles.trim() === '' ? null : Number(backfillForm.articles), 'articles')}</span>
+                    </label>
+                  </div>
+                  {#if backfillFormError}
+                    <p class="danger" role="alert" style="margin:0.6rem 0 0">{backfillFormError}</p>
+                  {/if}
+                  <div class="row" style="margin-top:0.6rem; gap:0.5rem">
+                    <button type="submit" disabled={backfillSaving}>{backfillSaving ? 'Saving…' : 'Save target'}</button>
+                    <button type="button" class="secondary" onclick={cancelBackfillEdit} disabled={backfillSaving}>Cancel</button>
+                  </div>
+                </form>
+              </td>
+            </tr>
+          {/if}
         {/each}
       </tbody>
     </table>
