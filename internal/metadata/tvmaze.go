@@ -41,6 +41,13 @@ type tvmazeShow struct {
 		Original string `json:"original"`
 		Medium   string `json:"medium"`
 	} `json:"image"`
+	// Externals carries cross-provider ids, so a keyless TVMaze match can still
+	// yield imdb/tvdb/tmdb identifiers (#134).
+	Externals struct {
+		IMDB      string `json:"imdb"`      // e.g. "tt0944947"
+		TheTVDB   *int   `json:"thetvdb"`   // numeric
+		TheMovieDB *int  `json:"themoviedb"` // numeric
+	} `json:"externals"`
 }
 
 // Lookup matches a TV query to a show. Movie/non-TV queries are a definitive
@@ -85,15 +92,32 @@ func (t *TVMaze) Lookup(ctx context.Context, q Query) (Result, bool, error) {
 		poster = show.Image.Medium
 	}
 
+	// Collect cross-provider identifiers from TVMaze externals (#134). The store
+	// normalizes/validates each; only supported, well-formed ones are kept.
+	ids := map[string]string{}
+	if show.Externals.IMDB != "" {
+		ids["imdb"] = show.Externals.IMDB
+	}
+	if show.Externals.TheTVDB != nil && *show.Externals.TheTVDB > 0 {
+		ids["tvdb"] = strconv.Itoa(*show.Externals.TheTVDB)
+	}
+	if show.Externals.TheMovieDB != nil && *show.Externals.TheMovieDB > 0 {
+		ids["tmdb"] = strconv.Itoa(*show.Externals.TheMovieDB)
+	}
+	if len(ids) == 0 {
+		ids = nil
+	}
+
 	return Result{
-		Title:      show.Name,
-		Year:       yearFromDate(show.Premiered),
-		Season:     q.Season,
-		Episode:    q.Episode,
-		Source:     t.Name(),
-		ExternalID: strconv.Itoa(show.ID),
-		PosterURL:  poster,
-		Overview:   stripHTML(show.Summary),
+		Title:       show.Name,
+		Year:        yearFromDate(show.Premiered),
+		Season:      q.Season,
+		Episode:     q.Episode,
+		Source:      t.Name(),
+		ExternalID:  strconv.Itoa(show.ID),
+		PosterURL:   poster,
+		Overview:    stripHTML(show.Summary),
+		Identifiers: ids,
 	}, true, nil
 }
 

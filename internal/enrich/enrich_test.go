@@ -10,9 +10,16 @@ import (
 	"github.com/vindicare/goindex/internal/store"
 )
 
+type storedIdent struct {
+	releaseID  int64
+	source     string
+	identifier string
+}
+
 type mockRepo struct {
 	pending []store.ReleaseForEnrichment
 	saved   []store.ReleaseMetadataInput
+	idents  []storedIdent
 }
 
 func (m *mockRepo) ListReleasesNeedingMetadata(context.Context, int) ([]store.ReleaseForEnrichment, error) {
@@ -22,15 +29,25 @@ func (m *mockRepo) UpsertReleaseMetadata(_ context.Context, in store.ReleaseMeta
 	m.saved = append(m.saved, in)
 	return nil
 }
+func (m *mockRepo) AddReleaseIdentifier(_ context.Context, releaseID int64, source, identifier string) error {
+	m.idents = append(m.idents, storedIdent{releaseID, source, identifier})
+	return nil
+}
 
 type mockProvider struct {
+	name   string
 	match  bool
 	err    error
 	lastQ  metadata.Query
 	result metadata.Result
 }
 
-func (p *mockProvider) Name() string { return "mock" }
+func (p *mockProvider) Name() string {
+	if p.name != "" {
+		return p.name
+	}
+	return "mock"
+}
 func (p *mockProvider) Lookup(_ context.Context, q metadata.Query) (metadata.Result, bool, error) {
 	p.lastQ = q
 	if p.err != nil {
@@ -112,5 +129,96 @@ func TestEnrichDisabledNoop(t *testing.T) {
 	res, err := svc.Run(context.Background())
 	if err != nil || res.Processed != 0 {
 		t.Errorf("disabled Run should be a no-op, got %+v err=%v", res, err)
+	}
+}
+
+// TestEnrichStoresIdentifiers verifies a matched provider's external ids are
+// persisted via AddReleaseIdentifier (#134).
+func TestEnrichStoresIdentifiers(t *testing.T) {
+	repo := &mockRepo{pending: []store.ReleaseForEnrichment{
+		{ID: 7, Name: "The.Expanse.S03E10", CategoryID: tvCat()},
+	}}
+	prov := &mockProvider{match: true, result: metadata.Result{
+		Title: "The Expanse", Source: "tvmaze", ExternalID: "999",
+		Identifiers: map[string]string{"imdb": "tt3230854", "tvdb": "280619"},
+	}}
+	svc := New(repo, prov, nil, Options{})
+
+	if _, err := svc.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.idents) != 2 {
+		t.Fatalf("stored identifiers = %d, want 2: %+v", len(repo.idents), repo.idents)
+	}
+	got := map[string]string{}
+	for _, id := range repo.idents {
+		if id.releaseID != 7 {
+			t.Errorf("identifier release id = %d, want 7", id.releaseID)
+		}
+		got[id.source] = id.identifier
+	}
+	if got["imdb"] != "tt3230854" || got["tvdb"] != "280619" {
+		t.Errorf("identifiers = %+v", got)
+	}
+}
+
+// TestEnrichMultiProviderFirstMatchWinsMergedIdentifiers verifies multi-provider
+// enrichment (#134): providers are tried in order, the first match supplies the
+// metadata row, and identifiers from every matching provider are merged.
+func TestEnrichMultiProviderFirstMatchWinsMergedIdentifiers(t *testing.T) {
+	repo := &mockRepo{pending: []store.ReleaseForEnrichment{
+		{ID: 11, Name: "The.Show.S01E01", CategoryID: tvCat()},
+	}}
+	// First provider matches with a title + imdb id; second also matches and
+	// contributes a tmdb id. The first provider's metadata wins.
+	p1 := &mockProvider{name: "alpha", match: true, result: metadata.Result{
+		Title: "Alpha Title", Source: "alpha", ExternalID: "1",
+		Identifiers: map[string]string{"imdb": "tt1234567"},
+	}}
+	p2 := &mockProvider{name: "beta", match: true, result: metadata.Result{
+		Title: "Beta Title", Source: "beta", ExternalID: "2",
+		Identifiers: map[string]string{"tmdb": "42"},
+	}}
+	svc := NewMulti(repo, []metadata.Provider{p1, p2}, nil, Options{})
+
+	res, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Matched != 1 {
+		t.Errorf("matched = %d, want 1", res.Matched)
+	}
+	// First match supplies the metadata row.
+	if len(repo.saved) != 1 || repo.saved[0].Title != "Alpha Title" || repo.saved[0].Source != "alpha" {
+		t.Errorf("metadata should come from the first matching provider: %+v", repo.saved)
+	}
+	// Identifiers from both providers are merged.
+	got := map[string]string{}
+	for _, id := range repo.idents {
+		got[id.source] = id.identifier
+	}
+	if got["imdb"] != "tt1234567" || got["tmdb"] != "42" {
+		t.Errorf("merged identifiers = %+v, want imdb+tmdb", got)
+	}
+}
+
+// TestEnrichSecondProviderMatchesAfterFirstMiss verifies fallthrough: when the
+// first provider misses, a later provider's match is used.
+func TestEnrichSecondProviderMatchesAfterFirstMiss(t *testing.T) {
+	repo := &mockRepo{pending: []store.ReleaseForEnrichment{
+		{ID: 12, Name: "The.Show.S01E01", CategoryID: tvCat()},
+	}}
+	p1 := &mockProvider{name: "alpha", match: false}
+	p2 := &mockProvider{name: "beta", match: true, result: metadata.Result{
+		Title: "Beta Title", Source: "beta", ExternalID: "2",
+	}}
+	svc := NewMulti(repo, []metadata.Provider{p1, p2}, nil, Options{})
+
+	res, _ := svc.Run(context.Background())
+	if res.Matched != 1 {
+		t.Errorf("matched = %d, want 1", res.Matched)
+	}
+	if len(repo.saved) != 1 || repo.saved[0].Source != "beta" {
+		t.Errorf("expected beta match to be stored: %+v", repo.saved)
 	}
 }
