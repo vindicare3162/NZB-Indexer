@@ -52,10 +52,16 @@ var (
 	reYencMarker = regexp.MustCompile(`(?i)\byenc\b`)
 	reWhitespace = regexp.MustCompile(`\s+`)
 
-	// A LEADING file counter like "[002/113]" or "(002/113)" at the very start
-	// of the subject. This counts files within a multi-file collection, and is
-	// distinct from the trailing yEnc segment counter "(1/464)".
-	reLeadingFileCounter = regexp.MustCompile(`^\s*[\[\(](\d{1,6})\s*/\s*(\d{1,6})[\]\)]`)
+	// A LEADING file counter like "[002/113]" that counts files within a
+	// multi-file collection, distinct from the trailing yEnc segment counter
+	// "(1/464)". Two posting styles are supported:
+	//   [002/113] "file.rar" yEnc (1/464)          -- counter at the start
+	//   Release.Name [64/65] - "file.par2" yEnc ... -- title prefix, then counter
+	// To stay unambiguous, the file counter must use SQUARE brackets (the yEnc
+	// segment counter conventionally uses parentheses), and any prefix before
+	// it must not itself contain a bracketed counter. Bracket style at the very
+	// start is also accepted for the classic layout.
+	reLeadingFileCounter = regexp.MustCompile(`^[^\[\]]*\[(\d{1,6})\s*/\s*(\d{1,6})\]`)
 
 	// Trailing archive/volume/parity extensions used to reduce a per-file name
 	// to the collection base name (so all volumes of a set share one key).
@@ -123,22 +129,24 @@ func parseCollection(subject string, segLo, segHi int, res *ParsedSubject) {
 	if total < 2 {
 		return
 	}
-	// Guard against a single multi-segment file whose subject repeats the same
-	// counter in both the leading and trailing positions, e.g.
-	// `[1/445] "blob" yEnc (1/445)`. That is one 445-segment file, not a
-	// 445-file collection. When the leading file counter IS the trailing yEnc
-	// segment counter (same span) or declares the same total, it is not a
-	// collection.
-	if segLo == loc[0] && segHi == loc[1] {
-		return
-	}
-	if res.TotalParts == total {
+	// The bracket span of the file counter itself (the `[` just precedes the
+	// first captured digit; the `]` just follows the last). Used to guard
+	// against a subject where the leading counter IS the trailing yEnc segment
+	// counter, e.g. `[1/445] "blob" yEnc (1/445)` — one file, not a collection.
+	// (In practice the file counter now uses square brackets and the yEnc
+	// counter parentheses, so these spans never coincide, but keep the guard.)
+	brLo, brHi := loc[2]-1, loc[5]+1
+	if segLo == brLo && segHi == brHi {
 		return
 	}
 	// A true multi-file collection has files that are volumes/parts of an
 	// archive set (rar/par2/etc.). Require the per-file name to carry such an
 	// extension; a bare obfuscated blob with no archive extension is treated
-	// as a single file so unrelated posts are never merged.
+	// as a single file so unrelated posts are never merged. This also covers
+	// the single-file mislabel case above (the blob has no archive extension),
+	// so we deliberately do NOT reject on `res.TotalParts == total`: a genuine
+	// N-file collection whose files happen to have N segments each (leading
+	// [k/N] + trailing yEnc (x/N)) must still group as one collection.
 	if res.FileName == "" || !reCollectionVolExt.MatchString(res.FileName) {
 		return
 	}

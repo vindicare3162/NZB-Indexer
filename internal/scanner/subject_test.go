@@ -156,6 +156,25 @@ func TestParseCollection(t *testing.T) {
 		t.Errorf("blob segment = %d/%d, want 1/445", blob.PartNumber, blob.TotalParts)
 	}
 
+	// Regression (#88): a genuine N-file collection whose files happen to have
+	// N yEnc segments each must still group as ONE collection. Live data: an
+	// "Alura" PAR2 set posted as 65 files where files carry (x/65) segment
+	// counters — a coincidental file-count == segment-count that previously
+	// fragmented into 65 releases.
+	al1 := ParseSubject(`Alura.Flutter.CI-CL [64/65] - "Alura.Flutter.CI-CL.vol31+32.par2" yEnc (2/65) 46101356`)
+	al2 := ParseSubject(`Alura.Flutter.CI-CL [58/65] - "Alura.Flutter.CI-CL.par2" yEnc (1/1) 44892`)
+	al3 := ParseSubject(`Alura.Flutter.CI-CL [65/65] - "Alura.Flutter.CI-CL.vol63+25.par2" yEnc (3/65) 36065680`)
+	if al1.CollectionKey == "" {
+		t.Fatal("Alura file [64/65] got no collection key (fragmentation bug #88)")
+	}
+	if al1.CollectionKey != al2.CollectionKey || al2.CollectionKey != al3.CollectionKey {
+		t.Errorf("Alura collection keys differ (should group as one):\n a1=%q\n a2=%q\n a3=%q",
+			al1.CollectionKey, al2.CollectionKey, al3.CollectionKey)
+	}
+	if al1.CollectionFiles != 65 {
+		t.Errorf("Alura collection files = %d, want 65", al1.CollectionFiles)
+	}
+
 	// An obfuscated blob with a leading counter but NO archive extension in the
 	// filename is treated as a single file (avoid merging unrelated posts).
 	bare := ParseSubject(`[2/20] "NSV6gyBkS9rHcooOonLqQV89OqtlE" yEnc (1/50)`)

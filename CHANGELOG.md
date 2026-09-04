@@ -40,6 +40,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   PostgreSQL 18.
 
 ### Fixed
+- Multi-file collections posted with a title-prefixed file counter
+  (`Release.Name [64/65] - "file.par2" ...`) are no longer fragmented into a
+  separate release per file (#88). The leading-file-counter parser was anchored
+  to the start of the subject (missing the title-prefixed style), and a guard
+  wrongly rejected collections whose file-count equalled the per-file segment
+  count; both are fixed, so such posts group into a single release.
 - Compose: mount the database volume at `/var/lib/postgresql` (not
   `/var/lib/postgresql/data`) so `postgres:18-alpine` starts — the PG18 image
   changed its data-directory layout and refused to start with the old mount,
