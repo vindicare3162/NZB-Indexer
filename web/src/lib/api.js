@@ -86,6 +86,7 @@ export const api = {
     if (refresh) params.set('refresh', '1');
     return request('GET', `/admin/discover?${params.toString()}`);
   },
+  overview: () => request('GET', '/admin/overview'),
   groups: () => request('GET', '/admin/groups'),
   createGroup: (name) => request('POST', '/admin/groups', { name, active: true }),
   bulkGroups: (names, backfillDays = 0, active = true) =>

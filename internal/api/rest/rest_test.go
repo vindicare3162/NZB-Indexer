@@ -32,6 +32,7 @@ type mockStore struct {
 	requeuedFailed     bool
 	segmentsBackfilled bool
 	pingErr            error
+	statsErr           error
 	savedSettings  map[string]string
 	metadata       map[int64]store.ReleaseMetadata
 	identifiers    map[int64][]store.ReleaseIdentifier
@@ -98,6 +99,9 @@ func (m *mockStore) DatabaseHealth(context.Context) (store.DBHealth, error) {
 	return store.DBHealth{SizeBytes: 1 << 20, CacheHitRatio: 0.99, PoolTotal: 2, PoolIdle: 1, PoolMax: 10}, nil
 }
 func (m *mockStore) PipelineStatistics(context.Context) (store.PipelineStats, error) {
+	if m.statsErr != nil {
+		return store.PipelineStats{}, m.statsErr
+	}
 	return store.PipelineStats{
 		PartsTotal: 1000, PartsUnassigned: 200,
 		BinariesTotal: 50, BinariesComplete: 30, BinariesUnreleased: 5,

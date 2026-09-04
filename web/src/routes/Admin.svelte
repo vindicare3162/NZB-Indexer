@@ -36,15 +36,51 @@
   let backfillFormError = $state('');
   let backfillSaving = $state(false);
 
-  function loadAll() {
-    api.groups().then((g) => { groups = g || []; }).catch((e) => { error = e.message; });
-    api.users().then((u) => { users = u || []; }).catch((e) => { error = e.message; });
-    api.servers().then((s) => { servers = s || []; }).catch((e) => { error = e.message; });
-    api.status().then((s) => { status = s; }).catch(() => {});
-    api.stats().then((s) => { stats = s; }).catch(() => {});
-    loadSchedule();
-    api.health().then((h) => { health = h; }).catch(() => {});
-    loadLogs();
+  // Guards against overlapping/stale overview loads: each call takes a token and
+  // only the most recent response is applied.
+  let overviewToken = 0;
+  let overviewLoading = $state(false);
+
+  // loadAll fetches the whole dashboard in a single aggregated request
+  // (/admin/overview) instead of many independent calls. Overlapping calls are
+  // coalesced and stale responses discarded.
+  async function loadAll() {
+    if (overviewLoading) return; // avoid overlapping refreshes
+    const token = ++overviewToken;
+    overviewLoading = true;
+    try {
+      const o = await api.overview();
+      if (token !== overviewToken) return; // a newer load superseded this one
+      groups = o.groups || [];
+      users = o.users || [];
+      servers = o.servers || [];
+      status = o.status ?? null;
+      stats = o.stats ?? null;
+      health = o.health ?? null;
+      logs = o.logs || [];
+      applySchedule(o.schedule);
+      // Surface any per-subsystem failures without blanking the rest.
+      if (o.errors && Object.keys(o.errors).length > 0) {
+        error = 'Some data could not be loaded: ' + Object.keys(o.errors).join(', ');
+      } else if (error.startsWith('Some data could not be loaded')) {
+        error = '';
+      }
+    } catch (e) {
+      if (token === overviewToken) error = e.message || 'Failed to load admin overview';
+    } finally {
+      if (token === overviewToken) overviewLoading = false;
+    }
+  }
+
+  // applySchedule maps a schedule payload into the editable schedule form state.
+  function applySchedule(s) {
+    if (!s) return;
+    schedule = {
+      scan_interval: s.scan_interval || '',
+      downstream_interval: s.downstream_interval || '',
+      build_interval: s.build_interval || '',
+      postprocess_interval: s.postprocess_interval || '',
+    };
   }
 
   function fmtBytes(bytes) {
@@ -80,14 +116,7 @@
   }
 
   function loadSchedule() {
-    api.schedule().then((s) => {
-      if (s) schedule = {
-        scan_interval: s.scan_interval || '',
-        downstream_interval: s.downstream_interval || '',
-        build_interval: s.build_interval || '',
-        postprocess_interval: s.postprocess_interval || '',
-      };
-    }).catch(() => {});
+    api.schedule().then(applySchedule).catch(() => {});
   }
 
   async function saveSchedule(e) {
