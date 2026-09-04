@@ -103,3 +103,46 @@ func TestPrincipalHolderUnset(t *testing.T) {
 		t.Error("holder should report unset before any principal is attached")
 	}
 }
+
+func TestRequestLabel(t *testing.T) {
+	cases := map[string]string{
+		"/api/v1/admin/backfill":                "backfill",
+		"/api/v1/admin/postprocess":             "postprocess",
+		"/api/v1/admin/postprocess/retry-failed": "retry failed postprocess",
+		"/api/v1/admin/scan":                    "scan",
+		"/api/v1/admin/stats":                   "stats",
+		"/api/v1/admin/health":                  "health report",
+		"/api/v1/admin/logs":                    "logs",
+		"/api/v1/admin/schedule":                "schedule",
+		"/api/v1/admin/groups":                  "groups",
+		"/api/v1/admin/groups/bulk":             "bulk add groups",
+		"/api/v1/admin/groups/7":                "group update",
+		"/api/v1/releases":                      "search",
+		"/api/v1/releases/abc-guid":             "release detail",
+		"/api/v1/releases/abc-guid/nzb":         "nzb download",
+		"/api/v1/login":                         "login",
+		"/api/v1/health":                        "health probe",
+		"/metrics":                              "metrics scrape",
+		"/api":                                  "newznab",
+		"/api/v1/unknown/thing":                 "http request",
+	}
+	for path, want := range cases {
+		if got := requestLabel(http.MethodGet, path); got != want {
+			t.Errorf("requestLabel(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestAccessLogUsesActionLabel(t *testing.T) {
+	logger, buf := capture()
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusAccepted) })
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/backfill", nil)
+	accessLog(logger, next).ServeHTTP(httptest.NewRecorder(), req)
+	out := buf.String()
+	if !strings.Contains(out, `msg=backfill`) {
+		t.Errorf("expected msg=backfill in access log:\n%s", out)
+	}
+	if strings.Contains(out, `msg="http request"`) {
+		t.Errorf("backfill request should not log the generic message:\n%s", out)
+	}
+}

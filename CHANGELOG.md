@@ -6,6 +6,13 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Changed
+- Access-log entries now use a concise action label as the message (e.g.
+  `backfill`, `postprocess`, `scan`, `stats`, `search`, `nzb download`) instead
+  of a uniform `http request`, so the admin Logs view is readable at a glance
+  (#94). The structured attributes (method/path/status/duration/bytes/remote/
+  user) are unchanged; unmapped paths still log `http request`.
+
 ### Added
 - Admin health dashboard (#84). A new `GET /api/v1/admin/health` endpoint and a
   "System health" panel on the Admin page surface process stats (goroutines,
