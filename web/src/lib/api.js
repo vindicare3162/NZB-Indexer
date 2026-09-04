@@ -104,6 +104,7 @@ export const api = {
   triggerBackfill: (group) => request('POST', '/admin/backfill', { group }),
   triggerPostProcess: () => request('POST', '/admin/postprocess', {}),
   retryFailedPP: () => request('POST', '/admin/postprocess/retry-failed', {}),
+  backfillSegments: () => request('POST', '/admin/segments/backfill', {}),
   status: () => request('GET', '/admin/status'),
   stats: () => request('GET', '/admin/stats'),
   logs: (level = '', limit = 200) => {

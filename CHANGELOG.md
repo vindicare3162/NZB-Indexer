@@ -6,6 +6,16 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Added
+- Durable release segments make NZB generation independent of raw parts (#105,
+  the prerequisite for raw-part retention). At build time a release snapshots
+  its ordered segments into a new `releases.segments` column (migration 0012),
+  and NZB generation reads from there, falling back to the raw-parts join only
+  for legacy releases. A release's NZB now generates correctly after its backing
+  parts are deleted. `POST /api/v1/admin/segments/backfill` (and a "Backfill NZB
+  segments" admin button) snapshots segments for pre-existing legacy releases
+  and reports how many were repaired vs unresolvable.
+
 ### Fixed
 - Scan and post-processing concurrency are now sized from the **effective**
   NNTP connection limit — the one the live pool was actually built with (the
