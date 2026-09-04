@@ -101,6 +101,12 @@ type ScanConfig struct {
 	Groups []string `yaml:"groups"`
 	// BatchSize is the number of articles requested per XOVER call.
 	BatchSize int `yaml:"batch_size"`
+	// Concurrency is how many groups are scanned in parallel within one pass.
+	// It shares the NNTP connection budget (nntp.max_conns) with
+	// post-processing, so real parallelism is still capped by the pool. 0 means
+	// a sensible default derived from the pool size; 1 forces the original
+	// sequential behaviour.
+	Concurrency int `yaml:"concurrency"`
 	// Interval is how often forward scans run.
 	Interval time.Duration `yaml:"interval"`
 	// DownstreamInterval is how often the assemble/build loop runs,
@@ -172,6 +178,7 @@ func Default() Config {
 		},
 		Scan: ScanConfig{
 			BatchSize:           10000,
+			Concurrency:         0, // 0 = derive from the NNTP pool size at startup
 			Interval:            15 * time.Minute,
 			DownstreamInterval:  5 * time.Minute,
 			BuildInterval:       2 * time.Minute,
@@ -253,6 +260,7 @@ func applyEnv(cfg *Config) {
 
 	envStrSlice("GOINDEX_SCAN_GROUPS", &cfg.Scan.Groups)
 	envInt("GOINDEX_SCAN_BATCH_SIZE", &cfg.Scan.BatchSize)
+	envInt("GOINDEX_SCAN_CONCURRENCY", &cfg.Scan.Concurrency)
 	envDur("GOINDEX_SCAN_INTERVAL", &cfg.Scan.Interval)
 	envDur("GOINDEX_SCAN_DOWNSTREAM_INTERVAL", &cfg.Scan.DownstreamInterval)
 	envDur("GOINDEX_SCAN_BUILD_INTERVAL", &cfg.Scan.BuildInterval)
@@ -311,6 +319,9 @@ func (c Config) Validate() error {
 
 	if c.Scan.BatchSize <= 0 {
 		errs = append(errs, "scan.batch_size must be greater than 0")
+	}
+	if c.Scan.Concurrency < 0 {
+		errs = append(errs, "scan.concurrency must not be negative (0 = auto)")
 	}
 	if c.Scan.Interval <= 0 {
 		errs = append(errs, "scan.interval must be greater than 0")

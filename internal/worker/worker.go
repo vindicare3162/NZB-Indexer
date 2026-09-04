@@ -74,6 +74,10 @@ type Options struct {
 	// EnrichInterval is how often the metadata-enrichment loop runs. Zero uses
 	// a default. The loop only runs when an Enricher is supplied and enabled.
 	EnrichInterval time.Duration
+	// ScanConcurrency is how many groups a scan/backfill pass processes in
+	// parallel. Zero or 1 means sequential (original behaviour); higher fans
+	// out across a bounded worker pool, still capped by the NNTP pool size.
+	ScanConcurrency int
 }
 
 // Metrics is a snapshot of pipeline activity, exposed via Status().
@@ -97,21 +101,22 @@ type Metrics struct {
 	// loops run on independent goroutines, so more than one can be active at
 	// once (e.g. "backfill" and "postprocess"). Empty means idle.
 	ActiveStages []string `json:"active_stages"`
-	// ScanProgress reports which group the scan/backfill loop is currently on
-	// and how far through the group list it is. Nil when no scan is running.
-	// Groups are scanned sequentially, so this shows the single in-flight group.
+	// ScanProgress reports the current scan/backfill pass: which groups are
+	// in flight (up to the scan concurrency) and how many of the pass's groups
+	// have finished. Nil when no scan is running.
 	ScanProgress *ScanProgress `json:"scan_progress,omitempty"`
 }
 
-// ScanProgress is a snapshot of the sequential scan loop's position through the
-// active group list.
+// ScanProgress is a snapshot of the current scan/backfill pass across a bounded
+// worker pool. Groups scan in parallel, so InFlight can hold several at once.
 type ScanProgress struct {
-	// Group is the name of the group currently being scanned.
-	Group string `json:"group"`
-	// Index is the 1-based position of Group within the pass, and Total is the
+	// InFlight lists the groups currently being scanned (sorted, up to the scan
+	// concurrency).
+	InFlight []string `json:"in_flight"`
+	// Completed is how many of the pass's groups have finished; Total is the
 	// number of groups in the pass.
-	Index int `json:"index"`
-	Total int `json:"total"`
+	Completed int `json:"completed"`
+	Total     int `json:"total"`
 	// Backfill is true when this is a backfill pass (vs a forward scan).
 	Backfill bool `json:"backfill"`
 }
@@ -157,9 +162,15 @@ type Worker struct {
 	// active is the set of pipeline stages currently executing (guarded by mu).
 	// Loops run concurrently, so several may be active at once.
 	active map[string]bool
-	// scanProgress tracks the sequential scan loop's current group/position
-	// (guarded by mu). Nil when no scan/backfill is running.
-	scanProgress *ScanProgress
+	// Scan-pass progress (guarded by mu). scanActive indicates a pass is
+	// running; scanInFlight is the set of groups currently being scanned;
+	// scanCompleted/scanTotal track pass progress; scanBackfill records the
+	// pass type. All zero/empty when no scan is running.
+	scanActive    bool
+	scanInFlight  map[string]bool
+	scanCompleted int
+	scanTotal     int
+	scanBackfill  bool
 }
 
 // scanTrigger is a manual scan request. backfill selects a backfill pass.
@@ -175,6 +186,9 @@ func New(groups GroupLister, scan Scanner, asm Assembler, build ReleaseBuilder, 
 	}
 	if opts.EnrichInterval <= 0 {
 		opts.EnrichInterval = 30 * time.Minute
+	}
+	if opts.ScanConcurrency < 1 {
+		opts.ScanConcurrency = 1
 	}
 	if opts.DownstreamInterval <= 0 {
 		opts.DownstreamInterval = opts.ScanInterval
@@ -456,7 +470,6 @@ func (w *Worker) runScan(ctx context.Context, group string, backfill bool) {
 	}
 	w.stageStart(stage)
 	defer w.stageEnd(stage)
-	defer w.clearScanProgress()
 
 	groups, err := w.targetGroups(ctx, group)
 	if err != nil {
@@ -464,30 +477,71 @@ func (w *Worker) runScan(ctx context.Context, group string, backfill bool) {
 		return
 	}
 
-	total := len(groups)
-	for i, g := range groups {
-		if ctx.Err() != nil {
-			return
-		}
-		w.setScanProgress(g.Name, i+1, total, backfill)
-		var (
-			res scanner.ScanResult
-			err error
-		)
-		if backfill {
-			res, err = w.scan.ScanBackfill(ctx, g.Name)
-		} else {
-			res, err = w.scan.ScanForward(ctx, g.Name)
-		}
-		if err != nil {
-			w.recordError(fmt.Errorf("scan %s: %w", g.Name, err))
-			continue
-		}
-		w.mu.Lock()
-		w.metrics.ArticlesPulled += res.ArticlesPulled
-		w.metrics.PartsInserted += res.PartsInserted
-		w.mu.Unlock()
+	w.scanPassBegin(len(groups), backfill)
+	defer w.scanPassEnd()
+
+	// Bound the number of groups scanned in parallel. Each worker draws NNTP
+	// connections from the shared pool, so real parallelism is additionally
+	// capped by the pool size; workers block in acquire() rather than failing
+	// when the pool is exhausted. A concurrency of 1 preserves the original
+	// sequential behaviour. The whole pass runs under scanMu (see doScan), and
+	// each group is dispatched to exactly one worker, so no group is scanned by
+	// two goroutines at once (which would race on its watermark row).
+	workers := w.opts.ScanConcurrency
+	if workers < 1 {
+		workers = 1
 	}
+	if workers > len(groups) {
+		workers = len(groups)
+	}
+	if workers == 0 {
+		return // no groups
+	}
+
+	jobs := make(chan store.Group)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for g := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				w.scanGroupBegin(g.Name)
+				var (
+					res scanner.ScanResult
+					serr error
+				)
+				if backfill {
+					res, serr = w.scan.ScanBackfill(ctx, g.Name)
+				} else {
+					res, serr = w.scan.ScanForward(ctx, g.Name)
+				}
+				if serr != nil {
+					w.recordError(fmt.Errorf("scan %s: %w", g.Name, serr))
+				} else {
+					w.mu.Lock()
+					w.metrics.ArticlesPulled += res.ArticlesPulled
+					w.metrics.PartsInserted += res.PartsInserted
+					w.mu.Unlock()
+				}
+				w.scanGroupEnd(g.Name)
+			}
+		}()
+	}
+
+	for _, g := range groups {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return
+		case jobs <- g:
+		}
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 // runAssemble folds parts into binaries under the assemble mutex, so a
@@ -642,9 +696,18 @@ func (w *Worker) snapshotLocked() Metrics {
 		sort.Strings(stages)
 		m.ActiveStages = stages
 	}
-	if w.scanProgress != nil {
-		sp := *w.scanProgress // copy so callers can't mutate internal state
-		m.ScanProgress = &sp
+	if w.scanActive {
+		inflight := make([]string, 0, len(w.scanInFlight))
+		for g := range w.scanInFlight {
+			inflight = append(inflight, g)
+		}
+		sort.Strings(inflight)
+		m.ScanProgress = &ScanProgress{
+			InFlight:  inflight,
+			Completed: w.scanCompleted,
+			Total:     w.scanTotal,
+			Backfill:  w.scanBackfill,
+		}
 	}
 	return m
 }
@@ -685,16 +748,42 @@ func (w *Worker) recordError(err error) {
 	w.mu.Unlock()
 }
 
-// setScanProgress records the group the scan loop is currently working on.
-func (w *Worker) setScanProgress(group string, index, total int, backfill bool) {
+// scanPassBegin initialises pass-level progress for a scan/backfill of total
+// groups.
+func (w *Worker) scanPassBegin(total int, backfill bool) {
 	w.mu.Lock()
-	w.scanProgress = &ScanProgress{Group: group, Index: index, Total: total, Backfill: backfill}
+	w.scanActive = true
+	w.scanInFlight = map[string]bool{}
+	w.scanCompleted = 0
+	w.scanTotal = total
+	w.scanBackfill = backfill
 	w.mu.Unlock()
 }
 
-// clearScanProgress clears scan progress when a scan/backfill pass finishes.
-func (w *Worker) clearScanProgress() {
+// scanPassEnd clears all scan progress when the pass finishes.
+func (w *Worker) scanPassEnd() {
 	w.mu.Lock()
-	w.scanProgress = nil
+	w.scanActive = false
+	w.scanInFlight = nil
+	w.scanCompleted = 0
+	w.scanTotal = 0
+	w.scanBackfill = false
+	w.mu.Unlock()
+}
+
+// scanGroupBegin marks a group as currently being scanned.
+func (w *Worker) scanGroupBegin(group string) {
+	w.mu.Lock()
+	if w.scanInFlight != nil {
+		w.scanInFlight[group] = true
+	}
+	w.mu.Unlock()
+}
+
+// scanGroupEnd marks a group's scan finished and bumps the completed count.
+func (w *Worker) scanGroupEnd(group string) {
+	w.mu.Lock()
+	delete(w.scanInFlight, group)
+	w.scanCompleted++
 	w.mu.Unlock()
 }
