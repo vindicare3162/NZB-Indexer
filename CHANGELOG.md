@@ -97,6 +97,11 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   `pg_upgrade`) before switching the image.
 
 ### Docs
+- Added `docs/parallel-scanning-design.md` (#100): a scoping/design record for
+  bounded parallel group scanning (throughput at 50-500 groups) — a
+  worker-pool refactor of the sequential scan loop mirroring post-processing,
+  gated by a new `Scan.Concurrency` knob sharing the NNTP `MaxConns` budget,
+  with a multi-group progress model. Implementation tracked separately.
 - Added `docs/postgres-tuning.md` (#80): a database growth model and PostgreSQL
   tuning guide — the `parts` table dominates, so the highest-value levers are
   autovacuum/analyze tuning on `parts` (with concrete `ALTER TABLE` settings)
