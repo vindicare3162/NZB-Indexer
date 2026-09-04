@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/vindicare/goindex/internal/auth"
@@ -67,15 +68,93 @@ func accessLog(logger *slog.Logger, next http.Handler) http.Handler {
 			attrs = append(attrs, "user", p.Username)
 		}
 
+		msg := requestLabel(r.Method, r.URL.Path)
 		switch {
 		case isProbePath(r.URL.Path):
-			logger.Debug("http request", attrs...)
+			logger.Debug(msg, attrs...)
 		case rec.status >= 500:
-			logger.Warn("http request", attrs...)
+			logger.Warn(msg, attrs...)
 		default:
-			logger.Info("http request", attrs...)
+			logger.Info(msg, attrs...)
 		}
 	})
+}
+
+// requestLabel maps a request to a concise, human-readable action name used as
+// the log message, so the admin Logs view reads "backfill", "postprocess",
+// "stats", etc. rather than a uniform "http request". Unmapped paths fall back
+// to "http request". Path parameters (ids/guids) are tolerated by matching on
+// prefixes/suffixes.
+func requestLabel(method, path string) string {
+	switch path {
+	case "/api/v1/login":
+		return "login"
+	case "/api/v1/me":
+		return "whoami"
+	case "/api/v1/health":
+		return "health probe"
+	case "/api/v1/ready":
+		return "readiness probe"
+	case "/metrics":
+		return "metrics scrape"
+	case "/api/v1/releases":
+		return "search"
+	case "/api/v1/categories":
+		return "categories"
+	case "/api/v1/admin/scan":
+		return "scan"
+	case "/api/v1/admin/backfill":
+		return "backfill"
+	case "/api/v1/admin/postprocess":
+		return "postprocess"
+	case "/api/v1/admin/postprocess/retry-failed":
+		return "retry failed postprocess"
+	case "/api/v1/admin/stats":
+		return "stats"
+	case "/api/v1/admin/status":
+		return "status"
+	case "/api/v1/admin/health":
+		return "health report"
+	case "/api/v1/admin/logs":
+		return "logs"
+	case "/api/v1/admin/schedule":
+		return "schedule"
+	case "/api/v1/admin/discover":
+		return "discover groups"
+	case "/api/v1/admin/groups":
+		return "groups"
+	case "/api/v1/admin/groups/bulk":
+		return "bulk add groups"
+	case "/api/v1/admin/servers":
+		return "servers"
+	case "/api/v1/admin/users":
+		return "users"
+	case "/api/v1/setup", "/api/v1/setup/status":
+		return "setup"
+	case "/api/v1/apikeys":
+		return "api keys"
+	}
+
+	// Path-parameter routes.
+	switch {
+	case strings.HasPrefix(path, "/api/v1/releases/") && strings.HasSuffix(path, "/nzb"):
+		return "nzb download"
+	case strings.HasPrefix(path, "/api/v1/releases/"):
+		return "release detail"
+	case strings.HasPrefix(path, "/api/v1/apikeys/"):
+		return "api key"
+	case strings.HasPrefix(path, "/api/v1/admin/groups/"):
+		return "group update"
+	case strings.HasPrefix(path, "/api/v1/admin/servers/"):
+		return "server update"
+	case strings.HasPrefix(path, "/api/v1/admin/users/"):
+		return "user update"
+	case path == "/api" || (strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/api/v1/")):
+		// The Newznab endpoint is mounted at /api and /api/; the REST API lives
+		// under /api/v1/ and is handled by the exact cases above.
+		return "newznab"
+	}
+	return "http request"
 }
 
 // remoteHost strips the port from a RemoteAddr, returning just the host/IP.
