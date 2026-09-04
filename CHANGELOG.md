@@ -41,6 +41,17 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Configurable multi-provider metadata enrichment (#134). Enrichment now runs an
+  ordered list of metadata providers (`metadata.providers` / `GOINDEX_METADATA_PROVIDERS`,
+  with the legacy single `provider` still honoured) instead of one hardcoded
+  provider: each release is tried against every enabled provider, the first
+  match supplies its metadata row, and normalized external identifiers
+  (imdb/tvdb/tmdb) resolved by any matching provider are persisted as release
+  identifiers (#108) so integrations can match by provider id. The keyless
+  TVMaze provider now also returns imdb/tvdb/tmdb ids from its `externals`, and a
+  per-provider API-key map (`metadata.api_keys`) is available for keyed providers.
+  A provider registry builds the enabled set from config, skipping unknown
+  providers.
 - Per-group scan priority and forward scan budgets (#126). Each group gains a
   `priority` (higher groups are scanned first) and an optional per-group forward
   article budget that caps how many new articles a single forward pass ingests

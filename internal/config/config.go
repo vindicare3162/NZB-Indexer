@@ -61,11 +61,19 @@ type MetadataConfig struct {
 	// Enabled turns on the enrichment loop. When false, releases carry no
 	// external metadata and no provider requests are made.
 	Enabled bool `yaml:"enabled"`
-	// Provider selects the metadata source. Currently "tvmaze" (keyless, TV) is
-	// supported and is the default when Enabled and Provider is empty.
+	// Provider selects a single metadata source (legacy). Prefer Providers for
+	// multiple. When Providers is empty this is used; "tvmaze" is the default.
 	Provider string `yaml:"provider"`
+	// Providers is the ordered list of enabled metadata providers (#134), tried
+	// in order per release (first match supplies the metadata row; identifiers
+	// from all matching providers are stored). Empty falls back to Provider.
+	// Known providers: "tvmaze" (keyless, TV; also resolves imdb/tvdb/tmdb ids).
+	Providers []string `yaml:"providers"`
 	// Interval is how often the enrichment loop runs. Zero uses a sane default.
 	Interval time.Duration `yaml:"interval"`
+	// APIKeys holds per-provider API keys for keyed providers, keyed by provider
+	// name (e.g. {"tmdb": "..."}). Keyless providers ignore this.
+	APIKeys map[string]string `yaml:"api_keys"`
 }
 
 // ServerConfig configures the embedded HTTP server.
@@ -330,6 +338,7 @@ func applyEnv(cfg *Config) {
 
 	envBool("GOINDEX_METADATA_ENABLED", &cfg.Metadata.Enabled)
 	envStr("GOINDEX_METADATA_PROVIDER", &cfg.Metadata.Provider)
+	envStrSlice("GOINDEX_METADATA_PROVIDERS", &cfg.Metadata.Providers)
 	envDur("GOINDEX_METADATA_INTERVAL", &cfg.Metadata.Interval)
 
 	envBool("GOINDEX_RETENTION_ENABLED", &cfg.Retention.Enabled)

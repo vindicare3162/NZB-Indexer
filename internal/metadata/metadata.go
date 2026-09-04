@@ -34,6 +34,11 @@ type Result struct {
 	ExternalID string // provider's id for the matched title
 	PosterURL  string
 	Overview   string
+	// Identifiers are normalized external IDs the provider resolved for the
+	// matched title, keyed by source ("imdb"/"tvdb"/"tmdb"). These are persisted
+	// as release identifiers (#108) so integrations can match by provider id.
+	// Values are the raw provider values; the store normalizes/validates them.
+	Identifiers map[string]string
 }
 
 // Provider looks up metadata for a query. Lookup returns (result, true, nil) on
