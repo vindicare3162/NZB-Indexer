@@ -6,6 +6,17 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Changed
+- Per-group backfill targets are now configured with an accessible, validated
+  inline form instead of browser `prompt()` dialogs (#109). The editor explains
+  the impact of the limits and the blank/zero/explicit semantics (blank = use
+  global default, 0 = unlimited, positive = explicit limit), validates the days
+  and article-limit fields before submission, lets each override be cleared
+  independently, and keeps the form open with a visible error on save failure so
+  the operator can retry. Validation and payload logic live in a unit-tested
+  module (`web/src/lib/backfill.js`), and the web package now runs Vitest via
+  `npm test`.
+
 ### Added
 - Normalized external release identifiers (#108). A new `release_identifiers`
   table (migration 0014) stores per-release `(source, identifier)` pairs for
