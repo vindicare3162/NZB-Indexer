@@ -122,6 +122,13 @@ type NNTPConfig struct {
 	Password string `yaml:"password"`
 	// MaxConns bounds the connection pool size (provider connection limit).
 	MaxConns int `yaml:"max_conns"`
+	// CircuitFailureThreshold is the number of consecutive connection failures
+	// that opens a provider's circuit breaker (#128), isolating it from the
+	// failover rotation until a recovery probe succeeds. 0 uses a default.
+	CircuitFailureThreshold int `yaml:"circuit_failure_threshold"`
+	// CircuitCooldown is how long a provider's circuit stays open before a
+	// recovery probe is attempted. 0 uses a default.
+	CircuitCooldown time.Duration `yaml:"circuit_cooldown"`
 	// ConnectTimeout bounds dialing a new connection.
 	ConnectTimeout time.Duration `yaml:"connect_timeout"`
 }
@@ -210,10 +217,12 @@ func Default() Config {
 			MaxBatchesPerRun: 0, // 0 = drain fully per run
 		},
 		NNTP: NNTPConfig{
-			Port:           563,
-			TLS:            true,
-			MaxConns:       10,
-			ConnectTimeout: 30 * time.Second,
+			Port:                    563,
+			TLS:                     true,
+			MaxConns:                10,
+			ConnectTimeout:          30 * time.Second,
+			CircuitFailureThreshold: 3,
+			CircuitCooldown:         30 * time.Second,
 		},
 		Scan: ScanConfig{
 			BatchSize:           10000,
@@ -297,6 +306,8 @@ func applyEnv(cfg *Config) {
 	envStr("GOINDEX_NNTP_PASSWORD", &cfg.NNTP.Password)
 	envInt("GOINDEX_NNTP_MAX_CONNS", &cfg.NNTP.MaxConns)
 	envDur("GOINDEX_NNTP_CONNECT_TIMEOUT", &cfg.NNTP.ConnectTimeout)
+	envInt("GOINDEX_NNTP_CIRCUIT_FAILURE_THRESHOLD", &cfg.NNTP.CircuitFailureThreshold)
+	envDur("GOINDEX_NNTP_CIRCUIT_COOLDOWN", &cfg.NNTP.CircuitCooldown)
 
 	envStrSlice("GOINDEX_SCAN_GROUPS", &cfg.Scan.Groups)
 	envInt("GOINDEX_SCAN_BATCH_SIZE", &cfg.Scan.BatchSize)

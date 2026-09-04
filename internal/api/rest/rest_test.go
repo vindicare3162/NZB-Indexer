@@ -909,6 +909,9 @@ func (p stubProbe) NNTPPoolStats() (int, int)                { return p.open, p.
 func (p stubProbe) NewsServerConfigured(context.Context) bool { return p.configured }
 func (p stubProbe) DefaultJWTSecret() bool                    { return p.defaultSecret }
 func (p stubProbe) Capacity() (int, int, int)                { return 10, 4, 2 }
+func (p stubProbe) ServerHealth() []ProviderHealth {
+	return []ProviderHealth{{Name: "primary", Circuit: "closed"}}
+}
 
 func TestHealthReport(t *testing.T) {
 	env := setup(t)
