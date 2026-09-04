@@ -6,6 +6,19 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Changed
+- Release search now has shareable URL state and a richer UX (#124). The query,
+  category, page, page size, and include-obfuscated toggle are encoded in the
+  URL hash (e.g. `#/?q=movie&cat=2000&page=2`), so a search is deep-linkable and
+  browser back/forward restores it. Typing runs a debounced live search that
+  updates the URL in place (no history spam, bounded API traffic), while
+  submitting or paging adds a history entry. Results use page-based navigation
+  that works with the capped/approximate totals from #120, each row gains a
+  Copy-NZB-URL button, and loading/empty/error/stale states are clearer. The
+  URL-state serialize/parse logic lives in a unit-tested module
+  (`web/src/lib/searchstate.js`); the hash router now exposes `path` + `query`
+  with `pushQuery`/`replaceQuery` and back/forward support.
+
 ### Added
 - Automated Newznab client-contract tests (#136) hardening compatibility with
   Prowlarr, Sonarr, and Radarr. The suite parses the actual XML and asserts the
