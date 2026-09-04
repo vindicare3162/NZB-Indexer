@@ -241,7 +241,7 @@ func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (st
 			}
 			continue
 		}
-		if best := namefromPar2(decoded); best != "" {
+		if best := recoveredName(decoded); best != "" {
 			res.Name = best
 			res.SearchName = release.SearchName(best)
 			break
@@ -261,7 +261,7 @@ func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (st
 			if !HasPar2Magic(decoded) {
 				continue
 			}
-			if best := namefromPar2(decoded); best != "" {
+			if best := recoveredName(decoded); best != "" {
 				res.Name = best
 				res.SearchName = release.SearchName(best)
 				break
@@ -306,6 +306,21 @@ func namefromPar2(decoded []byte) string {
 		return ""
 	}
 	return bestReleaseName(names)
+}
+
+// recoveredName returns a PAR2-recovered release name only when it is an actual
+// improvement: a real, readable name. Some obfuscated posts carry PAR2 sets
+// whose internal filenames are themselves random hex/base64 (e.g.
+// "9c914cea0eb54d4892abd3a5b681032a.par2"); "recovering" such a name is no
+// better than the obfuscated subject and, worse, clears the obfuscated flag so
+// the junk leaks into default search. Reject those, leaving the release as-is
+// (still flagged obfuscated).
+func recoveredName(decoded []byte) string {
+	best := namefromPar2(decoded)
+	if best == "" || release.IsObfuscated(best) {
+		return ""
+	}
+	return best
 }
 
 // classifySegments splits segments into subject-hinted PAR2, subject-hinted
