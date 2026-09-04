@@ -396,8 +396,10 @@ func (a *API) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 }
 
 // applyActiveServer reconfigures the live NNTP pool to the current active
-// server, if a manager is wired. Errors are logged, not surfaced, since the
-// change is already persisted and will take effect on restart regardless.
+// server, if a manager is wired. This applies connection parameters AND safely
+// resizes the pool's connection ceiling (#111), so a max-connections change
+// takes effect live. Errors are logged, not surfaced, since the change is
+// already persisted and would otherwise take effect on the next restart.
 func (a *API) applyActiveServer(r *http.Request) {
 	if a.servers == nil {
 		return

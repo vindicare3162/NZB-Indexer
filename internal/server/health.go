@@ -44,5 +44,15 @@ func (p systemProbe) DefaultJWTSecret() bool {
 }
 
 func (p systemProbe) Capacity() (nntpMaxConns, scanWorkers, postProcessWorkers int) {
-	return p.nntpMaxConns, p.scanWorkers, p.ppWorkers
+	// Report the LIVE pool ceiling so an admin change to a server's
+	// max-connections (which safely resizes the pool, #111) is reflected in
+	// health/status rather than the startup value. Worker counts are the
+	// startup budget; their real parallelism is capped by this live ceiling.
+	max := p.nntpMaxConns
+	if p.pool != nil {
+		if lim, _ := p.pool.MaxConns(); lim > 0 {
+			max = lim
+		}
+	}
+	return max, p.scanWorkers, p.ppWorkers
 }

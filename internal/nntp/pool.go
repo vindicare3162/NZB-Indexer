@@ -21,9 +21,10 @@ type Pool struct {
 	open   int    // total live connections (idle + in use)
 	closed bool
 
-	// sem gates concurrent checkouts to MaxConns; a token is available for
-	// each connection slot.
-	sem chan struct{}
+	// sem gates concurrent checkouts to the current MaxConns. Its capacity can
+	// be resized at runtime (see Resize) without interrupting in-flight
+	// checkouts or exceeding the provider budget during the transition.
+	sem *resizableSem
 }
 
 // New creates a pool with the given configuration using real connections.
@@ -32,26 +33,57 @@ func New(cfg Config) *Pool {
 }
 
 // Reconfigure updates the connection parameters (host, port, TLS, credentials,
-// retry settings) used for new connections. Existing idle connections are
-// closed so subsequent dials use the new settings; in-use connections finish
-// their current operation and are recycled on release.
+// retry settings) used for new connections, and safely resizes the concurrency
+// ceiling to cfg.MaxConns (#111). Existing idle connections are closed so
+// subsequent dials use the new settings; in-use connections finish their
+// current operation and are recycled on release.
 //
-// The concurrency ceiling (MaxConns) is fixed at construction and is not
-// changed here — adjusting the hard connection limit requires a restart. This
-// keeps runtime reconfiguration safe without resizing the internal semaphore.
+// The MaxConns change takes effect immediately for future checkouts. Growing
+// wakes waiting callers; shrinking stops granting new slots beyond the new
+// limit while letting current holders finish — so the number of concurrent
+// connections never exceeds either the old or the new limit during the
+// transition, and no in-flight operation is interrupted.
 func (p *Pool) Reconfigure(cfg Config) {
+	newMax := cfg.MaxConns
+	if newMax < 1 {
+		newMax = 1
+	}
 	p.mu.Lock()
-	// Preserve the original MaxConns ceiling regardless of the incoming value.
-	cfg.MaxConns = cap(p.sem)
+	cfg.MaxConns = newMax
 	p.cfg = cfg
 	idle := p.idle
 	p.idle = nil
 	p.open -= len(idle)
 	p.mu.Unlock()
 
+	// Resize the semaphore outside the pool lock (it has its own lock).
+	p.sem.resize(newMax)
+
+	// Close the now-stale idle connections. If we shrank, closing idle
+	// connections also helps `open` converge toward the new limit; in-use
+	// connections converge as they are released.
 	for _, c := range idle {
 		_ = c.close()
 	}
+}
+
+// Resize changes only the connection ceiling, safely (see Reconfigure for the
+// transition semantics). It is a convenience for callers that want to adjust
+// capacity without touching connection parameters.
+func (p *Pool) Resize(maxConns int) {
+	if maxConns < 1 {
+		maxConns = 1
+	}
+	p.mu.Lock()
+	p.cfg.MaxConns = maxConns
+	p.mu.Unlock()
+	p.sem.resize(maxConns)
+}
+
+// MaxConns reports the current (effective) connection ceiling and how many
+// connections are currently checked out.
+func (p *Pool) MaxConns() (limit, inUse int) {
+	return p.sem.stats()
 }
 
 // config returns a snapshot of the current pool configuration.
@@ -69,24 +101,21 @@ func newWithDialer(cfg Config, d dialer) *Pool {
 	return &Pool{
 		cfg:  cfg,
 		dial: d,
-		sem:  make(chan struct{}, cfg.MaxConns),
+		sem:  newResizableSem(cfg.MaxConns),
 	}
 }
 
 // acquire checks out a connection, creating one if the pool is below capacity.
 // It blocks until a slot is free or ctx is done.
 func (p *Pool) acquire(ctx context.Context) (conn, error) {
-	select {
-	case p.sem <- struct{}{}:
-		// got a slot
-	case <-ctx.Done():
-		return nil, errors.Join(ErrNoConns, ctx.Err())
+	if err := p.sem.acquire(ctx); err != nil {
+		return nil, errors.Join(ErrNoConns, err)
 	}
 
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		<-p.sem
+		p.sem.release()
 		return nil, ErrPoolClosed
 	}
 	// Reuse an idle connection if one is healthy.
@@ -109,12 +138,12 @@ func (p *Pool) acquire(ctx context.Context) (conn, error) {
 	cfg := p.config()
 	c, err := p.dial(cfg)
 	if err != nil {
-		<-p.sem
+		p.sem.release()
 		return nil, err
 	}
 	if err := c.authenticate(cfg.Username, cfg.Password); err != nil {
 		_ = c.close()
-		<-p.sem
+		p.sem.release()
 		return nil, err
 	}
 	p.mu.Lock()
@@ -131,12 +160,12 @@ func (p *Pool) release(c conn, broken bool) {
 		p.open--
 		p.mu.Unlock()
 		_ = c.close()
-		<-p.sem
+		p.sem.release()
 		return
 	}
 	p.idle = append(p.idle, c)
 	p.mu.Unlock()
-	<-p.sem
+	p.sem.release()
 }
 
 // Close discards all connections. The pool is unusable afterwards.
