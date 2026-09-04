@@ -6,6 +6,14 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Added
+- "Current tasks" section on the Admin page (under System health) showing which
+  pipeline stages are running right now — scan/backfill, assemble, build,
+  post-process, enrich (#96). The worker now tracks per-stage activity as a set
+  (loops run concurrently, so several can be active at once) and exposes it via
+  `active_stages` in `/api/v1/admin/status`; the panel shows "Idle" when nothing
+  is running and refreshes with the admin page's 5s poll.
+
 ### Changed
 - Access-log entries now use a concise action label as the message (e.g.
   `backfill`, `postprocess`, `scan`, `stats`, `search`, `nzb download`) instead

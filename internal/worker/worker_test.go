@@ -383,3 +383,73 @@ func waitForAtLeast(t *testing.T, counter *int32, n int32) {
 	}
 	t.Fatalf("counter reached %d, want >= %d", atomic.LoadInt32(counter), n)
 }
+
+// blockingPP blocks in Run until released, to simulate a slow post-process.
+type blockingPP struct {
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
+}
+
+func (bp *blockingPP) Run(ctx context.Context) (postprocess.Result, error) {
+	bp.startOnce.Do(func() { close(bp.started) })
+	select {
+	case <-bp.release:
+	case <-ctx.Done():
+	}
+	return postprocess.Result{}, nil
+}
+
+// TestActiveStagesConcurrent verifies that ActiveStages reflects every stage
+// running at once, not just the last one set. A slow assemble and a slow
+// post-process run concurrently, so both must appear.
+func TestActiveStagesConcurrent(t *testing.T) {
+	g := &mockGroups{groups: []store.Group{{Name: "g1"}}}
+	s := &mockScanner{}
+	asmStarted, releaseAsm := make(chan struct{}), make(chan struct{})
+	ppStarted, releasePP := make(chan struct{}), make(chan struct{})
+	a := &blockingAsm{started: asmStarted, release: releaseAsm}
+	b := &mockBuild{}
+	p := &blockingPP{started: ppStarted, release: releasePP}
+
+	w := New(g, s, a, b, p, nil, nil, Options{
+		ScanInterval:        time.Hour, // keep scan out of the way
+		DownstreamInterval:  time.Hour,
+		BuildInterval:       time.Hour,
+		PostProcessInterval: time.Hour,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	// Both the assemble and post-process loops run an initial pass at startup
+	// and will block inside it.
+	<-asmStarted
+	<-ppStarted
+
+	m := w.MetricsSnapshot()
+	got := map[string]bool{}
+	for _, s := range m.ActiveStages {
+		got[s] = true
+	}
+	if !got["assemble"] || !got["postprocess"] {
+		t.Errorf("ActiveStages = %v, want both assemble and postprocess", m.ActiveStages)
+	}
+
+	// Release both; the stages should clear.
+	close(releaseAsm)
+	close(releasePP)
+	waitForNoActiveStages(t, w)
+}
+
+func waitForNoActiveStages(t *testing.T, w *Worker) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(w.MetricsSnapshot().ActiveStages) == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("active stages did not clear: %v", w.MetricsSnapshot().ActiveStages)
+}

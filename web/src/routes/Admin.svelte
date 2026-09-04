@@ -46,6 +46,17 @@
     return `${n.toFixed(1)} ${units[i]}`;
   }
 
+  // Friendly labels for the worker's pipeline stages (from status.active_stages).
+  const stageLabels = {
+    scan: 'Scanning (forward)',
+    backfill: 'Backfilling',
+    assemble: 'Assembling binaries',
+    release: 'Building releases',
+    postprocess: 'Post-processing',
+    enrich: 'Metadata enrichment',
+  };
+  const activeStages = $derived((status && status.active_stages) || []);
+
   function loadSchedule() {
     api.schedule().then((s) => {
       if (s) schedule = {
@@ -77,9 +88,13 @@
     api.logs(logLevel, 200).then((l) => { logs = l || []; }).catch(() => {});
   }
 
-  // Auto-refresh logs every 5s while the admin page is mounted.
+  // Auto-refresh logs + pipeline status (for Current tasks) every 5s while the
+  // admin page is mounted.
   $effect(() => {
-    logTimer = setInterval(loadLogs, 5000);
+    logTimer = setInterval(() => {
+      loadLogs();
+      api.status().then((s) => { status = s; }).catch(() => {});
+    }, 5000);
     return () => clearInterval(logTimer);
   });
 
@@ -277,6 +292,19 @@
     {/if}
   </div>
 {/if}
+
+<div class="panel">
+  <h3 style="margin-top:0">Current tasks</h3>
+  {#if activeStages.length > 0}
+    <ul style="margin:0; padding-left:1.1rem">
+      {#each activeStages as s}
+        <li><span class="badge" style="background:#1a7f37">running</span> {stageLabels[s] || s}</li>
+      {/each}
+    </ul>
+  {:else}
+    <p class="muted" style="margin:0">Idle — no pipeline tasks running.</p>
+  {/if}
+</div>
 
 <div class="panel">
   <h3 style="margin-top:0">News servers</h3>
