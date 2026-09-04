@@ -35,6 +35,25 @@ Every one of these grows with `parts`. The partial grouping index is the one
 that stays bounded (it shrinks as parts get assigned), which is why it is cheap
 to estimate from.
 
+## Release search indexing
+
+Release search tokenises the query and requires each token to appear in
+`search_name` via `LIKE '%token%'`. The leading wildcard makes a plain btree
+index unusable, so a **GIN trigram index** (`pg_trgm`) backs the search:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX idx_releases_search_name_trgm ON releases USING gin (search_name gin_trgm_ops);
+```
+
+Measured plan for a substring search (with `enable_seqscan=off` to reveal
+eligibility) is a `Bitmap Index Scan on idx_releases_search_name_trgm`, i.e. the
+index serves the `LIKE '%token%'` predicate rather than a sequential scan. The
+query semantics are unchanged; the index only makes broad searches scale as the
+catalog grows. `pg_trgm` is a trusted extension (PostgreSQL 13+), so the DB
+owner can create it without superuser; restricted deployments should create the
+extension once as a superuser.
+
 ## Where the load concentrates
 
 1. **Ingest writes** — bulk `INSERT` of parts during scans (batched, `batch_size`
