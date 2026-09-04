@@ -97,6 +97,23 @@ type Metrics struct {
 	// loops run on independent goroutines, so more than one can be active at
 	// once (e.g. "backfill" and "postprocess"). Empty means idle.
 	ActiveStages []string `json:"active_stages"`
+	// ScanProgress reports which group the scan/backfill loop is currently on
+	// and how far through the group list it is. Nil when no scan is running.
+	// Groups are scanned sequentially, so this shows the single in-flight group.
+	ScanProgress *ScanProgress `json:"scan_progress,omitempty"`
+}
+
+// ScanProgress is a snapshot of the sequential scan loop's position through the
+// active group list.
+type ScanProgress struct {
+	// Group is the name of the group currently being scanned.
+	Group string `json:"group"`
+	// Index is the 1-based position of Group within the pass, and Total is the
+	// number of groups in the pass.
+	Index int `json:"index"`
+	Total int `json:"total"`
+	// Backfill is true when this is a backfill pass (vs a forward scan).
+	Backfill bool `json:"backfill"`
 }
 
 // Worker runs and coordinates the pipeline. The scan loop and the downstream
@@ -140,6 +157,9 @@ type Worker struct {
 	// active is the set of pipeline stages currently executing (guarded by mu).
 	// Loops run concurrently, so several may be active at once.
 	active map[string]bool
+	// scanProgress tracks the sequential scan loop's current group/position
+	// (guarded by mu). Nil when no scan/backfill is running.
+	scanProgress *ScanProgress
 }
 
 // scanTrigger is a manual scan request. backfill selects a backfill pass.
@@ -436,6 +456,7 @@ func (w *Worker) runScan(ctx context.Context, group string, backfill bool) {
 	}
 	w.stageStart(stage)
 	defer w.stageEnd(stage)
+	defer w.clearScanProgress()
 
 	groups, err := w.targetGroups(ctx, group)
 	if err != nil {
@@ -443,10 +464,12 @@ func (w *Worker) runScan(ctx context.Context, group string, backfill bool) {
 		return
 	}
 
-	for _, g := range groups {
+	total := len(groups)
+	for i, g := range groups {
 		if ctx.Err() != nil {
 			return
 		}
+		w.setScanProgress(g.Name, i+1, total, backfill)
 		var (
 			res scanner.ScanResult
 			err error
@@ -619,6 +642,10 @@ func (w *Worker) snapshotLocked() Metrics {
 		sort.Strings(stages)
 		m.ActiveStages = stages
 	}
+	if w.scanProgress != nil {
+		sp := *w.scanProgress // copy so callers can't mutate internal state
+		m.ScanProgress = &sp
+	}
 	return m
 }
 
@@ -655,5 +682,19 @@ func (w *Worker) recordError(err error) {
 	w.log.Warn("pipeline stage error", "err", err)
 	w.mu.Lock()
 	w.metrics.LastError = err.Error()
+	w.mu.Unlock()
+}
+
+// setScanProgress records the group the scan loop is currently working on.
+func (w *Worker) setScanProgress(group string, index, total int, backfill bool) {
+	w.mu.Lock()
+	w.scanProgress = &ScanProgress{Group: group, Index: index, Total: total, Backfill: backfill}
+	w.mu.Unlock()
+}
+
+// clearScanProgress clears scan progress when a scan/backfill pass finishes.
+func (w *Worker) clearScanProgress() {
+	w.mu.Lock()
+	w.scanProgress = nil
 	w.mu.Unlock()
 }

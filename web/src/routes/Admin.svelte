@@ -56,6 +56,16 @@
     enrich: 'Metadata enrichment',
   };
   const activeStages = $derived((status && status.active_stages) || []);
+  const scanProgress = $derived((status && status.scan_progress) || null);
+
+  // Compose a label for a stage, appending scan progress for scan/backfill.
+  function stageLabel(s) {
+    const base = stageLabels[s] || s;
+    if ((s === 'scan' || s === 'backfill') && scanProgress) {
+      return `${base}: ${scanProgress.group} (${scanProgress.index}/${scanProgress.total})`;
+    }
+    return base;
+  }
 
   function loadSchedule() {
     api.schedule().then((s) => {
@@ -298,7 +308,7 @@
   {#if activeStages.length > 0}
     <ul style="margin:0; padding-left:1.1rem">
       {#each activeStages as s}
-        <li><span class="badge" style="background:#1a7f37">running</span> {stageLabels[s] || s}</li>
+        <li><span class="badge" style="background:#1a7f37">running</span> {stageLabel(s)}</li>
       {/each}
     </ul>
   {:else}

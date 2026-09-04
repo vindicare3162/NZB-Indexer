@@ -453,3 +453,36 @@ func waitForNoActiveStages(t *testing.T, w *Worker) {
 	}
 	t.Errorf("active stages did not clear: %v", w.MetricsSnapshot().ActiveStages)
 }
+
+// TestScanProgressReported verifies that while a scan is in flight, status
+// reports the current group and its position in the group list, and that
+// progress clears once the scan finishes.
+func TestScanProgressReported(t *testing.T) {
+	g := &mockGroups{groups: []store.Group{{Name: "g1"}, {Name: "g2"}, {Name: "g3"}}}
+	started, release := make(chan struct{}), make(chan struct{})
+	s := &blockingScanner{started: started, release: release}
+	a := &mockAsm{}
+	b := &mockBuild{}
+	p := &mockPP{}
+	w := New(g, s, a, b, p, nil, nil, Options{ScanInterval: time.Hour})
+
+	done := make(chan struct{})
+	go func() { w.doScan(context.Background(), "", false); close(done) }()
+
+	// The scanner blocks inside the first group's ScanForward.
+	<-started
+	sp := w.MetricsSnapshot().ScanProgress
+	if sp == nil {
+		t.Fatal("expected scan progress while scanning")
+	}
+	if sp.Group != "g1" || sp.Index != 1 || sp.Total != 3 || sp.Backfill {
+		t.Errorf("scan progress = %+v, want group=g1 index=1 total=3 backfill=false", sp)
+	}
+
+	// Let the (single blocking) forward scan proceed to completion.
+	close(release)
+	<-done
+	if sp := w.MetricsSnapshot().ScanProgress; sp != nil {
+		t.Errorf("scan progress should be cleared after the pass, got %+v", sp)
+	}
+}
