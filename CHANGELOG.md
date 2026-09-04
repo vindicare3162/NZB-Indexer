@@ -7,6 +7,22 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- PostgreSQL and NNTP resource budgeting (#117). Pipeline concurrency is now
+  sized against **both** the effective NNTP capacity and the PostgreSQL pool
+  instead of the NNTP pool alone. Startup reserves database headroom for the
+  HTTP API and admin control plane (`GOINDEX_DB_RESERVED_CONNS`; default
+  auto-derives ≈¼ of the pool, `[1,4]`, always leaving ≥1 for the pipeline) and
+  clamps the combined scan + post-process worker footprint to the remaining
+  "DB pipeline budget", so pipeline load cannot starve searches/admin requests.
+  Explicit overrides (`GOINDEX_SCAN_CONCURRENCY`) are honoured but log a warning
+  when they overcommit the budget. New Prometheus metrics expose pool
+  utilisation and saturation: `goindex_nntp_pool_*`, `goindex_db_pool_*`
+  (including `goindex_db_pool_empty_acquires_total` and
+  `goindex_db_pool_acquire_wait_seconds_total`), and the static
+  `goindex_db_reserved_api_connections` / `goindex_db_pipeline_budget_connections`.
+  A constrained-pool test proves work queues on connection acquisition rather
+  than deadlocking or starving the API. `docs/postgres-tuning.md` explains how
+  provider limits, pool size, worker counts, and the reservation interact.
 - Aggregated admin overview endpoint `GET /api/v1/admin/overview` (#110). It
   returns the whole dashboard — health, worker status, pipeline statistics,
   groups, servers, users, schedule, and bounded recent logs — in one

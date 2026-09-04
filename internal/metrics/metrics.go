@@ -47,6 +47,10 @@ type Providers struct {
 	Pipeline  func(ctx context.Context) (PipelineSnapshot, error)
 	Worker    func() WorkerSnapshot
 	AuthCache func() AuthCacheSnapshot
+	// Pools reports NNTP + PostgreSQL pool utilisation and saturation so
+	// operators can see when the pipeline is contending for connections and
+	// whether the API/control plane has headroom (#117). Nil omits the metrics.
+	Pools func() PoolSnapshot
 }
 
 // AuthCacheSnapshot reports API-key auth cache activity.
@@ -55,6 +59,31 @@ type AuthCacheSnapshot struct {
 	Misses    float64
 	Evictions float64
 	Size      float64
+}
+
+// PoolSnapshot reports connection-pool utilisation and saturation for the two
+// pools the system contends for (#117).
+type PoolSnapshot struct {
+	// NNTP connection pool.
+	NNTPOpen float64 // live connections (idle + in use)
+	NNTPIdle float64 // ready-to-use connections
+	NNTPMax  float64 // configured ceiling
+
+	// PostgreSQL (pgx) pool.
+	DBTotal    float64 // total connections currently in the pool
+	DBIdle     float64 // idle connections
+	DBAcquired float64 // connections currently checked out
+	DBMax      float64 // pool ceiling
+	// DBEmptyAcquires is the cumulative count of acquisitions that had to wait
+	// for a connection because the pool was empty (saturation signal).
+	DBEmptyAcquires float64
+	// DBAcquireWaitSeconds is the cumulative time spent waiting to acquire a
+	// connection (pgx AcquireDuration), a direct pool-wait signal.
+	DBAcquireWaitSeconds float64
+
+	// Budget (static, from startup sizing).
+	DBReservedAPIConns float64 // connections reserved for API/control plane
+	DBPipelineBudget   float64 // connections the pipeline may use concurrently
 }
 
 // Metrics bundles the registry, HTTP instruments, and the scrape handler.

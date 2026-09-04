@@ -39,6 +39,18 @@ type pipelineCollector struct {
 	authCacheMisses    *prometheus.Desc
 	authCacheEvictions *prometheus.Desc
 	authCacheSize      *prometheus.Desc
+
+	nntpPoolOpen         *prometheus.Desc
+	nntpPoolIdle         *prometheus.Desc
+	nntpPoolMax          *prometheus.Desc
+	dbPoolTotal          *prometheus.Desc
+	dbPoolIdle           *prometheus.Desc
+	dbPoolAcquired       *prometheus.Desc
+	dbPoolMax            *prometheus.Desc
+	dbPoolEmptyAcquires  *prometheus.Desc
+	dbPoolAcquireWaitSec *prometheus.Desc
+	dbReservedAPIConns   *prometheus.Desc
+	dbPipelineBudget     *prometheus.Desc
 }
 
 func newPipelineCollector(p Providers) *pipelineCollector {
@@ -68,6 +80,18 @@ func newPipelineCollector(p Providers) *pipelineCollector {
 		authCacheMisses:         d("goindex_apikey_cache_misses_total", "API-key auth cache misses."),
 		authCacheEvictions:      d("goindex_apikey_cache_evictions_total", "API-key auth cache evictions."),
 		authCacheSize:           d("goindex_apikey_cache_size", "API-key auth cache current entry count."),
+
+		nntpPoolOpen:         d("goindex_nntp_pool_open_connections", "NNTP pool live connections (idle + in use)."),
+		nntpPoolIdle:         d("goindex_nntp_pool_idle_connections", "NNTP pool idle (ready-to-use) connections."),
+		nntpPoolMax:          d("goindex_nntp_pool_max_connections", "NNTP pool connection ceiling."),
+		dbPoolTotal:          d("goindex_db_pool_total_connections", "PostgreSQL pool total connections."),
+		dbPoolIdle:           d("goindex_db_pool_idle_connections", "PostgreSQL pool idle connections."),
+		dbPoolAcquired:       d("goindex_db_pool_acquired_connections", "PostgreSQL pool connections currently checked out."),
+		dbPoolMax:            d("goindex_db_pool_max_connections", "PostgreSQL pool connection ceiling."),
+		dbPoolEmptyAcquires:  d("goindex_db_pool_empty_acquires_total", "PostgreSQL acquisitions that waited on an empty pool (saturation)."),
+		dbPoolAcquireWaitSec: d("goindex_db_pool_acquire_wait_seconds_total", "Cumulative time spent waiting to acquire a PostgreSQL connection."),
+		dbReservedAPIConns:   d("goindex_db_reserved_api_connections", "PostgreSQL connections reserved for the API/control plane (#117)."),
+		dbPipelineBudget:     d("goindex_db_pipeline_budget_connections", "PostgreSQL connections the pipeline may use concurrently (#117)."),
 	}
 }
 
@@ -125,6 +149,27 @@ func (c *pipelineCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.authCacheMisses, prometheus.CounterValue, a.Misses)
 		ch <- prometheus.MustNewConstMetric(c.authCacheEvictions, prometheus.CounterValue, a.Evictions)
 		ch <- prometheus.MustNewConstMetric(c.authCacheSize, prometheus.GaugeValue, a.Size)
+	}
+
+	if c.p.Pools != nil {
+		p := c.p.Pools()
+		gauge := func(desc *prometheus.Desc, v float64) {
+			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v)
+		}
+		counter := func(desc *prometheus.Desc, v float64) {
+			ch <- prometheus.MustNewConstMetric(desc, prometheus.CounterValue, v)
+		}
+		gauge(c.nntpPoolOpen, p.NNTPOpen)
+		gauge(c.nntpPoolIdle, p.NNTPIdle)
+		gauge(c.nntpPoolMax, p.NNTPMax)
+		gauge(c.dbPoolTotal, p.DBTotal)
+		gauge(c.dbPoolIdle, p.DBIdle)
+		gauge(c.dbPoolAcquired, p.DBAcquired)
+		gauge(c.dbPoolMax, p.DBMax)
+		counter(c.dbPoolEmptyAcquires, p.DBEmptyAcquires)
+		counter(c.dbPoolAcquireWaitSec, p.DBAcquireWaitSeconds)
+		gauge(c.dbReservedAPIConns, p.DBReservedAPIConns)
+		gauge(c.dbPipelineBudget, p.DBPipelineBudget)
 	}
 
 	ch <- prometheus.MustNewConstMetric(c.scrapeErrors, prometheus.CounterValue, scrapeErr)

@@ -75,6 +75,12 @@ type DatabaseConfig struct {
 	SSLMode string `yaml:"ssl_mode"`
 	// MaxConns is the maximum number of pooled connections.
 	MaxConns int `yaml:"max_conns"`
+	// ReservedConns is how many database connections to hold back for the HTTP
+	// API and admin control plane so pipeline workers cannot consume the whole
+	// pool and starve searches/admin requests (#117). It must be less than
+	// MaxConns. A negative value (the default) means "auto-derive from the pool
+	// size"; 0 disables the reservation (unsafe under heavy pipeline load).
+	ReservedConns int `yaml:"reserved_conns"`
 }
 
 // NNTPConfig configures the upstream Usenet provider connection.
@@ -158,12 +164,13 @@ func Default() Config {
 			WriteTimeout: 60 * time.Second,
 		},
 		Database: DatabaseConfig{
-			Host:     "localhost",
-			Port:     5432,
-			User:     "goindex",
-			Name:     "goindex",
-			SSLMode:  "disable",
-			MaxConns: 10,
+			Host:          "localhost",
+			Port:          5432,
+			User:          "goindex",
+			Name:          "goindex",
+			SSLMode:       "disable",
+			MaxConns:      10,
+			ReservedConns: -1, // -1 = auto-derive API/control-plane headroom
 		},
 		Metadata: MetadataConfig{
 			Enabled:  false,
@@ -249,6 +256,7 @@ func applyEnv(cfg *Config) {
 	envStr("GOINDEX_DB_NAME", &cfg.Database.Name)
 	envStr("GOINDEX_DB_SSL_MODE", &cfg.Database.SSLMode)
 	envInt("GOINDEX_DB_MAX_CONNS", &cfg.Database.MaxConns)
+	envInt("GOINDEX_DB_RESERVED_CONNS", &cfg.Database.ReservedConns)
 
 	envStr("GOINDEX_NNTP_HOST", &cfg.NNTP.Host)
 	envInt("GOINDEX_NNTP_PORT", &cfg.NNTP.Port)
@@ -302,6 +310,9 @@ func (c Config) Validate() error {
 		if c.Database.Name == "" {
 			errs = append(errs, "database.name is required (or set database.dsn)")
 		}
+	}
+	if c.Database.ReservedConns >= c.Database.MaxConns {
+		errs = append(errs, "database.reserved_conns must be less than database.max_conns (leave at least one connection for the pipeline)")
 	}
 	if c.Database.MaxConns <= 0 {
 		errs = append(errs, "database.max_conns must be greater than 0")
