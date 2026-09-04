@@ -191,6 +191,17 @@ type Worker struct {
 	scanCompleted int
 	scanTotal     int
 	scanBackfill  bool
+
+	// scanRecorder persists per-group scan outcomes (#114). Optional: when nil,
+	// per-group scan progress/error state is not recorded (aggregate metrics
+	// still update). The store.Store satisfies it.
+	scanRecorder GroupScanRecorder
+}
+
+// GroupScanRecorder persists the outcome of the most recent scan/backfill pass
+// for a group (#114). Optional; the store.Store satisfies it.
+type GroupScanRecorder interface {
+	RecordGroupScan(ctx context.Context, id int64, o store.GroupScanOutcome) error
 }
 
 // scanTrigger is a manual scan request. backfill selects a backfill pass.
@@ -258,6 +269,11 @@ func New(groups GroupLister, scan Scanner, asm Assembler, build ReleaseBuilder, 
 // SetJobStore attaches a job store so manual triggers are recorded as
 // persistent jobs with IDs, progress, and cancellation (#113). Optional.
 func (w *Worker) SetJobStore(js JobStore) { w.jobs = js }
+
+// SetGroupScanRecorder attaches a recorder so each group's scan/backfill
+// outcome (time, counts, observed server head, error) is persisted for
+// per-group progress reporting (#114). Optional.
+func (w *Worker) SetGroupScanRecorder(r GroupScanRecorder) { w.scanRecorder = r }
 
 // newJobID returns a fresh job identifier.
 func newJobID() string { return uuid.NewString() }
@@ -662,6 +678,7 @@ func (w *Worker) runScan(ctx context.Context, group string, backfill bool) {
 					w.metrics.PartsInserted += res.PartsInserted
 					w.mu.Unlock()
 				}
+				w.recordGroupScan(ctx, g, res, serr)
 				w.scanGroupEnd(g.Name)
 			}
 		}()
@@ -1012,6 +1029,40 @@ func (w *Worker) recordError(err error) {
 	w.mu.Lock()
 	w.metrics.LastError = err.Error()
 	w.mu.Unlock()
+}
+
+// recordGroupScan persists the per-group outcome of a scan/backfill pass (#114)
+// when a recorder is attached. Best-effort: a failure to record is logged and
+// swallowed so it never disrupts the pass. A cancelled pass (ctx done) is not
+// recorded, since the outcome is incomplete and the write would fail anyway.
+func (w *Worker) recordGroupScan(ctx context.Context, g store.Group, res scanner.ScanResult, scanErr error) {
+	if w.scanRecorder == nil || ctx.Err() != nil {
+		return
+	}
+	errMsg := ""
+	if scanErr != nil {
+		errMsg = scanErr.Error()
+	}
+	// Use a short-lived context detached from cancellation so a just-finished
+	// pass still records even if the parent is about to be cancelled.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := w.scanRecorder.RecordGroupScan(rctx, g.ID, store.GroupScanOutcome{
+		Backfill:   w.currentPassBackfill(),
+		Articles:   res.ArticlesPulled,
+		Parts:      res.PartsInserted,
+		ServerHigh: res.ServerHigh,
+		Err:        errMsg,
+	}); err != nil {
+		w.log.Warn("failed to record group scan state", "group", g.Name, "err", err)
+	}
+}
+
+// currentPassBackfill reports whether the active scan pass is a backfill.
+func (w *Worker) currentPassBackfill() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.scanBackfill
 }
 
 // scanPassBegin initialises pass-level progress for a scan/backfill of total

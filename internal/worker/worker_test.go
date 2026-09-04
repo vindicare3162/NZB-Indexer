@@ -769,3 +769,71 @@ func TestTriggerQueueFullFailsJob(t *testing.T) {
 		t.Error("expected at least one job marked failed due to full queue")
 	}
 }
+
+// --- #114 per-group scan recording test ---
+
+// fakeScanRecorder records per-group scan outcomes for assertion.
+type fakeScanRecorder struct {
+	mu      sync.Mutex
+	byGroup map[int64]store.GroupScanOutcome
+	calls   int
+}
+
+func newFakeScanRecorder() *fakeScanRecorder {
+	return &fakeScanRecorder{byGroup: map[int64]store.GroupScanOutcome{}}
+}
+
+func (f *fakeScanRecorder) RecordGroupScan(_ context.Context, id int64, o store.GroupScanOutcome) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.byGroup[id] = o
+	f.calls++
+	return nil
+}
+
+func (f *fakeScanRecorder) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// idScanner is a scanner that reports a ServerHigh and records which groups it
+// scanned forward, so we can assert per-group recording captures the outcome.
+type idScanner struct {
+	serverHigh int64
+}
+
+func (s *idScanner) ScanForward(_ context.Context, _ string) (scanner.ScanResult, error) {
+	return scanner.ScanResult{ArticlesPulled: 7, PartsInserted: 6, ServerHigh: s.serverHigh}, nil
+}
+func (s *idScanner) ScanBackfill(_ context.Context, _ string) (scanner.ScanResult, error) {
+	return scanner.ScanResult{ArticlesPulled: 3, PartsInserted: 2, ServerHigh: s.serverHigh}, nil
+}
+
+// idGroups lists groups with explicit IDs so the recorder can key by id.
+type idGroups struct{ groups []store.Group }
+
+func (m *idGroups) ListGroups(context.Context, bool) ([]store.Group, error) { return m.groups, nil }
+
+func TestRunScanRecordsPerGroupOutcome(t *testing.T) {
+	g := &idGroups{groups: []store.Group{{ID: 11, Name: "g-a"}, {ID: 22, Name: "g-b"}}}
+	s := &idScanner{serverHigh: 9000}
+	w := New(g, s, &mockAsm{}, &mockBuild{}, &mockPP{}, nil, nil, Options{ScanInterval: time.Hour})
+	rec := newFakeScanRecorder()
+	w.SetGroupScanRecorder(rec)
+
+	w.doScan(context.Background(), "", false)
+
+	if rec.count() != 2 {
+		t.Fatalf("recorder calls = %d, want 2 (one per group)", rec.count())
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	a := rec.byGroup[11]
+	if a.Articles != 7 || a.Parts != 6 || a.ServerHigh != 9000 || a.Backfill || a.Err != "" {
+		t.Errorf("group 11 outcome = %+v, want articles 7 parts 6 head 9000 forward no-err", a)
+	}
+	if _, ok := rec.byGroup[22]; !ok {
+		t.Error("expected group 22 to be recorded")
+	}
+}

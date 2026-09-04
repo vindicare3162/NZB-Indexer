@@ -162,6 +162,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	// Persistent pipeline jobs (#113): record manual triggers as jobs, and mark
 	// any jobs left running by a previous process as interrupted (recovery).
 	wrk.SetJobStore(st)
+	// Per-group scan progress/error reporting (#114): persist each group's
+	// scan/backfill outcome as passes run.
+	wrk.SetGroupScanRecorder(st)
 	if n, err := st.MarkInterruptedJobs(ctx); err != nil {
 		logger.Warn("failed to recover interrupted jobs", "err", err)
 	} else if n > 0 {

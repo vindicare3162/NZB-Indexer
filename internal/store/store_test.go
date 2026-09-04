@@ -59,8 +59,8 @@ func TestMigrateUpDownAndVersion(t *testing.T) {
 	if dirty {
 		t.Fatal("schema is dirty after migrate up")
 	}
-	if v != 15 {
-		t.Fatalf("expected schema version 15, got %d", v)
+	if v != 16 {
+		t.Fatalf("expected schema version 16, got %d", v)
 	}
 
 	// Re-running up should be a no-op, not an error.
@@ -165,6 +165,79 @@ func TestGroupBackfillTarget(t *testing.T) {
 	// Not found.
 	if err := st.SetGroupBackfillTarget(ctx, 99999, &days, nil); err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestRecordGroupScan covers per-group scan progress/error reporting (#114):
+// a successful pass records time, counts and server head and clears any error;
+// a subsequent failing pass records the error while preserving the last known
+// server head; and a following success clears the error again.
+func TestRecordGroupScan(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+
+	g, err := st.UpsertGroup(ctx, "alt.binaries.scanstate", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fresh group has no scan state.
+	if g.LastScanAt != nil || g.LastScanError != "" || g.ServerHigh != 0 {
+		t.Errorf("fresh group should have empty scan state, got %+v", g)
+	}
+
+	// A successful forward pass.
+	if err := st.RecordGroupScan(ctx, g.ID, GroupScanOutcome{
+		Backfill: false, Articles: 120, Parts: 100, ServerHigh: 5000, Err: "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetGroupByName(ctx, g.Name)
+	if got.LastScanAt == nil {
+		t.Error("last_scan_at should be set after a pass")
+	}
+	if got.LastScanArticles != 120 || got.LastScanParts != 100 {
+		t.Errorf("counts = %d/%d, want 120/100", got.LastScanArticles, got.LastScanParts)
+	}
+	if got.ServerHigh != 5000 {
+		t.Errorf("server_high = %d, want 5000", got.ServerHigh)
+	}
+	if got.LastScanBackfill {
+		t.Error("last_scan_backfill should be false for a forward pass")
+	}
+	if got.LastScanError != "" || got.LastScanErrorAt != nil {
+		t.Errorf("successful pass should clear error, got %q / %v", got.LastScanError, got.LastScanErrorAt)
+	}
+
+	// A failing backfill pass: records the error; server_high not observed (0)
+	// must NOT overwrite the last known head.
+	if err := st.RecordGroupScan(ctx, g.ID, GroupScanOutcome{
+		Backfill: true, Articles: 0, Parts: 0, ServerHigh: 0, Err: "boom: connection reset",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetGroupByName(ctx, g.Name)
+	if got.LastScanError != "boom: connection reset" || got.LastScanErrorAt == nil {
+		t.Errorf("failing pass should record error+time, got %q / %v", got.LastScanError, got.LastScanErrorAt)
+	}
+	if !got.LastScanBackfill {
+		t.Error("last_scan_backfill should be true after a backfill pass")
+	}
+	if got.ServerHigh != 5000 {
+		t.Errorf("server_high should be preserved at 5000 when unobserved, got %d", got.ServerHigh)
+	}
+
+	// A subsequent success clears the error again and updates the head.
+	if err := st.RecordGroupScan(ctx, g.ID, GroupScanOutcome{
+		Backfill: false, Articles: 5, Parts: 4, ServerHigh: 5200, Err: "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetGroupByName(ctx, g.Name)
+	if got.LastScanError != "" || got.LastScanErrorAt != nil {
+		t.Errorf("recovery should clear error, got %q / %v", got.LastScanError, got.LastScanErrorAt)
+	}
+	if got.ServerHigh != 5200 {
+		t.Errorf("server_high = %d, want 5200", got.ServerHigh)
 	}
 }
 

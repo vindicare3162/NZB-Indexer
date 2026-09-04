@@ -32,6 +32,17 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Per-group scan progress and error reporting (#114). Each group now records the
+  outcome of its most recent scan/backfill pass — when it ran, whether it was a
+  forward scan or backfill, how many articles/parts it pulled, the server's
+  observed high-water article number, and the last error (with timestamp) if the
+  pass failed. A new migration (0016) adds these columns to `groups`, the worker
+  records the outcome after each per-group pass (best-effort, non-blocking), and
+  the fields flow through the existing `GET /admin/groups` and `/admin/overview`
+  responses. The admin Groups table gains Lag (how far behind the server head)
+  and Last scan columns plus an error badge; the formatting logic lives in a
+  unit-tested module (`web/src/lib/groupscan.js`). A failed pass preserves the
+  last known server head rather than zeroing it.
 - Persistent pipeline jobs with IDs, progress, cancellation, and history (#113).
   Manual scan, backfill, and post-processing triggers now create a durable job
   record (UUID id) tracked through a lifecycle (`queued` → `running` →
