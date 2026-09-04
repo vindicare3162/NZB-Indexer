@@ -3,7 +3,11 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // PendingRelease is a release awaiting post-processing, with the message-ids
@@ -17,6 +21,33 @@ type PendingRelease struct {
 // post-processing before it is left failed. It covers transient fetch failures
 // without retrying genuinely-unrecoverable releases forever.
 const MaxPPAttempts = 3
+
+// ppBaseBackoff and ppMaxBackoff bound the exponential backoff between
+// post-processing retries of a transiently-failed release (#132). The delay is
+// ppBaseBackoff * 2^(attempts-1), capped at ppMaxBackoff.
+const (
+	ppBaseBackoff = 5 * time.Minute
+	ppMaxBackoff  = 6 * time.Hour
+)
+
+// PPBackoff returns the delay before the next retry of a release that has
+// failed `attempts` times, using capped exponential backoff (#132). attempts is
+// the number of attempts made so far (>=1 after the first failure).
+func PPBackoff(attempts int) time.Duration {
+	if attempts < 1 {
+		attempts = 1
+	}
+	// Cap the shift so 2^(attempts-1) can't overflow before the min() clamp.
+	shift := attempts - 1
+	if shift > 20 {
+		shift = 20
+	}
+	d := ppBaseBackoff << uint(shift)
+	if d <= 0 || d > ppMaxBackoff {
+		return ppMaxBackoff
+	}
+	return d
+}
 
 // ListPendingReleases returns releases due for post-processing: those still
 // 'pending', plus 'failed' releases that have not yet exhausted their retry
@@ -36,8 +67,12 @@ func (s *Store) ListPendingReleases(ctx context.Context, limit int) ([]PendingRe
 WITH due AS (
     SELECT id
     FROM releases
-    WHERE pp_status = 'pending'
-       OR (pp_status = 'failed' AND pp_attempts < $2)
+    WHERE pp_permanent = FALSE
+      AND (
+        pp_status = 'pending'
+        OR (pp_status = 'failed' AND pp_attempts < $2
+            AND (next_retry_at IS NULL OR next_retry_at <= now()))
+      )
     ORDER BY (pp_status = 'pending') DESC, created_at DESC
     LIMIT $1
 )
@@ -101,28 +136,81 @@ ORDER BY r.id, p.part_number, p.article_number`, ids)
 	return out, segRows.Err()
 }
 
-// RequeueFailedReleases moves every 'failed' release back into the
-// post-processing queue by resetting it to 'pending' and clearing its attempt
-// counter, so the next pass reprocesses it. It returns the number of releases
-// reset. Intended for an operator "retry failed" action after a temporary
-// provider problem is resolved.
+// RequeueFailedReleases moves every 'failed' release (including those marked
+// permanently failed) back into the post-processing queue: it resets them to
+// 'pending', clears the attempt counter, the backoff timer, the permanent flag,
+// and the last error, so the next pass reprocesses them. It returns the number
+// of releases reset. Intended as an operator "retry failed" override after a
+// provider problem is resolved (#132).
 func (s *Store) RequeueFailedReleases(ctx context.Context) (int64, error) {
-	ct, err := s.pool.Exec(ctx,
-		`UPDATE releases SET pp_status = 'pending', pp_attempts = 0, updated_at = now() WHERE pp_status = 'failed'`)
+	ct, err := s.pool.Exec(ctx, `
+UPDATE releases
+SET pp_status = 'pending', pp_attempts = 0, pp_permanent = FALSE,
+    next_retry_at = NULL, last_error = '', updated_at = now()
+WHERE pp_status = 'failed'`)
 	if err != nil {
 		return 0, fmt.Errorf("requeue failed releases: %w", err)
 	}
 	return ct.RowsAffected(), nil
 }
 
-// SetReleasePPStatus updates a release's post-processing status.
+// SetReleasePPStatus updates a release's post-processing status. On success
+// (status 'done') it clears the failure bookkeeping so a re-recovered release
+// doesn't carry a stale error/backoff.
 func (s *Store) SetReleasePPStatus(ctx context.Context, id int64, status string) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE releases SET pp_status = $2, updated_at = now() WHERE id = $1`, id, status)
+	_, err := s.pool.Exec(ctx, `
+UPDATE releases SET
+    pp_status = $2,
+    last_error = CASE WHEN $2 = 'done' THEN '' ELSE last_error END,
+    next_retry_at = CASE WHEN $2 = 'done' THEN NULL ELSE next_retry_at END,
+    updated_at = now()
+WHERE id = $1`, id, status)
 	if err != nil {
 		return fmt.Errorf("set pp status: %w", err)
 	}
 	return nil
+}
+
+// RecordPPFailure records a post-processing failure for a release under the
+// standardized retry policy (#132). It reads the release's current attempt
+// count and decides the outcome:
+//   - permanent failure (a permanent error such as a retention miss), OR the
+//     retry budget is exhausted (pp_attempts >= MaxPPAttempts) -> mark
+//     pp_permanent = TRUE so it is never retried automatically.
+//   - otherwise -> schedule a backoff retry via next_retry_at.
+//
+// In both cases pp_status becomes 'failed' and last_error is stored. It returns
+// whether the release was left permanently failed.
+func (s *Store) RecordPPFailure(ctx context.Context, id int64, permanent bool, errMsg string) (bool, error) {
+	var attempts int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT pp_attempts FROM releases WHERE id = $1`, id).Scan(&attempts); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, ErrNotFound
+		}
+		return false, fmt.Errorf("load pp attempts: %w", err)
+	}
+
+	makePermanent := permanent || attempts >= MaxPPAttempts
+	if makePermanent {
+		if _, err := s.pool.Exec(ctx, `
+UPDATE releases SET
+    pp_status = 'failed', pp_permanent = TRUE, next_retry_at = NULL,
+    last_error = $2, updated_at = now()
+WHERE id = $1`, id, errMsg); err != nil {
+			return false, fmt.Errorf("mark pp permanent: %w", err)
+		}
+		return true, nil
+	}
+
+	next := time.Now().Add(PPBackoff(attempts))
+	if _, err := s.pool.Exec(ctx, `
+UPDATE releases SET
+    pp_status = 'failed', next_retry_at = $2, last_error = $3, updated_at = now()
+WHERE id = $1`, id, next, errMsg); err != nil {
+		return false, fmt.Errorf("schedule pp retry: %w", err)
+	}
+	return false, nil
 }
 
 // ReleasePPResult carries the outcome of post-processing a release.

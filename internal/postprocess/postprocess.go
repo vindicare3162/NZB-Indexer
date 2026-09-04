@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/vindicare/goindex/internal/nntp"
 	"github.com/vindicare/goindex/internal/release"
 	"github.com/vindicare/goindex/internal/store"
 )
@@ -25,6 +26,11 @@ type Repo interface {
 	ListPendingReleases(ctx context.Context, limit int) ([]store.PendingRelease, error)
 	ApplyPostProcessing(ctx context.Context, id int64, res store.ReleasePPResult) error
 	SetReleasePPStatus(ctx context.Context, id int64, status string) error
+	// RecordPPFailure records a failed pass under the retry policy (#132):
+	// permanent failures (or an exhausted retry budget) stop retrying; transient
+	// ones are scheduled for a backoff retry. Returns whether the release was
+	// left permanently failed.
+	RecordPPFailure(ctx context.Context, id int64, permanent bool, errMsg string) (bool, error)
 }
 
 // Options controls post-processing.
@@ -120,17 +126,18 @@ func (p *Processor) Run(ctx context.Context) (Result, error) {
 			if ctx.Err() != nil {
 				return
 			}
-			out, retry := p.processOne(ctx, pr)
-			if retry {
-				// A needed fetch errored and nothing was recovered — likely a
-				// transient failure. Mark failed; it will be retried on a later
-				// pass until MaxPPAttempts is reached (tracked in the store).
-				p.log.Warn("post-processing fetch failed; will retry", "release", pr.Release.GUID)
-				mu.Lock()
-				res.Processed++
-				res.Failed++
-				mu.Unlock()
-				if serr := p.repo.SetReleasePPStatus(ctx, pr.Release.ID, store.PPFailed); serr != nil {
+			out, f := p.processOne(ctx, pr)
+			if f.failed {
+				// A needed fetch errored and nothing was recovered. Record the
+				// failure under the retry policy (#132): a permanent error (e.g.
+				// retention miss) or an exhausted retry budget stops retrying;
+				// a transient error schedules a backoff retry.
+				errMsg := ""
+				if f.err != nil {
+					errMsg = f.err.Error()
+				}
+				perm, serr := p.repo.RecordPPFailure(ctx, pr.Release.ID, f.permanent, errMsg)
+				if serr != nil {
 					mu.Lock()
 					if fatal == nil {
 						fatal = serr
@@ -139,6 +146,15 @@ func (p *Processor) Run(ctx context.Context) (Result, error) {
 					abort()
 					return
 				}
+				if perm {
+					p.log.Warn("post-processing permanently failed", "release", pr.Release.GUID, "err", errMsg)
+				} else {
+					p.log.Warn("post-processing failed; scheduled for retry", "release", pr.Release.GUID, "err", errMsg)
+				}
+				mu.Lock()
+				res.Processed++
+				res.Failed++
+				mu.Unlock()
 				continue
 			}
 			if aerr := p.repo.ApplyPostProcessing(ctx, pr.Release.ID, out); aerr != nil {
@@ -202,14 +218,15 @@ sendLoop:
 //     base64 with no real words) and PAR2 was not already recovered, probe the
 //     remaining segments and identify PAR2 by its file magic rather than the
 //     subject. This is what recovers real names for obfuscated releases.
-func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (store.ReleasePPResult, bool) {
+func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (store.ReleasePPResult, ppFailure) {
 	var res store.ReleasePPResult
 
 	par2Segs, nfoSegs, otherSegs := classifySegments(pr.Segments)
 
 	fetched := 0
 	budget := p.opts.MaxFetchPerRelease
-	fetchErr := false // a fetch we attempted actually errored (transient/retryable)
+	var lastFetchErr error // the most recent fetch error we saw (nil = none)
+	permanentErr := false  // a fetch failed with a permanent NNTP error (#132)
 
 	fetchDecoded := func(messageID string) ([]byte, bool) {
 		if fetched >= budget {
@@ -221,7 +238,12 @@ func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (st
 		body, err := p.fetch.Body(fctx, messageID)
 		cancel()
 		if err != nil {
-			fetchErr = true
+			// A cancelled per-fetch context that mirrors the parent ctx being
+			// cancelled is a shutdown, not a release failure; don't classify it.
+			lastFetchErr = err
+			if nntp.IsPermanent(err) {
+				permanentErr = true
+			}
 			return nil, false
 		}
 		decoded, err := DecodeYenc(body)
@@ -291,11 +313,21 @@ func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (st
 		}
 	}
 
-	// Report a retry signal: nothing was recovered but a fetch we attempted
-	// errored, so this is likely a transient failure worth retrying rather than
-	// a release with nothing to recover.
-	retry := fetchErr && res.Name == "" && res.NFO == nil
-	return res, retry
+	// Report a failure signal: nothing was recovered but a fetch we attempted
+	// errored, so this is a failure worth recording rather than a release with
+	// nothing to recover. The classification (permanent vs transient) drives
+	// the retry policy (#132).
+	if lastFetchErr != nil && res.Name == "" && res.NFO == nil {
+		return res, ppFailure{failed: true, permanent: permanentErr, err: lastFetchErr}
+	}
+	return res, ppFailure{}
+}
+
+// ppFailure describes the failure outcome of processing one release (#132).
+type ppFailure struct {
+	failed    bool
+	permanent bool
+	err       error
 }
 
 // namefromPar2 parses PAR2 filenames from a decoded body and returns the best

@@ -46,6 +46,26 @@ func (k ErrorKind) String() string {
 	}
 }
 
+// ClassifyError maps an error to an ErrorKind. Exported so other stages (e.g.
+// post-processing retry policy, #132) can classify NNTP failures the same way
+// the circuit breaker does.
+func ClassifyError(err error) ErrorKind { return classifyError(err) }
+
+// IsPermanent reports whether an NNTP error is a permanent failure that will
+// not be resolved by retrying the same request (#132): a retention miss (430,
+// the article is gone / not carried) or an authentication failure (retrying
+// won't help until credentials change). Connection and other protocol errors
+// are treated as transient and worth retrying with backoff. A nil error is not
+// permanent.
+func IsPermanent(err error) bool {
+	switch classifyError(err) {
+	case ErrKindRetention, ErrKindAuth:
+		return true
+	default:
+		return false
+	}
+}
+
 // classifyError maps an error to an ErrorKind for health tracking.
 func classifyError(err error) ErrorKind {
 	if err == nil {
