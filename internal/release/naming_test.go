@@ -26,3 +26,23 @@ func TestSearchName(t *testing.T) {
 		t.Errorf("SearchName = %q, want %q", got, want)
 	}
 }
+
+func TestCollectionBaseName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		// Archive-style key: strip the trailing /count.
+		{"Some.Movie.2024/50", "Some.Movie.2024"},
+		// Title-derived loose-file key: strip the "t:" marker and the /count,
+		// leaving a clean, properly-cased title for the release name.
+		{"t:Alura.Flutter.aplicando.integracao.continua.CI-CL/65", "Alura.Flutter.aplicando.integracao.continua.CI-CL"},
+		// No count segment.
+		{"Bare.Name", "Bare.Name"},
+	}
+	for _, tt := range tests {
+		if got := collectionBaseName(tt.in); got != tt.want {
+			t.Errorf("collectionBaseName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

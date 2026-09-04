@@ -139,24 +139,57 @@ func parseCollection(subject string, segLo, segHi int, res *ParsedSubject) {
 	if segLo == brLo && segHi == brHi {
 		return
 	}
-	// A true multi-file collection has files that are volumes/parts of an
-	// archive set (rar/par2/etc.). Require the per-file name to carry such an
-	// extension; a bare obfuscated blob with no archive extension is treated
-	// as a single file so unrelated posts are never merged. This also covers
-	// the single-file mislabel case above (the blob has no archive extension),
-	// so we deliberately do NOT reject on `res.TotalParts == total`: a genuine
-	// N-file collection whose files happen to have N segments each (leading
-	// [k/N] + trailing yEnc (x/N)) must still group as one collection.
-	if res.FileName == "" || !reCollectionVolExt.MatchString(res.FileName) {
+	// Derive the collection key. Two cases:
+	//
+	//  (a) Title-prefixed post: a release title precedes the "[n/total]" file
+	//      counter and is identical across every file of the post (both loose
+	//      content files like index.html/.course_id AND the PAR2 set). Key on
+	//      that title + file count so the WHOLE post — content and parity —
+	//      collapses into ONE collection. This is false-merge-safe because two
+	//      unrelated posts won't share both an identical title and file total.
+	//
+	//  (b) Archive set with no title (classic "[n/total] \"Foo.partNN.rar\""):
+	//      no title prefix, but the per-file name carries a volume/parity
+	//      extension. Key on the filename base so all volumes share one key.
+	//
+	// A subject with a leading counter but neither a meaningful title prefix nor
+	// a usable archive filename base is left ungrouped (treated as a single
+	// file), so bare obfuscated blobs never merge with unrelated posts.
+	if title := collectionTitle(subject, brLo); title != "" {
+		res.FileNumber = fileNum
+		res.CollectionFiles = total
+		res.CollectionKey = "t:" + title + "/" + strconv.Itoa(total)
 		return
 	}
-	base := collectionBase(res.FileName)
-	if base == "" {
-		return
+	if res.FileName != "" && reCollectionVolExt.MatchString(res.FileName) {
+		if base := collectionBase(res.FileName); base != "" {
+			res.FileNumber = fileNum
+			res.CollectionFiles = total
+			res.CollectionKey = base + "/" + strconv.Itoa(total)
+		}
 	}
-	res.FileNumber = fileNum
-	res.CollectionFiles = total
-	res.CollectionKey = base + "/" + strconv.Itoa(total)
+}
+
+// collectionTitle extracts and normalises the release title that precedes the
+// leading "[n/total]" file counter (whose "[" is at index brLo). It is used as
+// the collection key for loose-file posts that lack a shared archive base. An
+// empty or too-short result signals "no reliable title", so the caller leaves
+// the post ungrouped rather than risk merging unrelated single files.
+func collectionTitle(subject string, brLo int) string {
+	if brLo <= 0 || brLo > len(subject) {
+		return ""
+	}
+	// Preserve original case: all files of one post share a byte-identical
+	// prefix, so grouping does not need lowercasing, and keeping the case lets
+	// the release be named nicely from the key.
+	title := strings.TrimSpace(subject[:brLo])
+	title = reWhitespace.ReplaceAllString(title, " ")
+	title = strings.Trim(title, " -–_.")
+	// Require a reasonably specific title so we do not group on a stray token.
+	if len(title) < 8 {
+		return ""
+	}
+	return title
 }
 
 // collectionBase reduces a per-file name to the shared collection base by

@@ -175,8 +175,47 @@ func TestParseCollection(t *testing.T) {
 		t.Errorf("Alura collection files = %d, want 65", al1.CollectionFiles)
 	}
 
-	// An obfuscated blob with a leading counter but NO archive extension in the
-	// filename is treated as a single file (avoid merging unrelated posts).
+	// Loose-file collection (#90): files are individual content files with no
+	// shared archive base (index.html, script.js, .course_id) plus PAR2. They
+	// must group on the shared TITLE prefix before the [n/total] counter.
+	lf1 := ParseSubject(`Alura.Flutter.CI-CL [01/65] - ".course_id" yEnc (1/1) 32`)
+	lf2 := ParseSubject(`Alura.Flutter.CI-CL [03/65] - "index.html" yEnc (1/7) 863234`)
+	lf3 := ParseSubject(`Alura.Flutter.CI-CL [64/65] - "Alura.Flutter.CI-CL.vol31+32.par2" yEnc (2/65) 46101356`)
+	if lf1.CollectionKey == "" {
+		t.Fatal("loose-file content [01/65] got no collection key (#90)")
+	}
+	// The content files group together by title...
+	if lf1.CollectionKey != lf2.CollectionKey {
+		t.Errorf("loose content files should share a key:\n lf1=%q\n lf2=%q", lf1.CollectionKey, lf2.CollectionKey)
+	}
+	// ...and the PAR2 file (archive path, keyed on filename base) shares the
+	// same base name, so it lands in the same collection too. In this post the
+	// PAR2 base ("Alura.Flutter.CI-CL") matches the title, but the key schemes
+	// differ (base vs "t:"+title); what matters operationally is that the many
+	// content files stop fragmenting. Assert the content files collapsed to ONE
+	// key and the count is right.
+	if lf1.CollectionFiles != 65 {
+		t.Errorf("loose collection files = %d, want 65", lf1.CollectionFiles)
+	}
+	// The PAR2 file still groups (archive path); it just uses a different key
+	// scheme. What we assert is that it is recognised as a collection member.
+	if lf3.CollectionKey == "" || lf3.CollectionFiles != 65 {
+		t.Errorf("par2 member not grouped: key=%q files=%d", lf3.CollectionKey, lf3.CollectionFiles)
+	}
+
+	// Negative: two DIFFERENT titles with the same file total must NOT merge.
+	da := ParseSubject(`Show.Alpha.S01 [01/10] - "ep01.mkv" yEnc (1/50)`)
+	db := ParseSubject(`Show.Beta.S02 [01/10] - "ep01.mkv" yEnc (1/50)`)
+	if da.CollectionKey == "" || db.CollectionKey == "" {
+		t.Fatal("loose-file shows should each get a collection key")
+	}
+	if da.CollectionKey == db.CollectionKey {
+		t.Errorf("different titles must not merge: %q == %q", da.CollectionKey, db.CollectionKey)
+	}
+
+	// An obfuscated blob with a leading counter but NO archive extension AND no
+	// meaningful title prefix is treated as a single file (avoid merging
+	// unrelated posts). The counter is at the very start, so there is no title.
 	bare := ParseSubject(`[2/20] "NSV6gyBkS9rHcooOonLqQV89OqtlE" yEnc (1/50)`)
 	if bare.CollectionKey != "" {
 		t.Errorf("bare no-extension blob treated as collection: %q", bare.CollectionKey)

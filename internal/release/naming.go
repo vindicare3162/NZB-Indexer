@@ -49,12 +49,15 @@ func CleanName(subject string) string {
 
 // collectionBaseName recovers the collection base name from a collection key of
 // the form "base/count" (as produced by the scanner). It strips the trailing
-// "/<count>" segment, leaving the shared base name of the collection.
+// "/<count>" segment, leaving the shared base name of the collection. A
+// "t:"-prefixed key (a title-derived key for loose-file collections) has that
+// marker removed so the release is named from the title itself.
 func collectionBaseName(collectionKey string) string {
-	if i := strings.LastIndexByte(collectionKey, '/'); i >= 0 {
-		return collectionKey[:i]
+	key := strings.TrimPrefix(collectionKey, "t:")
+	if i := strings.LastIndexByte(key, '/'); i >= 0 {
+		return key[:i]
 	}
-	return collectionKey
+	return key
 }
 
 // SearchName produces a normalized form used for text search: lowercased with
