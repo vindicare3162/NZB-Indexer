@@ -41,6 +41,16 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Published OpenAPI specification for the REST API (#138). A hand-written
+  OpenAPI 3.0 document (`internal/api/openapi/openapi.yaml`) documents every
+  `/api/v1` endpoint — auth/setup, release search and download, per-user API
+  keys, and the full admin surface (groups, users, servers, schedule, pipeline
+  triggers, jobs, retention, status/stats/logs/events/overview) — including
+  security schemes and core schemas. The spec is embedded in the binary and
+  served unauthenticated at `GET /api/v1/openapi.yaml`, with a Redoc-rendered
+  browser view at `GET /api/v1/docs`. A drift-guard test asserts the spec's
+  paths and operations match the routes registered in `rest.Routes()`, so
+  adding or removing an endpoint without updating the spec fails the build.
 - Configurable multi-provider metadata enrichment (#134). Enrichment now runs an
   ordered list of metadata providers (`metadata.providers` / `GOINDEX_METADATA_PROVIDERS`,
   with the legacy single `provider` still honoured) instead of one hardcoded
