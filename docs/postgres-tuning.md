@@ -113,18 +113,65 @@ Rationale: the default 20% scale factor means autovacuum waits until millions of
 dead tuples accumulate on a large table; lowering it keeps bloat and estimate
 drift down. These are safe, reversible, table-local settings.
 
-## Connection pool sizing
+## Connection pool sizing and resource budgeting (#117)
 
-- App DB pool: `GOINDEX_DB_MAX_CONNS` (default **10**).
-- The app runs a bounded set of concurrent DB users: the scan, assemble, build,
-  and post-process loops (one query stream each) plus post-process worker
-  concurrency (`≈ NNTP max_conns / 2`, capped at 4) and incoming HTTP requests.
-- PostgreSQL `max_connections` default is 100. The default pool of 10 is
-  comfortably within that for a single instance. Raise `GOINDEX_DB_MAX_CONNS`
-  only if you observe pool-wait latency, and keep `instances × pool ≤
-  max_connections` with headroom. For many small connections a pooler
-  (PgBouncer) is the standard answer, but it is unnecessary at single-instance
-  scale.
+goindex draws on **two independent pools** with very different sizes, and the
+pipeline plus the HTTP API/admin control plane all share them:
+
+- **NNTP pool** — bounded by the provider's connection limit
+  (`GOINDEX_NNTP_MAX_CONNS`, or the active news server's `max_conns` column when
+  one is configured; this is the *effective* NNTP capacity, per #104).
+- **PostgreSQL pool** — `GOINDEX_DB_MAX_CONNS` (default **10**), shared by the
+  scan/assemble/build/post-process/enrich loops **and** every Newznab search and
+  admin request.
+
+The NNTP-bound stages (scan, post-process) also do database work, so sizing
+their concurrency purely off the NNTP budget can let pipeline workers consume
+the whole (much smaller) DB pool, leaving searches and admin requests blocked on
+connection acquisition — the service looks hung even though it is only queuing.
+
+To prevent that, startup computes a **resource budget** that respects both
+pools at once:
+
+1. Auto-derive per-stage worker counts from the effective NNTP budget
+   (scan ≈ ½ capped `[1,8]`; post-process ≈ ½ capped `[1,4]`).
+2. Reserve DB headroom for the API/control plane — `GOINDEX_DB_RESERVED_CONNS`
+   (default **auto**: ≈ ¼ of the pool, `[1,4]`; always leaves ≥ 1 for the
+   pipeline). Set to `0` to disable (unsafe under load).
+3. Clamp the combined pipeline worker footprint to
+   `max_conns − reserved_conns` (the **DB pipeline budget**) so the reserved
+   connections stay available for the API. Because the pools also hard-cap work
+   (the pgx pool and the NNTP semaphore both make callers *wait* rather than
+   fail), excess demand queues instead of deadlocking or starving the API.
+
+Explicit overrides (`GOINDEX_SCAN_CONCURRENCY`) are honoured verbatim, but if the
+resulting worker count overcommits the DB pipeline budget the server logs a
+warning at startup — raise `GOINDEX_DB_MAX_CONNS` or lower the override.
+
+The effective sizing is logged at startup (`nntp_max_conns`, `db_max_conns`,
+`db_reserved_api_conns`, `db_pipeline_budget`, `scan_concurrency`,
+`postprocess_concurrency`) and exposed to the admin health endpoint.
+
+### Observing pool pressure
+
+Prometheus exposes both pools so you can see contention and confirm the API has
+headroom:
+
+- NNTP: `goindex_nntp_pool_open_connections`, `..._idle_connections`,
+  `..._max_connections`.
+- PostgreSQL: `goindex_db_pool_total_connections`, `..._idle_connections`,
+  `..._acquired_connections`, `..._max_connections`.
+- **Saturation**: `goindex_db_pool_empty_acquires_total` (acquisitions that had
+  to wait on an empty pool) and `goindex_db_pool_acquire_wait_seconds_total`
+  (cumulative wait). A rising empty-acquire count or wait time means the pool is
+  saturated — raise `GOINDEX_DB_MAX_CONNS` (keeping `instances × pool ≤
+  PostgreSQL max_connections` with headroom) or lower pipeline concurrency.
+- **Budget**: `goindex_db_reserved_api_connections` and
+  `goindex_db_pipeline_budget_connections` show the static split.
+
+PostgreSQL `max_connections` defaults to 100, so the default pool of 10 is
+comfortable for a single instance. For many instances, use a pooler (PgBouncer);
+it is unnecessary at single-instance scale.
 
 ## Server settings (containerised single node)
 

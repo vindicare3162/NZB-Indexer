@@ -144,6 +144,30 @@ type DBHealth struct {
 	PoolMax      int32 `json:"pool_max"`
 }
 
+// PoolStats reports pgx pool utilisation and saturation for metrics (#117),
+// without a database round trip (it reads the in-memory pool stat).
+type PoolStats struct {
+	Total          int32
+	Idle           int32
+	Acquired       int32
+	Max            int32
+	EmptyAcquires  int64
+	AcquireWaitSec float64
+}
+
+// PoolStats returns the current pgx pool statistics.
+func (s *Store) PoolStats() PoolStats {
+	st := s.pool.Stat()
+	return PoolStats{
+		Total:          st.TotalConns(),
+		Idle:           st.IdleConns(),
+		Acquired:       st.AcquiredConns(),
+		Max:            st.MaxConns(),
+		EmptyAcquires:  st.EmptyAcquireCount(),
+		AcquireWaitSec: st.AcquireDuration().Seconds(),
+	}
+}
+
 // DatabaseHealth returns database size, buffer cache hit ratio, and pool
 // utilisation. It is cheap: pg_database_size is metadata and pg_stat_database is
 // an in-memory view.

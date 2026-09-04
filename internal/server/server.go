@@ -74,6 +74,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	// worker counts consistent with the real provider budget.
 	effectiveNNTPConns := poolCfg.MaxConns
 
+	// Resource budgeting (#117): size the NNTP-bound pipeline stages against
+	// BOTH the effective NNTP capacity and the PostgreSQL pool, reserving
+	// headroom on the DB pool for the HTTP API and admin control plane so
+	// pipeline load cannot starve them. Explicit operator overrides are honoured
+	// but flagged when they overcommit the DB pipeline budget.
+	budget := computeBudget(effectiveNNTPConns, cfg.Database.MaxConns, cfg.Database.ReservedConns,
+		cfg.Scan.Concurrency, 0)
+
 	// 3. Pipeline stages.
 	sc := scanner.New(pool, st, logger, scanner.Options{
 		BatchSize:           int64(cfg.Scan.BatchSize),
@@ -90,9 +98,10 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		BatchLimit:         200,
 		MaxFetchPerRelease: 4,
 		FetchTimeout:       30 * time.Second,
-		// Process releases in parallel, using up to half the effective NNTP
-		// connection budget so scanning/assembly still have connections available.
-		Concurrency: ppConcurrency(effectiveNNTPConns),
+		// Process releases in parallel within the resource budget (#117), which
+		// respects both the NNTP pool and the DB pipeline budget (leaving API
+		// headroom).
+		Concurrency: budget.PostProcessWorkers,
 	})
 	nzbGen := nzb.NewGenerator(st)
 
@@ -118,11 +127,22 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	}
 	applyPersistedSchedule(ctx, st, &wopts, logger)
 	wopts.EnrichInterval = cfg.Metadata.Interval
-	wopts.ScanConcurrency = scanConcurrency(cfg.Scan.Concurrency, effectiveNNTPConns)
+	wopts.ScanConcurrency = budget.ScanWorkers
 	logger.Info("effective concurrency sizing",
-		"nntp_max_conns", effectiveNNTPConns,
-		"scan_concurrency", wopts.ScanConcurrency,
-		"postprocess_concurrency", ppConcurrency(effectiveNNTPConns))
+		"nntp_max_conns", budget.NNTPMaxConns,
+		"db_max_conns", budget.DBMaxConns,
+		"db_reserved_api_conns", budget.ReservedAPIConns,
+		"db_pipeline_budget", budget.DBPipelineBudget,
+		"scan_concurrency", budget.ScanWorkers,
+		"postprocess_concurrency", budget.PostProcessWorkers)
+	if budget.Overcommit {
+		logger.Warn("pipeline concurrency overcommits the database pipeline budget; "+
+			"the API/control plane may block on connection acquisition under load. "+
+			"Consider raising database.max_conns or lowering scan.concurrency.",
+			"scan_concurrency", budget.ScanWorkers,
+			"postprocess_concurrency", budget.PostProcessWorkers,
+			"db_pipeline_budget", budget.DBPipelineBudget)
+	}
 
 	// Optional metadata enrichment. Disabled by default; when enabled it uses
 	// the keyless TVMaze provider unless another is configured. A nil enricher
@@ -149,9 +169,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	restAPI := rest.New(st, nzbGen, authSvc, authSvc, scheduleAdapter{wrk}, srvMgr, logs, discovery, logger)
 	restAPI.SetSystemProbe(systemProbe{
 		pool: pool, store: st, jwtSecret: cfg.Auth.JWTSecret,
-		nntpMaxConns: effectiveNNTPConns,
-		scanWorkers:  wopts.ScanConcurrency,
-		ppWorkers:    ppConcurrency(effectiveNNTPConns),
+		nntpMaxConns: budget.NNTPMaxConns,
+		scanWorkers:  budget.ScanWorkers,
+		ppWorkers:    budget.PostProcessWorkers,
 	})
 
 	spa, err := web.Handler()
@@ -173,6 +193,19 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 			return metrics.AuthCacheSnapshot{
 				Hits: float64(s.Hits), Misses: float64(s.Misses),
 				Evictions: float64(s.Evictions), Size: float64(s.Size),
+			}
+		},
+		Pools: func() metrics.PoolSnapshot {
+			nOpen, nIdle := pool.Stats()
+			db := st.PoolStats()
+			return metrics.PoolSnapshot{
+				NNTPOpen: float64(nOpen), NNTPIdle: float64(nIdle), NNTPMax: float64(budget.NNTPMaxConns),
+				DBTotal: float64(db.Total), DBIdle: float64(db.Idle),
+				DBAcquired: float64(db.Acquired), DBMax: float64(db.Max),
+				DBEmptyAcquires:      float64(db.EmptyAcquires),
+				DBAcquireWaitSeconds: db.AcquireWaitSec,
+				DBReservedAPIConns:   float64(budget.ReservedAPIConns),
+				DBPipelineBudget:     float64(budget.DBPipelineBudget),
 			}
 		},
 	})
@@ -227,39 +260,6 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	cancelWorker()
 	logger.Info("goindex stopped")
 	return nil
-}
-
-// ppConcurrency chooses how many releases to post-process in parallel: about
-// half the NNTP connection budget, bounded to [1, 4], so scanning and assembly
-// still have connections available.
-func ppConcurrency(maxConns int) int {
-	n := maxConns / 2
-	if n < 1 {
-		n = 1
-	}
-	if n > 4 {
-		n = 4
-	}
-	return n
-}
-
-// scanConcurrency chooses how many groups to scan in parallel. When the
-// operator sets an explicit value (>0) it is honoured (still capped in practice
-// by the NNTP pool). Otherwise it derives a default of about half the NNTP
-// connection budget, bounded to [1, 8], leaving headroom for post-processing
-// (which takes ~half, [1,4]) since both draw from the same pool.
-func scanConcurrency(configured, maxConns int) int {
-	if configured > 0 {
-		return configured
-	}
-	n := maxConns / 2
-	if n < 1 {
-		n = 1
-	}
-	if n > 8 {
-		n = 8
-	}
-	return n
 }
 
 // serverToNNTPConfig converts a stored news server into an nntp.Config.
