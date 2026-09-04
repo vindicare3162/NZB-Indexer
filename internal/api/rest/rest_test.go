@@ -54,6 +54,9 @@ type mockStore struct {
 	backfillGroupID  int64
 	backfillDays     *int
 	backfillArticles *int64
+	scanCfgGroupID   int64
+	scanCfgPriority  int
+	scanCfgForward   *int64
 }
 
 func (m *mockStore) Ping(context.Context) error { return m.pingErr }
@@ -194,6 +197,12 @@ func (m *mockStore) SetGroupBackfillTarget(_ context.Context, id int64, days *in
 	m.backfillGroupID = id
 	m.backfillDays = days
 	m.backfillArticles = articles
+	return nil
+}
+func (m *mockStore) SetGroupScanConfig(_ context.Context, id int64, priority int, forwardArticles *int64) error {
+	m.scanCfgGroupID = id
+	m.scanCfgPriority = priority
+	m.scanCfgForward = forwardArticles
 	return nil
 }
 func (m *mockStore) CountUsers(context.Context) (int64, error) { return m.userCount, nil }
@@ -572,6 +581,39 @@ func TestAdminSetGroupBackfillTarget(t *testing.T) {
 	// Non-admin forbidden.
 	rec = do(t, env, http.MethodPut, "/api/v1/admin/groups/7/backfill", env.userTok,
 		backfillTargetRequest{Days: &days})
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("user status = %d, want 403", rec.Code)
+	}
+}
+
+// TestAdminSetGroupScanConfig covers per-group priority + forward budget (#126).
+func TestAdminSetGroupScanConfig(t *testing.T) {
+	env := setup(t)
+
+	fwd := int64(25000)
+	rec := do(t, env, http.MethodPut, "/api/v1/admin/groups/9/scan-config", env.adminTok,
+		scanConfigRequest{Priority: 10, ForwardArticles: &fwd})
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("set scan-config status = %d, body=%s", rec.Code, rec.Body)
+	}
+	if env.store.scanCfgGroupID != 9 || env.store.scanCfgPriority != 10 {
+		t.Errorf("group=%d priority=%d, want 9/10", env.store.scanCfgGroupID, env.store.scanCfgPriority)
+	}
+	if env.store.scanCfgForward == nil || *env.store.scanCfgForward != 25000 {
+		t.Errorf("forward = %v, want 25000", env.store.scanCfgForward)
+	}
+
+	// Negative forward budget rejected.
+	negF := int64(-1)
+	rec = do(t, env, http.MethodPut, "/api/v1/admin/groups/9/scan-config", env.adminTok,
+		scanConfigRequest{Priority: 0, ForwardArticles: &negF})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("negative forward status = %d, want 400", rec.Code)
+	}
+
+	// Non-admin forbidden.
+	rec = do(t, env, http.MethodPut, "/api/v1/admin/groups/9/scan-config", env.userTok,
+		scanConfigRequest{Priority: 5})
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("user status = %d, want 403", rec.Code)
 	}

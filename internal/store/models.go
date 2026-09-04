@@ -45,6 +45,12 @@ type Group struct {
 	LastScanError   string     `json:"last_scan_error,omitempty"`
 	LastScanErrorAt *time.Time `json:"last_scan_error_at,omitempty"`
 
+	// Per-group scan priority and budget (#126). Priority orders the scan set
+	// (higher first); ForwardTargetArticles overrides the global per-pass
+	// forward article cap when non-nil (0 = unbounded).
+	Priority              int    `json:"priority"`
+	ForwardTargetArticles *int64 `json:"forward_target_articles,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

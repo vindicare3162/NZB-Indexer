@@ -112,10 +112,15 @@ func (s *Scanner) ScanForward(ctx context.Context, groupName string) (ScanResult
 	}
 
 	// Bound how far this pass scans so a firehose group yields. The next pass
-	// resumes from the persisted watermark.
+	// resumes from the persisted watermark. A per-group forward budget (#126)
+	// overrides the global cap when set (0 = unbounded for this group).
+	maxForward := s.opts.ForwardMaxArticles
+	if g.ForwardTargetArticles != nil {
+		maxForward = *g.ForwardTargetArticles
+	}
 	scanTo := info.High
-	if s.opts.ForwardMaxArticles > 0 {
-		if capped := start + s.opts.ForwardMaxArticles - 1; capped < scanTo {
+	if maxForward > 0 {
+		if capped := start + maxForward - 1; capped < scanTo {
 			scanTo = capped
 		}
 	}

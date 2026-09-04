@@ -41,6 +41,17 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Per-group scan priority and forward scan budgets (#126). Each group gains a
+  `priority` (higher groups are scanned first) and an optional per-group forward
+  article budget that caps how many new articles a single forward pass ingests
+  for that group, overriding the global default (blank = default, 0 = unbounded,
+  positive = explicit). A new migration (0018) adds `priority` and
+  `forward_target_articles` to `groups`; the worker now scans the active set
+  ordered by priority, the scanner honours the per-group forward budget, and a
+  new `PUT /admin/groups/{id}/scan-config` endpoint (plus `store.SetGroupScanConfig`)
+  sets them. The admin Newsgroups panel gains a Priority column (sortable) and
+  the per-group editor now edits priority and forward budget alongside the
+  backfill limits.
 - Adaptive backlog-aware scheduling for the downstream pipeline loops (#125).
   The assemble, build, and post-processing loops now schedule their next pass
   based on whether the last pass reported more work pending — a backlog: assemble

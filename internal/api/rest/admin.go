@@ -243,6 +243,42 @@ func (a *API) handleSetGroupBackfill(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// scanConfigRequest sets a group's scan priority and forward budget (#126).
+type scanConfigRequest struct {
+	// Priority orders the scan set (higher scanned first). Defaults to 0.
+	Priority int `json:"priority"`
+	// ForwardArticles is the per-group forward per-pass article cap: null clears
+	// the override (use global default); 0 means unbounded; positive is an
+	// explicit cap.
+	ForwardArticles *int64 `json:"forward_articles"`
+}
+
+func (a *API) handleSetGroupScanConfig(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid group id")
+		return
+	}
+	var req scanConfigRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ForwardArticles != nil && *req.ForwardArticles < 0 {
+		writeError(w, http.StatusBadRequest, "forward article budget must not be negative")
+		return
+	}
+	if err := a.store.SetGroupScanConfig(r.Context(), id, req.Priority, req.ForwardArticles); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "group not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to set scan config")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *API) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
