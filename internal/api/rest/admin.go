@@ -585,8 +585,12 @@ func (a *API) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "job controller not available")
 		return
 	}
-	s := a.jobs.CurrentSchedule()
-	writeJSON(w, http.StatusOK, scheduleResponse{
+	writeJSON(w, http.StatusOK, buildScheduleResponse(a.jobs.CurrentSchedule()))
+}
+
+// buildScheduleResponse renders a Schedule as the API response shape.
+func buildScheduleResponse(s Schedule) scheduleResponse {
+	return scheduleResponse{
 		ScanInterval:           s.ScanInterval.String(),
 		DownstreamInterval:     s.DownstreamInterval.String(),
 		BuildInterval:          s.BuildInterval.String(),
@@ -595,7 +599,7 @@ func (a *API) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
 		DownstreamIntervalSec:  int64(s.DownstreamInterval.Seconds()),
 		BuildIntervalSec:       int64(s.BuildInterval.Seconds()),
 		PostProcessIntervalSec: int64(s.PostProcessInterval.Seconds()),
-	})
+	}
 }
 
 // updateScheduleRequest accepts each interval as a Go duration string (e.g.
@@ -688,29 +692,40 @@ func (a *API) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	limit := parseIntDefault(q.Get("limit"), 200)
+	writeJSON(w, http.StatusOK, a.recentLogs(limit, parseLogLevel(q.Get("level"))))
+}
+
+// parseLogLevel maps a level string to a minimum slog.Level, or nil for "all".
+func parseLogLevel(s string) *slog.Level {
+	switch strings.ToLower(s) {
+	case "debug":
+		l := slog.LevelDebug
+		return &l
+	case "info":
+		l := slog.LevelInfo
+		return &l
+	case "warn", "warning":
+		l := slog.LevelWarn
+		return &l
+	case "error":
+		l := slog.LevelError
+		return &l
+	}
+	return nil
+}
+
+// recentLogs returns bounded recent log entries (never nil), reused by the logs
+// endpoint and the admin overview.
+func (a *API) recentLogs(limit int, minLevel *slog.Level) []logbuf.Entry {
+	if a.logs == nil {
+		return []logbuf.Entry{}
+	}
 	if limit > 1000 {
 		limit = 1000
 	}
-
-	var minLevel *slog.Level
-	switch strings.ToLower(q.Get("level")) {
-	case "debug":
-		l := slog.LevelDebug
-		minLevel = &l
-	case "info":
-		l := slog.LevelInfo
-		minLevel = &l
-	case "warn", "warning":
-		l := slog.LevelWarn
-		minLevel = &l
-	case "error":
-		l := slog.LevelError
-		minLevel = &l
-	}
-
 	entries := a.logs.Recent(limit, minLevel)
 	if entries == nil {
 		entries = []logbuf.Entry{}
 	}
-	writeJSON(w, http.StatusOK, entries)
+	return entries
 }

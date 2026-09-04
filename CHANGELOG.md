@@ -6,6 +6,19 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Added
+- Aggregated admin overview endpoint `GET /api/v1/admin/overview` (#110). It
+  returns the whole dashboard — health, worker status, pipeline statistics,
+  groups, servers, users, schedule, and bounded recent logs — in one
+  admin-authenticated request with a `generated_at` timestamp. Each subsystem is
+  gathered best-effort: a failing section is reported under an `errors` map
+  while the rest of the payload still loads, rather than failing the whole
+  response. Credentials are never included (server passwords are redacted to a
+  `has_password` flag; user password hashes are never serialised). The admin
+  page now loads via this single request instead of many independent calls,
+  coalesces overlapping refreshes, and discards stale responses; the detailed
+  per-resource endpoints remain for targeted refreshes.
+
 ### Changed
 - Per-group backfill targets are now configured with an accessible, validated
   inline form instead of browser `prompt()` dialogs (#109). The editor explains

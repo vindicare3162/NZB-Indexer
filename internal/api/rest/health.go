@@ -66,7 +66,12 @@ type healthResponse struct {
 // of "potential issue" checks into one admin report. Overall status is the
 // worst individual check.
 func (a *API) handleHealthReport(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	writeJSON(w, http.StatusOK, a.buildHealthReport(r.Context()))
+}
+
+// buildHealthReport assembles the aggregated health report so it can be reused
+// by both the dedicated endpoint and the admin overview envelope.
+func (a *API) buildHealthReport(ctx context.Context) healthResponse {
 	var checks []healthCheck
 
 	// Process.
@@ -132,14 +137,13 @@ func (a *API) handleHealthReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp := healthResponse{
+	return healthResponse{
 		Status:   overallStatus(checks),
 		Process:  proc,
 		Database: dbHealth,
 		Usenet:   usenet,
 		Checks:   checks,
 	}
-	writeJSON(w, http.StatusOK, resp)
 }
 
 // overallStatus returns the worst status among the checks.
