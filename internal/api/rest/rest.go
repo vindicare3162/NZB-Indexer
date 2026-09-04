@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/vindicare/goindex/internal/api/openapi"
 	"github.com/vindicare/goindex/internal/auth"
 	"github.com/vindicare/goindex/internal/logbuf"
 	"github.com/vindicare/goindex/internal/store"
@@ -234,6 +235,9 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/ready", a.handleReady)
 	mux.HandleFunc("GET /api/v1/setup/status", a.handleSetupStatus)
 	mux.HandleFunc("POST /api/v1/setup", a.handleSetup)
+	// OpenAPI spec + docs (#138): public API documentation, no auth.
+	mux.HandleFunc("GET /api/v1/openapi.yaml", openapi.SpecHandler)
+	mux.HandleFunc("GET /api/v1/docs", openapi.DocsHandler)
 
 	// Session-protected (any authenticated user).
 	sess := a.session.RequireSession

@@ -1,0 +1,476 @@
+openapi: 3.0.3
+info:
+  title: goindex REST API
+  description: >
+    Administrative and search API for goindex, an NZB indexer. All paths are
+    served under /api/v1. The Newznab-compatible search/download API is served
+    separately at /api (see the "newznab" tag) and authenticated by an apikey
+    query parameter.
+  version: "1.0.0"
+servers:
+  - url: /api/v1
+    description: REST API base path
+tags:
+  - name: auth
+    description: Login, session, setup
+  - name: search
+    description: Release search and download (SPA)
+  - name: apikeys
+    description: Per-user Newznab API keys
+  - name: admin-groups
+    description: Newsgroup management
+  - name: admin-users
+    description: User management
+  - name: admin-servers
+    description: NNTP server management
+  - name: admin-pipeline
+    description: Pipeline control, jobs, schedule, status, retention
+  - name: admin-observability
+    description: Health, stats, logs, events, overview
+  - name: newznab
+    description: Newznab-compatible search/download API (served at /api)
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Session token issued by POST /api/v1/login (Authorization Bearer, "token" cookie, or ?token= for SSE).
+    newznabApiKey:
+      type: apiKey
+      in: query
+      name: apikey
+      description: Per-user Newznab API key.
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string }
+    LoginResponse:
+      type: object
+      properties:
+        token: { type: string }
+        role: { type: string }
+    Group:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        active: { type: boolean }
+        last_scanned_high: { type: integer, format: int64 }
+        backfill_low: { type: integer, format: int64 }
+        backfill_complete: { type: boolean }
+        priority: { type: integer }
+        server_high: { type: integer, format: int64 }
+        last_scan_error: { type: string }
+    GroupPage:
+      type: object
+      properties:
+        groups:
+          type: array
+          items: { $ref: '#/components/schemas/Group' }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+    Release:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        guid: { type: string }
+        name: { type: string }
+        category_id: { type: integer }
+        size_bytes: { type: integer, format: int64 }
+        posted_at: { type: string, format: date-time }
+    Job:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string }
+        state:
+          type: string
+          enum: [queued, running, completed, failed, cancelled, interrupted]
+        target: { type: string }
+        progress_current: { type: integer, format: int64 }
+        progress_total: { type: integer, format: int64 }
+        error: { type: string }
+    TriggerAccepted:
+      type: object
+      properties:
+        status: { type: string, example: accepted }
+        job_id: { type: string }
+security:
+  - bearerAuth: []
+paths:
+  /login:
+    post:
+      tags: [auth]
+      summary: Authenticate and obtain a session token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Session token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '401': { description: Invalid credentials }
+  /health:
+    get:
+      tags: [auth]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200': { description: OK }
+  /ready:
+    get:
+      tags: [auth]
+      summary: Readiness probe (DB reachable)
+      security: []
+      responses:
+        '200': { description: Ready }
+        '503': { description: Not ready }
+  /setup/status:
+    get:
+      tags: [auth]
+      summary: Whether first-run setup is required
+      security: []
+      responses:
+        '200': { description: Setup status }
+  /setup:
+    post:
+      tags: [auth]
+      summary: Create the first admin user (first-run only)
+      security: []
+      responses:
+        '201': { description: Admin created }
+        '409': { description: Setup already completed }
+  /me:
+    get:
+      tags: [auth]
+      summary: Current authenticated principal
+      responses:
+        '200': { description: Principal }
+        '401': { description: Unauthenticated }
+  /categories:
+    get:
+      tags: [search]
+      summary: List Newznab categories
+      responses:
+        '200': { description: Categories }
+  /releases:
+    get:
+      tags: [search]
+      summary: Search releases (keyset paginated)
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: cat, in: query, schema: { type: string }, description: Comma-separated category ids }
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: offset, in: query, schema: { type: integer } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Search results }
+  /releases/{guid}:
+    get:
+      tags: [search]
+      summary: Release detail (with identifiers and files)
+      parameters:
+        - { name: guid, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Release detail }
+        '404': { description: Not found }
+  /releases/{guid}/nzb:
+    get:
+      tags: [search]
+      summary: Download the NZB for a release
+      parameters:
+        - { name: guid, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: NZB document, application/x-nzb }
+        '404': { description: Not found }
+  /apikeys:
+    get:
+      tags: [apikeys]
+      summary: List the current user's API keys
+      responses:
+        '200': { description: API keys }
+    post:
+      tags: [apikeys]
+      summary: Create an API key
+      responses:
+        '201': { description: Created }
+  /apikeys/{id}:
+    delete:
+      tags: [apikeys]
+      summary: Delete an API key
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: Deleted }
+  /admin/groups:
+    get:
+      tags: [admin-groups]
+      summary: List groups (paginated, filtered, sorted)
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [active, inactive] } }
+        - { name: errors, in: query, schema: { type: boolean } }
+        - { name: sort, in: query, schema: { type: string, enum: [name, lag, last_scan, backfill, priority] } }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc] } }
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: offset, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: A page of groups
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupPage' }
+    post:
+      tags: [admin-groups]
+      summary: Create a group
+      responses:
+        '201': { description: Created }
+  /admin/groups/bulk:
+    post:
+      tags: [admin-groups]
+      summary: Bulk-add groups
+      responses:
+        '200': { description: Bulk result }
+  /admin/groups/{id}:
+    patch:
+      tags: [admin-groups]
+      summary: Update a group (activate/deactivate)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: Updated }
+    delete:
+      tags: [admin-groups]
+      summary: Delete a group
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: Deleted }
+  /admin/groups/{id}/backfill:
+    put:
+      tags: [admin-groups]
+      summary: Set a group's backfill target (days/articles)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: Updated }
+  /admin/groups/{id}/scan-config:
+    put:
+      tags: [admin-groups]
+      summary: Set a group's scan priority and forward budget
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: Updated }
+  /admin/users:
+    get:
+      tags: [admin-users]
+      summary: List users
+      responses:
+        '200': { description: Users }
+    post:
+      tags: [admin-users]
+      summary: Create a user
+      responses:
+        '201': { description: Created }
+  /admin/users/{id}:
+    delete:
+      tags: [admin-users]
+      summary: Delete a user
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: Deleted }
+  /admin/servers:
+    get:
+      tags: [admin-servers]
+      summary: List NNTP servers (credentials redacted)
+      responses:
+        '200': { description: Servers }
+    post:
+      tags: [admin-servers]
+      summary: Create an NNTP server
+      responses:
+        '201': { description: Created }
+  /admin/servers/{id}:
+    put:
+      tags: [admin-servers]
+      summary: Update an NNTP server
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: Updated }
+    delete:
+      tags: [admin-servers]
+      summary: Delete an NNTP server
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: Deleted }
+  /admin/health:
+    get:
+      tags: [admin-observability]
+      summary: Aggregated health report
+      responses:
+        '200': { description: Health report }
+  /admin/schedule:
+    get:
+      tags: [admin-pipeline]
+      summary: Get the pipeline schedule
+      responses:
+        '200': { description: Schedule }
+    put:
+      tags: [admin-pipeline]
+      summary: Update the pipeline schedule (applied live)
+      responses:
+        '200': { description: Updated }
+        '400': { description: Invalid duration }
+  /admin/scan:
+    post:
+      tags: [admin-pipeline]
+      summary: Trigger a forward scan
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TriggerAccepted' }
+  /admin/backfill:
+    post:
+      tags: [admin-pipeline]
+      summary: Trigger a backfill pass
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TriggerAccepted' }
+  /admin/postprocess:
+    post:
+      tags: [admin-pipeline]
+      summary: Trigger a post-processing pass
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TriggerAccepted' }
+  /admin/postprocess/retry-failed:
+    post:
+      tags: [admin-pipeline]
+      summary: Requeue failed releases for post-processing
+      responses:
+        '200': { description: Requeued }
+  /admin/jobs:
+    get:
+      tags: [admin-pipeline]
+      summary: Recent pipeline jobs (newest first)
+      parameters:
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Jobs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Job' }
+  /admin/jobs/{id}:
+    get:
+      tags: [admin-pipeline]
+      summary: Get a job by id
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '404': { description: Not found }
+  /admin/jobs/{id}/cancel:
+    post:
+      tags: [admin-pipeline]
+      summary: Request cooperative cancellation of a job
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '202': { description: Cancellation requested }
+        '404': { description: Not found or not cancellable }
+  /admin/segments/backfill:
+    post:
+      tags: [admin-pipeline]
+      summary: Backfill durable NZB segments for legacy releases
+      responses:
+        '200': { description: Result }
+  /admin/retention/preview:
+    get:
+      tags: [admin-pipeline]
+      summary: Preview a raw-part retention prune (dry run)
+      parameters:
+        - { name: days, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Retention report }
+  /admin/retention/prune:
+    post:
+      tags: [admin-pipeline]
+      summary: Prune retained raw parts
+      parameters:
+        - { name: days, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Prune result }
+  /admin/status:
+    get:
+      tags: [admin-observability]
+      summary: Worker pipeline status snapshot
+      responses:
+        '200': { description: Status }
+  /admin/stats:
+    get:
+      tags: [admin-observability]
+      summary: Pipeline statistics
+      responses:
+        '200': { description: Statistics }
+  /admin/logs:
+    get:
+      tags: [admin-observability]
+      summary: Recent log entries
+      parameters:
+        - { name: level, in: query, schema: { type: string, enum: [debug, info, warn, error] } }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Log entries }
+  /admin/events:
+    get:
+      tags: [admin-observability]
+      summary: Live status and log stream (Server-Sent Events)
+      description: text/event-stream of "status" and "log" events. Auth via ?token= since EventSource cannot set headers.
+      responses:
+        '200': { description: SSE stream }
+  /admin/overview:
+    get:
+      tags: [admin-observability]
+      summary: Aggregated admin dashboard payload
+      responses:
+        '200': { description: Overview }
+  /admin/discover:
+    get:
+      tags: [admin-groups]
+      summary: Search the provider's carried newsgroups
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Discovered groups }
