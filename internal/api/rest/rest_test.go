@@ -29,8 +29,9 @@ type mockStore struct {
 	keys           []store.APIKey
 	servers2       []store.Server
 	userCount      int64
-	requeuedFailed bool
-	pingErr        error
+	requeuedFailed     bool
+	segmentsBackfilled bool
+	pingErr            error
 	savedSettings  map[string]string
 	metadata       map[int64]store.ReleaseMetadata
 
@@ -81,6 +82,10 @@ func (m *mockStore) ListCategories(context.Context) ([]store.Category, error) { 
 func (m *mockStore) RequeueFailedReleases(context.Context) (int64, error) {
 	m.requeuedFailed = true
 	return 7, nil
+}
+func (m *mockStore) BackfillReleaseSegments(context.Context, int) (int, int, error) {
+	m.segmentsBackfilled = true
+	return 5, 1, nil
 }
 func (m *mockStore) DatabaseHealth(context.Context) (store.DBHealth, error) {
 	return store.DBHealth{SizeBytes: 1 << 20, CacheHitRatio: 0.99, PoolTotal: 2, PoolIdle: 1, PoolMax: 10}, nil
@@ -922,4 +927,26 @@ func contains(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestBackfillSegments(t *testing.T) {
+	env := setup(t)
+	rec := do(t, env, http.MethodPost, "/api/v1/admin/segments/backfill", env.adminTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body)
+	}
+	if !env.store.segmentsBackfilled {
+		t.Error("expected BackfillReleaseSegments to be called")
+	}
+	var resp map[string]int
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["repaired"] != 5 || resp["unresolved"] != 1 {
+		t.Errorf("resp = %v, want repaired=5 unresolved=1", resp)
+	}
+
+	// Non-admin forbidden.
+	rec = do(t, env, http.MethodPost, "/api/v1/admin/segments/backfill", env.userTok, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("non-admin status = %d, want 403", rec.Code)
+	}
 }

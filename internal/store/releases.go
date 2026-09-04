@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -59,6 +60,14 @@ RETURNING id, guid, name, original_subject, search_name, category_id, group_id, 
 		&r.CreatedAt, &r.UpdatedAt)
 
 	if err == nil {
+		// Snapshot the binary's ordered segments into durable release storage so
+		// this release can generate its NZB after the raw parts are pruned. A
+		// failure here is non-fatal to release creation (the parts join remains a
+		// fallback), so log-and-continue semantics apply at the caller; we return
+		// the error only when it is a real DB fault.
+		if serr := s.snapshotReleaseSegments(ctx, r.ID); serr != nil {
+			return r, true, fmt.Errorf("snapshot segments for release %d: %w", r.ID, serr)
+		}
 		return r, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -114,11 +123,51 @@ type PartSegment struct {
 	Subject    string
 }
 
-// GetReleaseSegments returns the ordered part segments backing a release,
-// resolved via the release's binary_id. Segments are ordered by part number so
-// the generated NZB reconstructs the file correctly. Returns an empty slice
-// when the release has no linked binary.
+// jsonSegment is the persisted form of a segment in releases.segments.
+type jsonSegment struct {
+	MessageID  string `json:"message_id"`
+	Bytes      int64  `json:"bytes"`
+	PartNumber int    `json:"number"`
+	Subject    string `json:"subject"`
+}
+
+// GetReleaseSegments returns the ordered part segments backing a release. It
+// prefers the durable, denormalized segments stored on the release
+// (releases.segments), so NZB generation works after the raw parts have been
+// pruned. When a (legacy) release has no durable segments, it falls back to
+// resolving them from the raw `parts` via the release's binary_id. Returns an
+// empty slice when neither source has segments.
 func (s *Store) GetReleaseSegments(ctx context.Context, releaseID int64) ([]PartSegment, error) {
+	// 1. Durable segments on the release.
+	var raw []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT segments FROM releases WHERE id = $1`, releaseID).Scan(&raw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("read release segments: %w", err)
+	}
+	if len(raw) > 0 {
+		var js []jsonSegment
+		if err := json.Unmarshal(raw, &js); err != nil {
+			return nil, fmt.Errorf("unmarshal release segments: %w", err)
+		}
+		if len(js) > 0 {
+			out := make([]PartSegment, len(js))
+			for i, j := range js {
+				out[i] = PartSegment{MessageID: j.MessageID, Bytes: j.Bytes, PartNumber: j.PartNumber, Subject: j.Subject}
+			}
+			return out, nil
+		}
+	}
+
+	// 2. Fallback: resolve from raw parts (legacy releases not yet snapshotted).
+	return s.releaseSegmentsFromParts(ctx, releaseID)
+}
+
+// releaseSegmentsFromParts resolves a release's ordered segments from the raw
+// parts table via binary_id (the pre-durable-segments behaviour).
+func (s *Store) releaseSegmentsFromParts(ctx context.Context, releaseID int64) ([]PartSegment, error) {
 	const q = `
 SELECT p.message_id, p.bytes, p.part_number, p.subject
 FROM parts p
@@ -141,6 +190,78 @@ ORDER BY p.part_number, p.article_number`
 		out = append(out, seg)
 	}
 	return out, rows.Err()
+}
+
+// snapshotReleaseSegments captures the release's ordered segments (from its
+// linked binary's parts) into durable releases.segments storage. A release with
+// no linked binary or no parts stores an empty array. Idempotent: safe to call
+// again to refresh.
+func (s *Store) snapshotReleaseSegments(ctx context.Context, releaseID int64) error {
+	segs, err := s.releaseSegmentsFromParts(ctx, releaseID)
+	if err != nil {
+		return err
+	}
+	js := make([]jsonSegment, len(segs))
+	for i, seg := range segs {
+		js[i] = jsonSegment{MessageID: seg.MessageID, Bytes: seg.Bytes, PartNumber: seg.PartNumber, Subject: seg.Subject}
+	}
+	data, err := json.Marshal(js)
+	if err != nil {
+		return fmt.Errorf("marshal segments: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE releases SET segments = $2, updated_at = now() WHERE id = $1`, releaseID, data); err != nil {
+		return fmt.Errorf("store release segments: %w", err)
+	}
+	return nil
+}
+
+// BackfillReleaseSegments snapshots durable segments for legacy releases that
+// have none yet (empty segments array) but still have a linked binary with
+// parts. It processes up to limit releases and returns how many were repaired
+// and how many could not be (no resolvable parts). Used by the retention
+// prerequisite to make existing installs retention-safe.
+func (s *Store) BackfillReleaseSegments(ctx context.Context, limit int) (repaired, unresolved int, err error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT id FROM releases
+WHERE segments = '[]'::jsonb AND binary_id IS NOT NULL
+ORDER BY id
+LIMIT $1`, limit)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list releases needing segment backfill: %w", err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, 0, fmt.Errorf("scan release id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+
+	for _, id := range ids {
+		segs, serr := s.releaseSegmentsFromParts(ctx, id)
+		if serr != nil {
+			return repaired, unresolved, serr
+		}
+		if len(segs) == 0 {
+			unresolved++ // parts already gone / never present; cannot repair
+			continue
+		}
+		if serr := s.snapshotReleaseSegments(ctx, id); serr != nil {
+			return repaired, unresolved, serr
+		}
+		repaired++
+	}
+	return repaired, unresolved, nil
 }
 
 // SearchFilter parameterises a release search.

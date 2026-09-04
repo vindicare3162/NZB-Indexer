@@ -39,7 +39,7 @@ func (g *Generator) ForGUID(ctx context.Context, guid string) (data []byte, file
 		return nil, "", err
 	}
 	if len(segs) == 0 {
-		return nil, "", fmt.Errorf("nzb: release %q has no segments", guid)
+		return nil, "", fmt.Errorf("nzb: release %q has no segments (durable segments empty and no backing parts); it may predate durable-segment storage and its parts have been pruned — re-index the group or restore from backup", guid)
 	}
 
 	groupName := ""

@@ -534,6 +534,27 @@ func (a *API) handleRetryFailed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "failed releases requeued", "requeued": n})
 }
 
+// handleBackfillSegments snapshots durable NZB segments for legacy releases
+// that lack them, making them retention-safe. Bounded per call; run repeatedly
+// to process a large backlog.
+func (a *API) handleBackfillSegments(w http.ResponseWriter, r *http.Request) {
+	limit := 500
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	repaired, unresolved, err := a.store.BackfillReleaseSegments(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "segment backfill failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"repaired":   repaired,
+		"unresolved": unresolved,
+	})
+}
+
 // --- schedule ---
 
 // scheduleKeys maps the JSON/setting field to its settings-table key.
