@@ -196,6 +196,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	})
 	// Raw-part retention window/batch defaults for the admin retention endpoints.
 	restAPI.SetRetention(cfg.Retention.Days, cfg.Retention.BatchSize, cfg.Retention.MaxBatchesPerRun)
+	// Live log streaming for the admin Server-Sent Events endpoint (#121).
+	restAPI.SetLogStreamer(logs)
 
 	spa, err := web.Handler()
 	if err != nil {

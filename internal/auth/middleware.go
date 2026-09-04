@@ -71,6 +71,11 @@ func (s *Service) RequireSession(next http.Handler) http.Handler {
 				token = c.Value
 			}
 		}
+		// EventSource (Server-Sent Events, #121) cannot set an Authorization
+		// header, so also accept the session token as a "token" query parameter.
+		if token == "" {
+			token = r.URL.Query().Get("token")
+		}
 		if token == "" {
 			writeAuthError(w, http.StatusUnauthorized, "authentication required")
 			return

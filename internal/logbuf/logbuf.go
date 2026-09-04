@@ -20,12 +20,22 @@ type Entry struct {
 
 // Buffer is a fixed-capacity, concurrency-safe ring of recent log entries. It
 // is the shared storage; log capture goes through a Handler (see NewHandler).
+// It also supports live subscription (Subscribe) so new entries can be streamed
+// (e.g. to the admin UI via Server-Sent Events, #121).
 type Buffer struct {
 	mu      sync.Mutex
 	entries []Entry
 	next    int  // index of the next write position
 	full    bool // whether the ring has wrapped
 	cap     int
+
+	// subs are live subscribers; each new entry is fanned out to them
+	// non-blocking (a slow/full subscriber drops entries rather than stalling
+	// log writes). Guarded by subMu (separate from mu so a subscriber's channel
+	// send never contends with a Recent read).
+	subMu sync.Mutex
+	subs  map[int]chan Entry
+	subID int
 }
 
 // New creates a Buffer holding up to capacity entries. A non-positive capacity
@@ -34,10 +44,11 @@ func New(capacity int) *Buffer {
 	if capacity <= 0 {
 		capacity = 1000
 	}
-	return &Buffer{entries: make([]Entry, capacity), cap: capacity}
+	return &Buffer{entries: make([]Entry, capacity), cap: capacity, subs: map[int]chan Entry{}}
 }
 
-// add appends an entry to the ring, evicting the oldest when full.
+// add appends an entry to the ring, evicting the oldest when full, then fans it
+// out to any live subscribers (non-blocking).
 func (b *Buffer) add(e Entry) {
 	b.mu.Lock()
 	b.entries[b.next] = e
@@ -46,6 +57,47 @@ func (b *Buffer) add(e Entry) {
 		b.full = true
 	}
 	b.mu.Unlock()
+	b.publish(e)
+}
+
+// publish delivers an entry to every subscriber without blocking: if a
+// subscriber's buffered channel is full (a slow consumer), the entry is dropped
+// for that subscriber rather than stalling log capture.
+func (b *Buffer) publish(e Entry) {
+	b.subMu.Lock()
+	for _, ch := range b.subs {
+		select {
+		case ch <- e:
+		default: // subscriber is behind; drop to keep logging non-blocking
+		}
+	}
+	b.subMu.Unlock()
+}
+
+// Subscribe registers a live subscriber and returns a channel of newly-added
+// entries plus a cancel function that unregisters and closes the channel. The
+// channel is buffered; a consumer that falls behind will miss entries (they are
+// dropped) but never blocks log capture. Always call cancel when done.
+func (b *Buffer) Subscribe() (<-chan Entry, func()) {
+	ch := make(chan Entry, 256)
+	b.subMu.Lock()
+	id := b.subID
+	b.subID++
+	b.subs[id] = ch
+	b.subMu.Unlock()
+
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() {
+			b.subMu.Lock()
+			if c, ok := b.subs[id]; ok {
+				delete(b.subs, id)
+				close(c)
+			}
+			b.subMu.Unlock()
+		})
+	}
+	return ch, cancel
 }
 
 // Recent returns up to limit most-recent entries, newest first. A non-positive

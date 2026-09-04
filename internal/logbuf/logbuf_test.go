@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"testing"
+	"time"
 )
 
 func TestBufferCaptureAndOrder(t *testing.T) {
@@ -117,5 +118,92 @@ func TestEnabledAlways(t *testing.T) {
 	h := buf.NewHandler()
 	if !h.Enabled(context.Background(), slog.LevelDebug) {
 		t.Error("buffer handler should capture all levels")
+	}
+}
+
+func TestSubscribeReceivesNewEntries(t *testing.T) {
+	buf := New(10)
+	logger := slog.New(buf.NewHandler())
+
+	ch, cancel := buf.Subscribe()
+	defer cancel()
+
+	logger.Info("live one")
+	logger.Warn("live two")
+
+	got := []string{}
+	for i := 0; i < 2; i++ {
+		select {
+		case e := <-ch:
+			got = append(got, e.Message)
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for live entry %d", i)
+		}
+	}
+	if got[0] != "live one" || got[1] != "live two" {
+		t.Errorf("live entries = %v, want [live one live two]", got)
+	}
+}
+
+func TestSubscribeCancelStopsAndCloses(t *testing.T) {
+	buf := New(10)
+	logger := slog.New(buf.NewHandler())
+
+	ch, cancel := buf.Subscribe()
+	cancel()
+
+	// After cancel the channel is closed; a receive returns the zero value with ok=false.
+	if _, ok := <-ch; ok {
+		t.Error("expected channel to be closed after cancel")
+	}
+	// Further log writes must not panic (subscriber already removed).
+	logger.Info("after cancel")
+	// A second cancel is a no-op.
+	cancel()
+}
+
+func TestSubscribeDoesNotBlockWhenFull(t *testing.T) {
+	buf := New(10)
+	logger := slog.New(buf.NewHandler())
+
+	// Subscribe but never drain: the buffered channel (cap 256) fills and then
+	// further entries are dropped rather than blocking log capture.
+	_, cancel := buf.Subscribe()
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 1000; i++ {
+			logger.Info("flood")
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("log capture blocked on a full subscriber (should drop)")
+	}
+}
+
+func TestMultipleSubscribersEachReceive(t *testing.T) {
+	buf := New(10)
+	logger := slog.New(buf.NewHandler())
+
+	a, ca := buf.Subscribe()
+	defer ca()
+	b, cb := buf.Subscribe()
+	defer cb()
+
+	logger.Info("broadcast")
+
+	for _, ch := range []<-chan Entry{a, b} {
+		select {
+		case e := <-ch:
+			if e.Message != "broadcast" {
+				t.Errorf("got %q, want broadcast", e.Message)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("a subscriber did not receive the broadcast")
+		}
 	}
 }
