@@ -41,6 +41,17 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Scalable group management for hundreds or thousands of groups (#123). The
+  admin `GET /admin/groups` endpoint is now server-side paginated, filtered, and
+  sorted: `?q=` (name search), `?status=active|inactive`, `?errors=true`
+  (last scan failed), `?sort=name|lag|last_scan|backfill` with `?order=desc`,
+  and `?limit`/`?offset`. It returns `{groups, total, limit, offset}` instead of
+  the full array, backed by a new `store.ListGroupsPage`. The admin overview no
+  longer embeds every group — it carries a bounded first page plus a
+  `groups_total` count — so the dashboard stays light at scale. The Newsgroups
+  admin panel gains a debounced search box, status and errors-only filters,
+  sortable column headers, and Prev/Next pagination; the query/paging logic is a
+  unit-tested module (`web/src/lib/groupquery.js`).
 - Live admin updates via Server-Sent Events (#121). A new
   `GET /api/v1/admin/events` endpoint streams `status` snapshots (the pipeline
   status, pushed on connect and every few seconds) and `log` events (each new

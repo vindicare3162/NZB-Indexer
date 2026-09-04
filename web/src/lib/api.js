@@ -87,7 +87,7 @@ export const api = {
     return request('GET', `/admin/discover?${params.toString()}`);
   },
   overview: () => request('GET', '/admin/overview'),
-  groups: () => request('GET', '/admin/groups'),
+  groups: (query = '') => request('GET', `/admin/groups${query ? `?${query}` : ''}`),
   createGroup: (name) => request('POST', '/admin/groups', { name, active: true }),
   bulkGroups: (names, backfillDays = 0, active = true) =>
     request('POST', '/admin/groups/bulk', { names, backfill_days: backfillDays, active }),

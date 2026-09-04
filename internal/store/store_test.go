@@ -241,6 +241,94 @@ func TestRecordGroupScan(t *testing.T) {
 	}
 }
 
+// TestListGroupsPage covers the paginated/filtered/sorted group listing (#123):
+// search, active/inactive + errors-only filters, sort by name/lag, and paging.
+func TestListGroupsPage(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+
+	// Seed a mix of groups. Names chosen so alphabetical order is predictable.
+	names := []string{"alt.binaries.a", "alt.binaries.b", "alt.binaries.c", "misc.test.d"}
+	ids := map[string]int64{}
+	for _, n := range names {
+		g, err := st.UpsertGroup(ctx, n, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[n] = g.ID
+	}
+	// Deactivate one; give two different lags + one an error.
+	if err := st.SetGroupActive(ctx, ids["misc.test.d"], false); err != nil {
+		t.Fatal(err)
+	}
+	// a: lag 100 (server 5100, seen 5000); b: lag 10; c: error.
+	if err := st.RecordGroupScan(ctx, ids["alt.binaries.a"], GroupScanOutcome{ServerHigh: 5100}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool().Exec(ctx, `UPDATE groups SET last_scanned_high = 5000 WHERE id = $1`, ids["alt.binaries.a"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordGroupScan(ctx, ids["alt.binaries.b"], GroupScanOutcome{ServerHigh: 5010}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool().Exec(ctx, `UPDATE groups SET last_scanned_high = 5000 WHERE id = $1`, ids["alt.binaries.b"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordGroupScan(ctx, ids["alt.binaries.c"], GroupScanOutcome{Err: "boom"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// All, default sort (name asc), full page.
+	page, err := st.ListGroupsPage(ctx, GroupFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 4 || len(page.Groups) != 4 {
+		t.Fatalf("all: total=%d len=%d, want 4/4", page.Total, len(page.Groups))
+	}
+	if page.Groups[0].Name != "alt.binaries.a" || page.Groups[3].Name != "misc.test.d" {
+		t.Errorf("name sort wrong: %s .. %s", page.Groups[0].Name, page.Groups[3].Name)
+	}
+
+	// Search.
+	page, _ = st.ListGroupsPage(ctx, GroupFilter{Search: "misc"})
+	if page.Total != 1 || page.Groups[0].Name != "misc.test.d" {
+		t.Errorf("search misc: total=%d groups=%+v", page.Total, page.Groups)
+	}
+
+	// Active-only excludes the deactivated group.
+	page, _ = st.ListGroupsPage(ctx, GroupFilter{Status: "active"})
+	if page.Total != 3 {
+		t.Errorf("active total = %d, want 3", page.Total)
+	}
+	// Inactive-only.
+	page, _ = st.ListGroupsPage(ctx, GroupFilter{Status: "inactive"})
+	if page.Total != 1 || page.Groups[0].Name != "misc.test.d" {
+		t.Errorf("inactive = %+v", page.Groups)
+	}
+
+	// Errors-only.
+	page, _ = st.ListGroupsPage(ctx, GroupFilter{ErrorsOnly: true})
+	if page.Total != 1 || page.Groups[0].Name != "alt.binaries.c" {
+		t.Errorf("errors-only = %+v", page.Groups)
+	}
+
+	// Sort by lag descending: a (100) before b (10); groups with no lag last.
+	page, _ = st.ListGroupsPage(ctx, GroupFilter{Sort: "lag", Desc: true})
+	if page.Groups[0].Name != "alt.binaries.a" || page.Groups[1].Name != "alt.binaries.b" {
+		t.Errorf("lag desc order wrong: %s, %s", page.Groups[0].Name, page.Groups[1].Name)
+	}
+
+	// Paging: limit 2, offset 2 (name sort) -> the 3rd and 4th groups.
+	page, _ = st.ListGroupsPage(ctx, GroupFilter{Limit: 2, Offset: 2})
+	if page.Total != 4 || len(page.Groups) != 2 {
+		t.Fatalf("paged: total=%d len=%d, want total 4 len 2", page.Total, len(page.Groups))
+	}
+	if page.Groups[0].Name != "alt.binaries.c" || page.Groups[1].Name != "misc.test.d" {
+		t.Errorf("page 2 = %s, %s", page.Groups[0].Name, page.Groups[1].Name)
+	}
+}
+
 func TestGroupCRUD(t *testing.T) {
 	st := freshStore(t)
 	ctx := context.Background()

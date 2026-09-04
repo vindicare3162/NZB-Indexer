@@ -16,15 +16,25 @@ import (
 // --- groups ---
 
 func (a *API) handleListGroups(w http.ResponseWriter, r *http.Request) {
-	groups, err := a.store.ListGroups(r.Context(), false)
+	q := r.URL.Query()
+	f := store.GroupFilter{
+		Search:     strings.TrimSpace(q.Get("q")),
+		Status:     q.Get("status"),
+		ErrorsOnly: q.Get("errors") == "true" || q.Get("errors") == "1",
+		Sort:       q.Get("sort"),
+		Desc:       q.Get("order") == "desc",
+		Limit:      parseIntDefault(q.Get("limit"), 50),
+		Offset:     parseIntDefault(q.Get("offset"), 0),
+	}
+	page, err := a.store.ListGroupsPage(r.Context(), f)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list groups")
 		return
 	}
-	if groups == nil {
-		groups = []store.Group{}
+	if page.Groups == nil {
+		page.Groups = []store.Group{}
 	}
-	writeJSON(w, http.StatusOK, groups)
+	writeJSON(w, http.StatusOK, page)
 }
 
 type createGroupRequest struct {

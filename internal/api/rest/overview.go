@@ -22,6 +22,9 @@ type overviewResponse struct {
 	Status   any                     `json:"status"`
 	Stats    *store.PipelineStats    `json:"stats"`
 	Groups   []store.Group           `json:"groups"`
+	// GroupsTotal is the full group count; Groups holds only a bounded first
+	// page for the dashboard (#123).
+	GroupsTotal int `json:"groups_total"`
 	Servers  []serverOverview        `json:"servers"`
 	Users    []store.User            `json:"users"`
 	Schedule *scheduleResponse       `json:"schedule"`
@@ -74,10 +77,14 @@ func (a *API) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Groups.
-	if groups, err := a.store.ListGroups(ctx, false); err != nil {
+	// Groups: only a bounded first page here so the overview stays light even
+	// with thousands of groups (#123). The admin UI loads/pages the full list
+	// via GET /admin/groups. GroupsTotal reports the full count.
+	if page, err := a.store.ListGroupsPage(ctx, store.GroupFilter{Limit: 50}); err != nil {
 		resp.Errors["groups"] = err.Error()
-	} else if groups != nil {
-		resp.Groups = groups
+	} else {
+		resp.Groups = page.Groups
+		resp.GroupsTotal = page.Total
 	}
 
 	// Servers (credential-redacted).

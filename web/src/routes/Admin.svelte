@@ -6,6 +6,7 @@
   import { createConfirmStore } from '../lib/confirm.js';
   import { getToken } from '../lib/api.js';
   import { connectAdminEvents } from '../lib/events.js';
+  import { defaultGroupQuery, buildGroupsQuery, totalPages, pageRangeLabel, nextSort } from '../lib/groupquery.js';
 
   // Action feedback + confirmation flows (#122). Toasts give per-action
   // success/error feedback; confirmStore drives an accessible in-page prompt
@@ -27,6 +28,11 @@
   }
 
   let groups = $state([]);
+  // Server-side group listing controls (#123): search/filter/sort/paging.
+  let groupQuery = $state(defaultGroupQuery());
+  let groupTotal = $state(0);
+  let groupSearchInput = $state('');
+  let groupSearchTimer = null;
   let users = $state([]);
   let servers = $state([]);
   let status = $state(null);
@@ -81,7 +87,8 @@
     try {
       const o = await api.overview();
       if (token !== overviewToken) return; // a newer load superseded this one
-      groups = o.groups || [];
+      // Groups are loaded via the dedicated paginated endpoint (#123); the
+      // overview only carries a bounded first page + total for the dashboard.
       users = o.users || [];
       servers = o.servers || [];
       status = o.status ?? null;
@@ -90,6 +97,7 @@
       logs = o.logs || [];
       applySchedule(o.schedule);
       loadJobs();
+      loadGroups();
       // Surface any per-subsystem failures without blanking the rest.
       if (o.errors && Object.keys(o.errors).length > 0) {
         error = 'Some data could not be loaded: ' + Object.keys(o.errors).join(', ');
@@ -172,6 +180,48 @@
   function loadJobs() {
     api.jobs(50).then((j) => { jobs = j || []; }).catch(() => {});
   }
+
+  // loadGroups fetches the current page of groups from the server-side
+  // paginated endpoint (#123).
+  function loadGroups() {
+    api.groups(buildGroupsQuery(groupQuery))
+      .then((page) => { groups = page.groups || []; groupTotal = page.total || 0; })
+      .catch((e) => fail(e));
+  }
+
+  // Group control handlers: each resets to page 1 (except paging) and reloads.
+  function applyGroupSearch() {
+    // Debounce typing so we don't hit the API on every keystroke.
+    clearTimeout(groupSearchTimer);
+    groupSearchTimer = setTimeout(() => {
+      groupQuery = { ...groupQuery, q: groupSearchInput.trim(), page: 1 };
+      loadGroups();
+    }, 350);
+  }
+  function setGroupStatus(status) {
+    groupQuery = { ...groupQuery, status, page: 1 };
+    loadGroups();
+  }
+  function toggleGroupErrorsOnly() {
+    groupQuery = { ...groupQuery, errorsOnly: !groupQuery.errorsOnly, page: 1 };
+    loadGroups();
+  }
+  function sortGroupsBy(column) {
+    groupQuery = { ...groupQuery, ...nextSort(groupQuery, column), page: 1 };
+    loadGroups();
+  }
+  function groupPagePrev() {
+    if (groupQuery.page <= 1) return;
+    groupQuery = { ...groupQuery, page: groupQuery.page - 1 };
+    loadGroups();
+  }
+  function groupPageNext() {
+    if (groupQuery.page >= totalPages(groupTotal, groupQuery.pageSize)) return;
+    groupQuery = { ...groupQuery, page: groupQuery.page + 1 };
+    loadGroups();
+  }
+  // Derived label for the current page range.
+  let groupRangeLabel = $derived(pageRangeLabel(groupQuery.page, groupQuery.pageSize, groupTotal));
 
   // Live updates via Server-Sent Events (#121) with a polling fallback. When
   // the SSE stream is up, pipeline status and new log lines are pushed live, so
@@ -687,9 +737,33 @@
       <button onclick={addBulk} disabled={bulkBusy}>{bulkBusy ? 'Adding…' : 'Add all'}</button>
     </div>
   </details>
+  <!-- Server-side search / filter / sort controls (#123) so the list scales to
+       hundreds or thousands of groups. -->
+  <div class="row" style="margin-top:0.8rem; flex-wrap:wrap; gap:0.6rem; align-items:center">
+    <input placeholder="Search groups…" bind:value={groupSearchInput} oninput={applyGroupSearch}
+           aria-label="Search groups" style="flex:1; min-width:12rem" />
+    <select value={groupQuery.status} onchange={(e) => setGroupStatus(e.currentTarget.value)} aria-label="Filter by status">
+      <option value="">All</option>
+      <option value="active">Active</option>
+      <option value="inactive">Inactive</option>
+    </select>
+    <label class="row" style="gap:0.3rem">
+      <input type="checkbox" checked={groupQuery.errorsOnly} onchange={toggleGroupErrorsOnly} /> Errors only
+    </label>
+    <span class="muted" style="font-size:0.85rem">{groupRangeLabel}</span>
+  </div>
   {#if groups.length > 0}
     <table style="margin-top:0.8rem">
-      <thead><tr><th>Group</th><th>Active</th><th>Fwd pos</th><th>Lag</th><th>Last scan</th><th>Backfill</th><th>Target</th><th></th></tr></thead>
+      <thead><tr>
+        <th><button class="linklike" onclick={() => sortGroupsBy('name')}>Group{groupQuery.sort === 'name' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
+        <th>Active</th>
+        <th>Fwd pos</th>
+        <th><button class="linklike" onclick={() => sortGroupsBy('lag')}>Lag{groupQuery.sort === 'lag' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
+        <th><button class="linklike" onclick={() => sortGroupsBy('last_scan')}>Last scan{groupQuery.sort === 'last_scan' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
+        <th><button class="linklike" onclick={() => sortGroupsBy('backfill')}>Backfill{groupQuery.sort === 'backfill' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
+        <th>Target</th>
+        <th></th>
+      </tr></thead>
       <tbody>
         {#each groups as g}
           <tr>
@@ -751,6 +825,14 @@
         {/each}
       </tbody>
     </table>
+    <!-- Pagination (#123). -->
+    <div class="row" style="margin-top:0.6rem; gap:0.5rem; align-items:center">
+      <button class="secondary" onclick={groupPagePrev} disabled={groupQuery.page <= 1}>Prev</button>
+      <span class="muted" style="font-size:0.85rem">Page {groupQuery.page} of {totalPages(groupTotal, groupQuery.pageSize)}</span>
+      <button class="secondary" onclick={groupPageNext} disabled={groupQuery.page >= totalPages(groupTotal, groupQuery.pageSize)}>Next</button>
+    </div>
+  {:else}
+    <p class="muted" style="margin-top:0.8rem">No groups match the current filter.</p>
   {/if}
   <div class="row" style="margin-top:0.8rem">
     <button onclick={() => scan('')}>Scan all</button>
@@ -967,4 +1049,18 @@
     width: 100%;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
   }
+
+  /* Sortable table-header buttons (#123): look like the header text, act like
+     a button. */
+  .linklike {
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    font-weight: inherit;
+    cursor: pointer;
+    padding: 0;
+    text-align: left;
+  }
+  .linklike:hover { text-decoration: underline; }
 </style>
