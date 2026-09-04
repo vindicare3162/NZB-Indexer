@@ -6,6 +6,20 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Changed
+- NNTP connection capacity is now safely reconfigurable at runtime (#111).
+  Previously the pool's concurrency ceiling was fixed at construction, so an
+  admin change to a server's max-connections updated connection parameters but
+  silently kept the old capacity until a restart. The pool now uses a resizable
+  counting semaphore: growing the limit immediately wakes waiting workers, and
+  shrinking stops granting new slots beyond the new limit while letting in-flight
+  operations finish — so the number of concurrent connections never exceeds
+  either the old or the new limit during the transition and no operation is
+  interrupted. Editing the active server applies the new ceiling live, and the
+  effective capacity (and in-use count) is logged and reported in the health
+  status. Covered by race-enabled tests for growing, shrinking, and resizing
+  under active load, plus pool-shutdown safety.
+
 ### Added
 - PostgreSQL and NNTP resource budgeting (#117). Pipeline concurrency is now
   sized against **both** the effective NNTP capacity and the PostgreSQL pool

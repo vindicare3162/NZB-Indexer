@@ -314,9 +314,12 @@ func TestReconfigureAppliesNewSettingsAndDropsIdle(t *testing.T) {
 		t.Errorf("Reconfigure should drop idle conns, got %d idle", idle)
 	}
 
-	// MaxConns ceiling must be preserved (not raised to 999).
-	if got := p.config().MaxConns; got != 2 {
-		t.Errorf("MaxConns after reconfigure = %d, want 2 (ceiling preserved)", got)
+	// MaxConns ceiling is now safely resized to the new value (#111).
+	if got := p.config().MaxConns; got != 999 {
+		t.Errorf("MaxConns after reconfigure = %d, want 999 (ceiling resized)", got)
+	}
+	if lim, _ := p.MaxConns(); lim != 999 {
+		t.Errorf("effective ceiling after reconfigure = %d, want 999", lim)
 	}
 
 	// Next call dials the new host.

@@ -331,6 +331,9 @@ func (m *serverManager) ApplyActive(ctx context.Context) error {
 		return err
 	}
 	m.pool.Reconfigure(serverToNNTPConfig(active, m.connectTimeout))
-	m.log.Info("applied news server to pool", "name", active.Name, "host", active.Host)
+	limit, inUse := m.pool.MaxConns()
+	m.log.Info("applied news server to pool",
+		"name", active.Name, "host", active.Host,
+		"effective_max_conns", limit, "in_use", inUse)
 	return nil
 }
