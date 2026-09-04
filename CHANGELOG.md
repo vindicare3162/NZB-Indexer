@@ -40,6 +40,13 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   PostgreSQL 18.
 
 ### Fixed
+- Loose-file collections — a post of many individual files (e.g. `index.html`,
+  `script.js`, `.course_id`, plus a PAR2 set) with a shared `[n/total]` counter
+  — are now grouped into a single release instead of one release per file
+  (#90). Collection detection keys on the release title preceding the file
+  counter (false-merge-safe), so the whole post (content + parity) collapses
+  into one correctly-named release; classic archive sets and single-file posts
+  are unaffected.
 - Multi-file collections posted with a title-prefixed file counter
   (`Release.Name [64/65] - "file.par2" ...`) are no longer fragmented into a
   separate release per file (#88). The leading-file-counter parser was anchored
