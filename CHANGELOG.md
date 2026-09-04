@@ -7,6 +7,21 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Added
+- Automated Newznab client-contract tests (#136) hardening compatibility with
+  Prowlarr, Sonarr, and Radarr. The suite parses the actual XML and asserts the
+  exact shapes clients depend on: caps (limits, per-search-type
+  `supportedParams`, nested parent/subcategory structure), search/tvsearch/movie
+  (RSS `version`/namespace, `newznab:response` offset+total, item
+  `title`/`guid`/`link`/`pubDate` RFC1123Z/`enclosure` url+length+`application/x-nzb`,
+  `newznab:attr` size/grabs/category), details, and get (NZB content type +
+  `Content-Disposition`, grab increment). It also covers pagination passthrough
+  and limit clamping, category-list/parent expansion, empty results, malformed
+  requests and Newznab error codes (200/202/300), a full client workflow
+  sequence, and a guard that every advertised search param is one the handler
+  actually resolves. Combined with the existing API-key / rate-limit contract
+  (401/429, `Retry-After`, `X-RateLimit-*`) this locks the client-facing surface
+  against regressions. Documented in `docs/newznab-compat.md`. No behavior
+  changes — the existing surface already met the contract.
 - NNTP provider health checks, failover, and circuit breaking (#128). The
   pipeline now routes NNTP work across all enabled DB-managed servers by
   priority: the highest-priority healthy provider serves each request, and on a
