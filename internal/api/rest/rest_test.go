@@ -148,6 +148,31 @@ func (m *mockStore) PipelineStatistics(context.Context) (store.PipelineStats, er
 	}, nil
 }
 func (m *mockStore) ListGroups(context.Context, bool) ([]store.Group, error)  { return m.groups, nil }
+func (m *mockStore) ListGroupsPage(_ context.Context, f store.GroupFilter) (store.GroupPage, error) {
+	// Minimal in-memory paging over m.groups for handler tests: apply the
+	// search filter and offset/limit; total is the filtered count.
+	var matched []store.Group
+	for _, g := range m.groups {
+		if f.Search != "" && !strings.Contains(strings.ToLower(g.Name), strings.ToLower(f.Search)) {
+			continue
+		}
+		matched = append(matched, g)
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	total := len(matched)
+	start := f.Offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	return store.GroupPage{Groups: matched[start:end], Total: total, Limit: limit, Offset: f.Offset}, nil
+}
 func (m *mockStore) GetGroupByName(_ context.Context, name string) (store.Group, error) {
 	for _, g := range m.groups {
 		if g.Name == name {

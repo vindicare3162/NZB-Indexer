@@ -56,6 +56,8 @@ type Store interface {
 
 	// Groups (admin)
 	ListGroups(ctx context.Context, activeOnly bool) ([]store.Group, error)
+	// ListGroupsPage returns a filtered, sorted, paginated page of groups (#123).
+	ListGroupsPage(ctx context.Context, f store.GroupFilter) (store.GroupPage, error)
 	GetGroupByName(ctx context.Context, name string) (store.Group, error)
 	UpsertGroup(ctx context.Context, name string, active bool) (store.Group, error)
 	SetGroupActive(ctx context.Context, id int64, active bool) error

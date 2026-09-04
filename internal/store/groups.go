@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -75,6 +76,130 @@ func (s *Store) ListGroups(ctx context.Context, activeOnly bool) ([]Group, error
 		out = append(out, g)
 	}
 	return out, rows.Err()
+}
+
+// GroupFilter parameters a paginated, filtered, sorted group listing (#123),
+// so the admin UI can manage hundreds/thousands of groups without loading them
+// all at once.
+type GroupFilter struct {
+	// Search matches the group name (case-insensitive substring). Empty = all.
+	Search string
+	// Status filters by active state: "active", "inactive", or "" (all).
+	Status string
+	// ErrorsOnly, when true, returns only groups whose last scan errored.
+	ErrorsOnly bool
+	// Sort is the sort key: "name" (default), "lag", "last_scan", "backfill".
+	Sort string
+	// Desc reverses the sort order.
+	Desc bool
+	// Limit bounds the page size (default 50, max 500); Offset is the page start.
+	Limit  int
+	Offset int
+}
+
+// GroupPage is one page of a filtered group listing plus the total match count.
+type GroupPage struct {
+	Groups []Group `json:"groups"`
+	Total  int     `json:"total"`
+	Limit  int     `json:"limit"`
+	Offset int     `json:"offset"`
+}
+
+// groupSortExpr maps a GroupFilter.Sort key to a SQL ORDER BY expression. name
+// is always appended as a tiebreaker for stable paging.
+func groupSortExpr(sort string, desc bool) string {
+	dir := "ASC"
+	if desc {
+		dir = "DESC"
+	}
+	var col string
+	switch sort {
+	case "lag":
+		// Lag = how far behind the server head the forward watermark is.
+		col = "GREATEST(server_high - last_scanned_high, 0)"
+	case "last_scan":
+		// NULLs (never scanned) sort last regardless of direction.
+		col = "last_scan_at"
+	case "backfill":
+		col = "backfill_low"
+	default:
+		col = "name"
+	}
+	if col == "name" {
+		return "name " + dir
+	}
+	return col + " " + dir + " NULLS LAST, name ASC"
+}
+
+// ListGroupsPage returns a filtered, sorted, paginated page of groups plus the
+// total number of groups matching the filter (#123).
+func (s *Store) ListGroupsPage(ctx context.Context, f GroupFilter) (GroupPage, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Build the shared WHERE clause and args.
+	var conds []string
+	var args []any
+	add := func(cond string, val any) {
+		args = append(args, val)
+		conds = append(conds, fmt.Sprintf(cond, len(args)))
+	}
+	if f.Search != "" {
+		add("name ILIKE '%%' || $%d || '%%'", f.Search)
+	}
+	switch f.Status {
+	case "active":
+		conds = append(conds, "active = TRUE")
+	case "inactive":
+		conds = append(conds, "active = FALSE")
+	}
+	if f.ErrorsOnly {
+		conds = append(conds, "last_scan_error <> ''")
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+
+	// Total count for the filter.
+	var total int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM groups`+where, args...).Scan(&total); err != nil {
+		return GroupPage{}, fmt.Errorf("count groups: %w", err)
+	}
+
+	// The page. limit/offset are the last two positional args.
+	args = append(args, limit, offset)
+	q := `SELECT ` + groupColumns + ` FROM groups` + where +
+		` ORDER BY ` + groupSortExpr(f.Sort, f.Desc) +
+		fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return GroupPage{}, fmt.Errorf("list groups page: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Group, 0, limit)
+	for rows.Next() {
+		g, err := scanGroup(rows)
+		if err != nil {
+			return GroupPage{}, fmt.Errorf("scan group: %w", err)
+		}
+		out = append(out, g)
+	}
+	if err := rows.Err(); err != nil {
+		return GroupPage{}, err
+	}
+	return GroupPage{Groups: out, Total: total, Limit: limit, Offset: offset}, nil
 }
 
 // SetGroupBackfillTarget sets (or clears with nil) a group's per-group backfill
