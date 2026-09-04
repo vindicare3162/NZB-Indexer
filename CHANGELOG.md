@@ -7,6 +7,19 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Changed
+- Article/part ingestion now uses PostgreSQL COPY for bulk loading (#115).
+  Instead of one `INSERT` per article, a scan batch is loaded via `COPY` into a
+  per-transaction `TEMP` staging table and folded into `parts` with a single
+  set-based `INSERT ... SELECT DISTINCT ON (group_id, article_number) ...
+  ON CONFLICT DO NOTHING`. This materially improves high-volume header-ingestion
+  throughput while preserving idempotency: rows conflicting on the natural key —
+  already stored or duplicated within the batch — are skipped, and the accurate
+  count of newly inserted rows is still returned. The whole load is one
+  transaction, so a failed or cancelled batch inserts nothing (watermark-safe),
+  and memory stays bounded by the caller's batch size (staging table is
+  `ON COMMIT DROP`). Constraints and indexes are unchanged. Tests cover
+  idempotent re-scans, in-batch duplicates, cancellation/rollback, and empty
+  batches; a benchmark exercises 10k/100k batches.
 - Forward scans are now prioritized over historical backfill (#112). Previously
   each scan cycle ran a full forward pass and then a full backfill pass
   sequentially, so a large backfill could delay indexing of newly posted
