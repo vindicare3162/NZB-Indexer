@@ -41,6 +41,19 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- End-to-end integration fixtures for Prowlarr, Sonarr, Radarr, SABnzbd, and
+  NZBGet (#140). A new `internal/integration` suite runs the real
+  Newznab-compatible handler and NZB generator over a disposable PostgreSQL
+  database populated with releases that carry durable NZB segments, validating
+  the full client flow with no external NNTP provider: capability discovery
+  (`t=caps` limits, search types, category tree), the Prowlarr/Sonarr/Radarr
+  search flow (text search, category filter, pagination offset echo, details,
+  and download links whose enclosures resolve to real NZBs), and the
+  SABnzbd/NZBGet download flow (NZB content type, `Content-Disposition`
+  filename, well-formed `<nzb>`/`<segment>` document, and graceful error
+  handling for unknown ids). The suite requires `GOINDEX_TEST_DSN` and is
+  skipped otherwise; optional live-client validation is documented in
+  `docs/integration-clients.md`.
 - Webhooks and notification integrations (#137). A new `internal/notify` service
   delivers typed pipeline events (job completed/failed, scan/stage failure, and
   others) to configured HTTP webhook destinations. Delivery is fully decoupled
