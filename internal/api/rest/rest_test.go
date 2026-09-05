@@ -58,6 +58,7 @@ type mockStore struct {
 	scanCfgPriority  int
 	scanCfgForward   *int64
 	groupStorage     map[int64]int64
+	capacity         store.CapacityStats
 }
 
 func (m *mockStore) Ping(context.Context) error { return m.pingErr }
@@ -212,6 +213,9 @@ func (m *mockStore) GroupStorageBytes(_ context.Context, ids []int64) (map[int64
 		out[id] = m.groupStorage[id]
 	}
 	return out, nil
+}
+func (m *mockStore) CapacityStats(_ context.Context, _ int) (store.CapacityStats, error) {
+	return m.capacity, nil
 }
 func (m *mockStore) CountUsers(context.Context) (int64, error) { return m.userCount, nil }
 func (m *mockStore) ListUsers(context.Context) ([]store.User, error) { return m.users, nil }
@@ -1042,6 +1046,47 @@ func TestHealthReport(t *testing.T) {
 	rec = do(t, env, http.MethodGet, "/api/v1/admin/health", env.userTok, nil)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("non-admin health status = %d, want 403", rec.Code)
+	}
+}
+
+func TestAdminCapacity(t *testing.T) {
+	env := setup(t)
+	// Seed observed basis: 10 arts/sec, 1000 bytes/article, 8 GB current.
+	env.store.capacity = store.CapacityStats{
+		DatabaseBytes:         8_000_000_000,
+		PartsBytes:            2_000_000_000,
+		ObservedArtsPerSecond: 10,
+		BytesPerArticle:       1000,
+		Tables:                []store.TableSize{{Name: "parts", TotalBytes: 2_000_000_000}},
+		TopGroupsByStorage:    []store.GroupStorageRank{{Name: "alt.binaries.big", Bytes: 1_500_000_000}},
+	}
+	// Retention window feeds the steady-state estimate.
+	env.api.SetRetention(30, 5000, 0)
+
+	rec := do(t, env, http.MethodGet, "/api/v1/admin/capacity", env.adminTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("capacity status = %d, body=%s", rec.Code, rec.Body)
+	}
+	var resp capacityResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	if resp.Stats.DatabaseBytes != 8_000_000_000 {
+		t.Errorf("db bytes = %d", resp.Stats.DatabaseBytes)
+	}
+	if resp.Forecast.DailyBytes != 864_000_000 {
+		t.Errorf("daily bytes = %d, want 864000000", resp.Forecast.DailyBytes)
+	}
+	if len(resp.Forecast.Projections) != 3 {
+		t.Fatalf("projections = %d, want 3 (30/90/365)", len(resp.Forecast.Projections))
+	}
+	if resp.Forecast.RetentionDays != 30 {
+		t.Errorf("retention days = %d, want 30", resp.Forecast.RetentionDays)
+	}
+
+	// Non-admin forbidden.
+	rec = do(t, env, http.MethodGet, "/api/v1/admin/capacity", env.userTok, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("non-admin capacity status = %d, want 403", rec.Code)
 	}
 }
 

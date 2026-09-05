@@ -42,6 +42,7 @@
   let logTimer = null;
   let jobs = $state([]);
   let notifications = $state([]);
+  let capacity = $state(null);
   let newGroup = $state('');
   let bulkNames = $state('');
   let bulkBackfillDays = $state(7);
@@ -99,6 +100,7 @@
       applySchedule(o.schedule);
       loadJobs();
       loadNotifications();
+      loadCapacity();
       loadGroups();
       // Surface any per-subsystem failures without blanking the rest.
       if (o.errors && Object.keys(o.errors).length > 0) {
@@ -185,6 +187,10 @@
 
   function loadNotifications() {
     api.notifications(50).then((n) => { notifications = n || []; }).catch(() => {});
+  }
+
+  function loadCapacity() {
+    api.capacity(10).then((c) => { capacity = c; }).catch(() => {});
   }
 
   // loadGroups fetches the current page of groups from the server-side
@@ -695,6 +701,48 @@
     </table>
   {:else}
     <p class="muted" style="margin:0">No notifications delivered yet.</p>
+  {/if}
+</div>
+
+<div class="panel">
+  <div class="row" style="justify-content:space-between; align-items:center">
+    <h3 style="margin-top:0; margin-bottom:0">Capacity planning</h3>
+    <button class="secondary" onclick={loadCapacity}>Refresh</button>
+  </div>
+  {#if capacity}
+    <p class="muted">
+      Database size <strong>{formatBytes(capacity.stats.database_bytes)}</strong>,
+      raw parts <strong>{formatBytes(capacity.stats.parts_bytes)}</strong>.
+      Observed ingest <strong>{Math.round(capacity.forecast.daily_articles).toLocaleString()} art/day</strong>
+      (~{formatBytes(capacity.forecast.daily_bytes)}/day).
+    </p>
+    <table style="margin-top:0.4rem">
+      <thead><tr><th>Horizon</th><th>Projected growth</th><th>Projected DB size</th><th>Retained (window)</th></tr></thead>
+      <tbody>
+        {#each capacity.forecast.projections as p}
+          <tr>
+            <td>{p.days}d</td>
+            <td>{formatBytes(p.growth_bytes)}</td>
+            <td>{formatBytes(p.projected_database_bytes)}</td>
+            <td class="muted">{capacity.forecast.retention_days > 0 ? formatBytes(p.retained_bytes) : '—'}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+    {#if capacity.stats.top_groups_by_storage && capacity.stats.top_groups_by_storage.length > 0}
+      <h4 style="margin:0.8rem 0 0.2rem">Top groups by storage</h4>
+      <table>
+        <thead><tr><th>Group</th><th>Storage</th><th>Parts</th></tr></thead>
+        <tbody>
+          {#each capacity.stats.top_groups_by_storage as g}
+            <tr><td>{g.name}</td><td>{formatBytes(g.bytes)}</td><td class="muted">{(g.parts || 0).toLocaleString()}</td></tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+    <p class="muted" style="font-size:0.8rem; margin-top:0.6rem">{capacity.forecast.assumptions}</p>
+  {:else}
+    <p class="muted" style="margin:0">Capacity data not loaded yet.</p>
   {/if}
 </div>
 

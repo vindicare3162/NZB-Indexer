@@ -41,6 +41,18 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Database growth and capacity-planning views (#131). A new admin capacity
+  report turns the observed per-group ingest rate (the summed throughput EMA
+  from #127) and current sizes into a storage forecast. `store.CapacityStats`
+  gathers the total database size, a per-table size/row breakdown (from
+  `pg_catalog`, over a fixed table allow-list), total retained raw-part bytes,
+  mean bytes per article, and per-group rankings by storage and by rate. A pure,
+  independently-tested `store.ProjectCapacity` converts that basis into 30/90/365-day
+  growth and projected-database-size forecasts plus a steady-state retained-bytes
+  estimate for the configured retention window (#118), with its measurement
+  assumptions surfaced. Served at `GET /api/v1/admin/capacity` and shown in a new
+  admin "Capacity planning" panel (sizes, projections table, top groups by
+  storage, and the forecast assumptions).
 - Expanded Prometheus metrics for pipeline, database, and NNTP health (#129).
   New scrape-time gauges and counters cover group freshness as **bounded
   aggregates** — active groups, groups behind, max/total forward lag, failing
