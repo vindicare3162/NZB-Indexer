@@ -71,6 +71,10 @@ type Store interface {
 	// CapacityStats reports current sizes and observed ingest rate for capacity
 	// planning (#131).
 	CapacityStats(ctx context.Context, topN int) (store.CapacityStats, error)
+	// RecentReleaseErrors + CountFailedReleases surface failed post-processing
+	// releases for the diagnostics view (#133).
+	RecentReleaseErrors(ctx context.Context, limit int) ([]store.ReleaseError, error)
+	CountFailedReleases(ctx context.Context) (total, permanent int64, err error)
 	DeleteGroup(ctx context.Context, id int64) error
 
 	// News servers (admin)
@@ -210,6 +214,10 @@ type API struct {
 	// endpoint (#137). Optional; nil disables it.
 	notifier NotifyHistorian
 
+	// errHistory exposes recent in-process pipeline errors for the diagnostics
+	// endpoint (#133). Optional; nil omits that section.
+	errHistory ErrorHistorian
+
 	log *slog.Logger
 }
 
@@ -217,6 +225,22 @@ type API struct {
 // notify.Service satisfies it.
 type NotifyHistorian interface {
 	History(limit int) []notify.Delivery
+}
+
+// PipelineError mirrors worker.PipelineError for the diagnostics view (#133),
+// kept here so the REST layer does not import the worker package.
+type PipelineError struct {
+	Seq     int64     `json:"seq"`
+	Stage   string    `json:"stage,omitempty"`
+	Group   string    `json:"group,omitempty"`
+	Message string    `json:"message"`
+	At      time.Time `json:"at"`
+}
+
+// ErrorHistorian exposes the worker's recent in-process pipeline errors (#133).
+// The server adapts worker.Worker into this. Optional; nil omits that section.
+type ErrorHistorian interface {
+	RecentErrors(limit int) []PipelineError
 }
 
 // SetSystemProbe attaches a health probe (NNTP pool / config facts) used by the
@@ -248,6 +272,10 @@ func (a *API) SetGroupHealthThresholds(t store.GroupHealthThresholds) {
 // can report recent delivery history (#137). Optional; nil disables the
 // endpoint.
 func (a *API) SetNotifier(n NotifyHistorian) { a.notifier = n }
+
+// SetErrorHistorian attaches the worker's recent-error source for the admin
+// diagnostics endpoint (#133). Optional; nil omits the in-process error list.
+func (a *API) SetErrorHistorian(e ErrorHistorian) { a.errHistory = e }
 
 // New creates a REST API. servers, logs, and discoverer may be nil, disabling
 // their respective endpoints.
@@ -320,6 +348,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("GET /api/v1/admin/discover", admin(http.HandlerFunc(a.handleDiscover)))
 	mux.Handle("GET /api/v1/admin/notifications", admin(http.HandlerFunc(a.handleNotifications)))
 	mux.Handle("GET /api/v1/admin/capacity", admin(http.HandlerFunc(a.handleCapacity)))
+	mux.Handle("GET /api/v1/admin/diagnostics", admin(http.HandlerFunc(a.handleDiagnostics)))
 
 	return mux
 }

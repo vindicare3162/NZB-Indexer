@@ -490,3 +490,11 @@ paths:
         - { name: top, in: query, schema: { type: integer }, description: Per-group ranking size }
       responses:
         '200': { description: Capacity report }
+  /admin/diagnostics:
+    get:
+      tags: [admin-observability]
+      summary: Recent pipeline errors and actionable diagnostics
+      parameters:
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Aggregated error history and remediation hints }

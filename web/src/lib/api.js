@@ -112,6 +112,7 @@ export const api = {
   cancelJob: (id) => request('POST', `/admin/jobs/${id}/cancel`, {}),
   notifications: (limit = 100) => request('GET', `/admin/notifications?limit=${limit}`),
   capacity: (top = 10) => request('GET', `/admin/capacity?top=${top}`),
+  diagnostics: (limit = 50) => request('GET', `/admin/diagnostics?limit=${limit}`),
   backfillSegments: () => request('POST', '/admin/segments/backfill', {}),
   retentionPreview: (days) => request('GET', `/admin/retention/preview${days ? `?days=${days}` : ''}`),
   retentionPrune: (days) => request('POST', `/admin/retention/prune${days ? `?days=${days}` : ''}`, {}),

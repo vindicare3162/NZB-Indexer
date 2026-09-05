@@ -142,6 +142,58 @@ ORDER BY r.id, p.part_number, p.article_number`, ids)
 // and the last error, so the next pass reprocesses them. It returns the number
 // of releases reset. Intended as an operator "retry failed" override after a
 // provider problem is resolved (#132).
+// ReleaseError is a failed post-processing release surfaced in the diagnostics
+// view (#133).
+type ReleaseError struct {
+	GUID        string     `json:"guid"`
+	Name        string     `json:"name"`
+	LastError   string     `json:"last_error"`
+	Permanent   bool       `json:"permanent"`
+	Attempts    int        `json:"attempts"`
+	NextRetryAt *time.Time `json:"next_retry_at,omitempty"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// RecentReleaseErrors returns recent failed post-processing releases (newest
+// first) for the diagnostics view (#133), bounded by limit (<=0 uses 50).
+func (s *Store) RecentReleaseErrors(ctx context.Context, limit int) ([]ReleaseError, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT guid, name, coalesce(last_error, ''), pp_permanent, pp_attempts, next_retry_at, updated_at
+FROM releases
+WHERE pp_status = 'failed'
+ORDER BY updated_at DESC
+LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("recent release errors: %w", err)
+	}
+	defer rows.Close()
+	var out []ReleaseError
+	for rows.Next() {
+		var e ReleaseError
+		if err := rows.Scan(&e.GUID, &e.Name, &e.LastError, &e.Permanent,
+			&e.Attempts, &e.NextRetryAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan release error: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// CountFailedReleases returns how many releases are in the failed
+// post-processing state, and how many of those are permanent (#133).
+func (s *Store) CountFailedReleases(ctx context.Context) (total, permanent int64, err error) {
+	err = s.pool.QueryRow(ctx, `
+SELECT count(*), count(*) FILTER (WHERE pp_permanent)
+FROM releases WHERE pp_status = 'failed'`).Scan(&total, &permanent)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count failed releases: %w", err)
+	}
+	return total, permanent, nil
+}
+
 func (s *Store) RequeueFailedReleases(ctx context.Context) (int64, error) {
 	ct, err := s.pool.Exec(ctx, `
 UPDATE releases

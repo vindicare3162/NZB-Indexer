@@ -56,9 +56,12 @@ type mockStore struct {
 	backfillArticles *int64
 	scanCfgGroupID   int64
 	scanCfgPriority  int
-	scanCfgForward   *int64
-	groupStorage     map[int64]int64
-	capacity         store.CapacityStats
+	scanCfgForward    *int64
+	groupStorage      map[int64]int64
+	capacity          store.CapacityStats
+	releaseErrors     []store.ReleaseError
+	failedReleases    int64
+	permanentReleases int64
 }
 
 func (m *mockStore) Ping(context.Context) error { return m.pingErr }
@@ -216,6 +219,12 @@ func (m *mockStore) GroupStorageBytes(_ context.Context, ids []int64) (map[int64
 }
 func (m *mockStore) CapacityStats(_ context.Context, _ int) (store.CapacityStats, error) {
 	return m.capacity, nil
+}
+func (m *mockStore) RecentReleaseErrors(_ context.Context, _ int) ([]store.ReleaseError, error) {
+	return m.releaseErrors, nil
+}
+func (m *mockStore) CountFailedReleases(_ context.Context) (int64, int64, error) {
+	return m.failedReleases, m.permanentReleases, nil
 }
 func (m *mockStore) CountUsers(context.Context) (int64, error) { return m.userCount, nil }
 func (m *mockStore) ListUsers(context.Context) ([]store.User, error) { return m.users, nil }
@@ -1087,6 +1096,54 @@ func TestAdminCapacity(t *testing.T) {
 	rec = do(t, env, http.MethodGet, "/api/v1/admin/capacity", env.userTok, nil)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("non-admin capacity status = %d, want 403", rec.Code)
+	}
+}
+
+// stubErrorHistorian is a fixed in-process error source for the diagnostics test.
+type stubErrorHistorian struct{ errs []PipelineError }
+
+func (s stubErrorHistorian) RecentErrors(int) []PipelineError { return s.errs }
+
+func TestAdminDiagnostics(t *testing.T) {
+	env := setup(t)
+	env.api.SetErrorHistorian(stubErrorHistorian{errs: []PipelineError{
+		{Seq: 2, Stage: "scan", Group: "alt.binaries.b", Message: "boom b"},
+		{Seq: 1, Stage: "assemble", Message: "assemble failed"},
+	}})
+	// A group with a scan error (mockStore.ListGroupsPage returns m.groups; give
+	// one an error and rely on the errors-only filter being applied in the mock).
+	env.store.groups = []store.Group{{ID: 1, Name: "alt.binaries.err", LastScanError: "connection reset"}}
+	env.store.releaseErrors = []store.ReleaseError{
+		{GUID: "g1", Name: "Stuck Release", LastError: "article missing", Permanent: false, Attempts: 2},
+	}
+	env.store.failedReleases = 3
+	env.store.permanentReleases = 1
+
+	rec := do(t, env, http.MethodGet, "/api/v1/admin/diagnostics", env.adminTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("diagnostics status = %d, body=%s", rec.Code, rec.Body)
+	}
+	var resp diagnosticsResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	if len(resp.PipelineErrors) != 2 || resp.PipelineErrors[0].Message != "boom b" {
+		t.Errorf("pipeline errors = %+v", resp.PipelineErrors)
+	}
+	if len(resp.ReleaseErrors) != 1 || resp.ReleaseErrors[0].GUID != "g1" {
+		t.Errorf("release errors = %+v", resp.ReleaseErrors)
+	}
+	if resp.Summary.FailedReleaseCount != 3 || resp.Summary.PermanentReleaseCount != 1 {
+		t.Errorf("summary counts = %+v", resp.Summary)
+	}
+	// 3 failed - 1 permanent = 2 retryable -> hint present.
+	if resp.Summary.RetryableReleaseHint == "" {
+		t.Error("expected a retryable-release hint")
+	}
+
+	// Non-admin forbidden.
+	rec = do(t, env, http.MethodGet, "/api/v1/admin/diagnostics", env.userTok, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("non-admin diagnostics status = %d, want 403", rec.Code)
 	}
 }
 

@@ -64,6 +64,95 @@ func (a *API) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// diagnosticsResponse aggregates recent pipeline errors from every durable and
+// in-process source into one actionable view (#133).
+type diagnosticsResponse struct {
+	// PipelineErrors is the worker's recent in-process error history (bounded,
+	// process-lifetime scope).
+	PipelineErrors []PipelineError `json:"pipeline_errors"`
+	// GroupErrors are active groups whose most recent scan failed.
+	GroupErrors []store.Group `json:"group_errors"`
+	// ReleaseErrors are releases stuck in failed post-processing.
+	ReleaseErrors []store.ReleaseError `json:"release_errors"`
+	// FailedJobs are recent pipeline jobs that ended in the failed state.
+	FailedJobs []store.Job `json:"failed_jobs"`
+	// Summary carries counts + the most actionable remediation hints.
+	Summary diagnosticsSummary `json:"summary"`
+}
+
+// diagnosticsSummary holds counts and actionable hints for the diagnostics view.
+type diagnosticsSummary struct {
+	GroupErrorCount        int    `json:"group_error_count"`
+	FailedReleaseCount     int64  `json:"failed_release_count"`
+	PermanentReleaseCount  int64  `json:"permanent_release_count"`
+	RetryableReleaseHint   string `json:"retryable_release_hint,omitempty"`
+	GroupErrorHint         string `json:"group_error_hint,omitempty"`
+}
+
+// handleDiagnostics aggregates recent pipeline errors from the worker's
+// in-process history, per-group scan errors (#114), failed post-processing
+// releases (#132), and failed jobs (#113) into one actionable view (#133).
+// Each section degrades independently so one failing source never blanks the
+// rest.
+func (a *API) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	limit := parseIntDefault(r.URL.Query().Get("limit"), 50)
+	var resp diagnosticsResponse
+
+	if a.errHistory != nil {
+		resp.PipelineErrors = a.errHistory.RecentErrors(limit)
+	}
+	if resp.PipelineErrors == nil {
+		resp.PipelineErrors = []PipelineError{}
+	}
+
+	// Groups whose last scan errored (reuse the paginated, errors-only filter).
+	if page, err := a.store.ListGroupsPage(ctx, store.GroupFilter{ErrorsOnly: true, Limit: limit}); err == nil {
+		resp.GroupErrors = page.Groups
+		resp.Summary.GroupErrorCount = page.Total
+	}
+	if resp.GroupErrors == nil {
+		resp.GroupErrors = []store.Group{}
+	}
+
+	// Failed post-processing releases + counts.
+	if rel, err := a.store.RecentReleaseErrors(ctx, limit); err == nil {
+		resp.ReleaseErrors = rel
+	}
+	if resp.ReleaseErrors == nil {
+		resp.ReleaseErrors = []store.ReleaseError{}
+	}
+	if total, perm, err := a.store.CountFailedReleases(ctx); err == nil {
+		resp.Summary.FailedReleaseCount = total
+		resp.Summary.PermanentReleaseCount = perm
+	}
+
+	// Recent failed jobs (filter the newest jobs to the failed state).
+	if jobs, err := a.store.ListJobs(ctx, 200); err == nil {
+		for _, j := range jobs {
+			if j.State == store.JobFailed {
+				resp.FailedJobs = append(resp.FailedJobs, j)
+				if len(resp.FailedJobs) >= limit {
+					break
+				}
+			}
+		}
+	}
+	if resp.FailedJobs == nil {
+		resp.FailedJobs = []store.Job{}
+	}
+
+	// Actionable hints.
+	if retryable := resp.Summary.FailedReleaseCount - resp.Summary.PermanentReleaseCount; retryable > 0 {
+		resp.Summary.RetryableReleaseHint = "Use \"Retry failed post-processing\" to requeue non-permanent failures."
+	}
+	if resp.Summary.GroupErrorCount > 0 {
+		resp.Summary.GroupErrorHint = "Filter the Newsgroups panel by errors to inspect and re-trigger affected groups."
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // handleCapacity returns current database sizes, observed ingest rate, per-group
 // rankings, and growth/retention projections for capacity planning (#131).
 func (a *API) handleCapacity(w http.ResponseWriter, r *http.Request) {
