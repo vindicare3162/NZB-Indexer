@@ -51,6 +51,25 @@ type pipelineCollector struct {
 	dbPoolAcquireWaitSec *prometheus.Desc
 	dbReservedAPIConns   *prometheus.Desc
 	dbPipelineBudget     *prometheus.Desc
+
+	// Group freshness (#129): bounded scalar aggregates, no per-group series.
+	groupActive          *prometheus.Desc
+	groupBehind          *prometheus.Desc
+	groupMaxLag          *prometheus.Desc
+	groupTotalLag        *prometheus.Desc
+	groupFailing         *prometheus.Desc
+	groupMaxFailures     *prometheus.Desc
+	groupOldestSuccessS  *prometheus.Desc
+	groupNeverScanned    *prometheus.Desc
+
+	// NNTP provider health (#129): labeled by bounded server name.
+	nntpProviderCircuit    *prometheus.Desc
+	nntpProviderConsecFail *prometheus.Desc
+	nntpProviderFailures   *prometheus.Desc
+	nntpProviderSuccess    *prometheus.Desc
+	nntpProviderOpens      *prometheus.Desc
+	nntpProviderPoolOpen   *prometheus.Desc
+	nntpProviderPoolIdle   *prometheus.Desc
 }
 
 func newPipelineCollector(p Providers) *pipelineCollector {
@@ -92,6 +111,23 @@ func newPipelineCollector(p Providers) *pipelineCollector {
 		dbPoolAcquireWaitSec: d("goindex_db_pool_acquire_wait_seconds_total", "Cumulative time spent waiting to acquire a PostgreSQL connection."),
 		dbReservedAPIConns:   d("goindex_db_reserved_api_connections", "PostgreSQL connections reserved for the API/control plane (#117)."),
 		dbPipelineBudget:     d("goindex_db_pipeline_budget_connections", "PostgreSQL connections the pipeline may use concurrently (#117)."),
+
+		groupActive:         d("goindex_groups_active", "Active groups being indexed."),
+		groupBehind:         d("goindex_groups_behind", "Active groups with positive forward lag."),
+		groupMaxLag:         d("goindex_group_lag_max_articles", "Largest forward lag (articles) across active groups."),
+		groupTotalLag:       d("goindex_group_lag_total_articles", "Summed forward lag (articles) across active groups."),
+		groupFailing:        d("goindex_groups_failing", "Active groups with at least one consecutive scan failure."),
+		groupMaxFailures:    d("goindex_group_consecutive_failures_max", "Largest consecutive-failure count across active groups."),
+		groupOldestSuccessS: d("goindex_group_oldest_success_age_seconds", "Age of the least-recently successful active group's last success."),
+		groupNeverScanned:   d("goindex_groups_never_scanned", "Active groups that have never scanned successfully."),
+
+		nntpProviderCircuit:    d("goindex_nntp_provider_circuit_state", "NNTP provider circuit state (0=closed, 1=half-open, 2=open).", "server"),
+		nntpProviderConsecFail: d("goindex_nntp_provider_consecutive_failures", "NNTP provider consecutive connection failures.", "server"),
+		nntpProviderFailures:   d("goindex_nntp_provider_failures_total", "NNTP provider total connection failures.", "server"),
+		nntpProviderSuccess:    d("goindex_nntp_provider_success_total", "NNTP provider total successful operations.", "server"),
+		nntpProviderOpens:      d("goindex_nntp_provider_circuit_opens_total", "NNTP provider circuit-open events.", "server"),
+		nntpProviderPoolOpen:   d("goindex_nntp_provider_pool_open_connections", "NNTP provider live connections.", "server"),
+		nntpProviderPoolIdle:   d("goindex_nntp_provider_pool_idle_connections", "NNTP provider idle connections.", "server"),
 	}
 }
 
@@ -170,6 +206,45 @@ func (c *pipelineCollector) Collect(ch chan<- prometheus.Metric) {
 		counter(c.dbPoolAcquireWaitSec, p.DBAcquireWaitSeconds)
 		gauge(c.dbReservedAPIConns, p.DBReservedAPIConns)
 		gauge(c.dbPipelineBudget, p.DBPipelineBudget)
+	}
+
+	if c.p.GroupHealth != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		gh, err := c.p.GroupHealth(ctx)
+		cancel()
+		if err != nil {
+			scrapeErr++
+		} else {
+			g := func(desc *prometheus.Desc, v float64) {
+				ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v)
+			}
+			g(c.groupActive, gh.ActiveGroups)
+			g(c.groupBehind, gh.GroupsBehind)
+			g(c.groupMaxLag, gh.MaxLag)
+			g(c.groupTotalLag, gh.TotalLag)
+			g(c.groupFailing, gh.GroupsFailing)
+			g(c.groupMaxFailures, gh.MaxConsecutiveFailures)
+			g(c.groupOldestSuccessS, gh.OldestSuccessAgeSeconds)
+			g(c.groupNeverScanned, gh.GroupsNeverScanned)
+		}
+	}
+
+	if c.p.NNTPHealth != nil {
+		for _, h := range c.p.NNTPHealth() {
+			gauge := func(desc *prometheus.Desc, v float64) {
+				ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v, h.Name)
+			}
+			counter := func(desc *prometheus.Desc, v float64) {
+				ch <- prometheus.MustNewConstMetric(desc, prometheus.CounterValue, v, h.Name)
+			}
+			gauge(c.nntpProviderCircuit, h.CircuitState)
+			gauge(c.nntpProviderConsecFail, h.ConsecutiveFailures)
+			counter(c.nntpProviderFailures, h.TotalFailures)
+			counter(c.nntpProviderSuccess, h.TotalSuccess)
+			counter(c.nntpProviderOpens, h.CircuitOpens)
+			gauge(c.nntpProviderPoolOpen, h.PoolOpen)
+			gauge(c.nntpProviderPoolIdle, h.PoolIdle)
+		}
 	}
 
 	ch <- prometheus.MustNewConstMetric(c.scrapeErrors, prometheus.CounterValue, scrapeErr)

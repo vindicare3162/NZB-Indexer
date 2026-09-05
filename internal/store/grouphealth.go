@@ -129,6 +129,57 @@ func ClassifyGroupHealth(g Group, t GroupHealthThresholds, now time.Time) GroupH
 	return h
 }
 
+// GroupHealthStats is a bounded, aggregate view of group freshness for metrics
+// (#129). It deliberately carries only scalar aggregates — never per-group rows
+// — so exposing it as Prometheus gauges cannot create unbounded cardinality.
+type GroupHealthStats struct {
+	// ActiveGroups is the number of active groups.
+	ActiveGroups int64
+	// GroupsBehind is how many active groups have positive forward lag.
+	GroupsBehind int64
+	// MaxLag is the largest forward lag (server_high - last_scanned_high) across
+	// active groups (0 when none is behind or no head is known).
+	MaxLag int64
+	// TotalLag is the summed forward lag across active groups.
+	TotalLag int64
+	// GroupsFailing is how many active groups have >= 1 consecutive failure.
+	GroupsFailing int64
+	// MaxConsecutiveFailures is the largest consecutive-failure count.
+	MaxConsecutiveFailures int64
+	// OldestSuccessAgeSeconds is the age, in seconds, of the least-recently
+	// successful active group's last success (0 when none has ever succeeded or
+	// there are no active groups).
+	OldestSuccessAgeSeconds float64
+	// GroupsNeverScanned is how many active groups have never succeeded.
+	GroupsNeverScanned int64
+}
+
+// GroupHealthStats returns the aggregate group-freshness signals in a single
+// query for metrics scraping (#129).
+func (s *Store) GroupHealthStats(ctx context.Context) (GroupHealthStats, error) {
+	const q = `
+SELECT
+    count(*)                                                                          AS active,
+    count(*) FILTER (WHERE server_high > 0 AND server_high - last_scanned_high > 0)    AS behind,
+    coalesce(max(GREATEST(server_high - last_scanned_high, 0)) FILTER (WHERE server_high > 0), 0) AS max_lag,
+    coalesce(sum(GREATEST(server_high - last_scanned_high, 0)) FILTER (WHERE server_high > 0), 0) AS total_lag,
+    count(*) FILTER (WHERE consecutive_failures > 0)                                   AS failing,
+    coalesce(max(consecutive_failures), 0)                                            AS max_fails,
+    coalesce(max(EXTRACT(EPOCH FROM (now() - last_success_at)))::float8, 0)            AS oldest_success_age,
+    count(*) FILTER (WHERE last_success_at IS NULL)                                    AS never_scanned
+FROM groups
+WHERE active = TRUE`
+	var st GroupHealthStats
+	err := s.pool.QueryRow(ctx, q).Scan(
+		&st.ActiveGroups, &st.GroupsBehind, &st.MaxLag, &st.TotalLag,
+		&st.GroupsFailing, &st.MaxConsecutiveFailures, &st.OldestSuccessAgeSeconds,
+		&st.GroupsNeverScanned)
+	if err != nil {
+		return GroupHealthStats{}, fmt.Errorf("group health stats: %w", err)
+	}
+	return st, nil
+}
+
 // GroupStorage estimates the retained raw-part storage for one group in bytes
 // (#127), used for the storage-impact health signal.
 func (s *Store) GroupStorageBytes(ctx context.Context, ids []int64) (map[int64]int64, error) {

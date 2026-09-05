@@ -41,6 +41,19 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Expanded Prometheus metrics for pipeline, database, and NNTP health (#129).
+  New scrape-time gauges and counters cover group freshness as **bounded
+  aggregates** — active groups, groups behind, max/total forward lag, failing
+  groups, max consecutive failures, oldest-successful-scan age, and
+  never-scanned count (`goindex_groups_*` / `goindex_group_*`) — with no
+  per-group series, so thousands of groups add zero cardinality. Per-provider
+  NNTP health is exposed labeled by the configured server name
+  (`goindex_nntp_provider_circuit_state`, `_consecutive_failures`,
+  `_failures_total`, `_success_total`, `_circuit_opens_total`,
+  `_pool_open/idle_connections`). A new `docs/metrics.md` documents the metric
+  families, naming/type/label policy, and example Prometheus alert rules and
+  Grafana panels for freshness, backlog, errors, and capacity. Collector tests
+  assert the values and that the group-health series count stays bounded.
 - End-to-end integration fixtures for Prowlarr, Sonarr, Radarr, SABnzbd, and
   NZBGet (#140). A new `internal/integration` suite runs the real
   Newznab-compatible handler and NZB generator over a disposable PostgreSQL

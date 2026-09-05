@@ -250,6 +250,37 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 				DBPipelineBudget:     float64(budget.DBPipelineBudget),
 			}
 		},
+		// Aggregate group freshness (#129): bounded scalars, no per-group series.
+		GroupHealth: func(ctx context.Context) (metrics.GroupHealthSnapshot, error) {
+			gh, err := st.GroupHealthStats(ctx)
+			if err != nil {
+				return metrics.GroupHealthSnapshot{}, err
+			}
+			return metrics.GroupHealthSnapshot{
+				ActiveGroups: float64(gh.ActiveGroups), GroupsBehind: float64(gh.GroupsBehind),
+				MaxLag: float64(gh.MaxLag), TotalLag: float64(gh.TotalLag),
+				GroupsFailing: float64(gh.GroupsFailing), MaxConsecutiveFailures: float64(gh.MaxConsecutiveFailures),
+				OldestSuccessAgeSeconds: gh.OldestSuccessAgeSeconds, GroupsNeverScanned: float64(gh.GroupsNeverScanned),
+			}, nil
+		},
+		// Per-provider NNTP health (#129): labeled by bounded server name.
+		NNTPHealth: func() []metrics.ProviderHealthSnapshot {
+			hs := pool.Health()
+			out := make([]metrics.ProviderHealthSnapshot, 0, len(hs))
+			for _, h := range hs {
+				out = append(out, metrics.ProviderHealthSnapshot{
+					Name:                h.Name,
+					CircuitState:        circuitStateValue(h.Circuit),
+					ConsecutiveFailures: float64(h.ConsecutiveFailures),
+					TotalFailures:       float64(h.TotalFailures),
+					TotalSuccess:        float64(h.TotalSuccess),
+					CircuitOpens:        float64(h.Opens),
+					PoolOpen:            float64(h.PoolOpen),
+					PoolIdle:            float64(h.PoolIdle),
+				})
+			}
+			return out
+		},
 	})
 
 	mux := http.NewServeMux()

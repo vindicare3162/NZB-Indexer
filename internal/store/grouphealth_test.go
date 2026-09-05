@@ -124,6 +124,56 @@ func TestGroupStorageBytes(t *testing.T) {
 	}
 }
 
+// TestGroupHealthStats covers the aggregate group-freshness metrics query
+// (#129): active-group count, lag aggregates, failure aggregates, and
+// never-scanned count over only active groups.
+func TestGroupHealthStats(t *testing.T) {
+	st := freshStore(t)
+	ctx := context.Background()
+
+	// g1: behind by 100, one recorded success (via a scan).
+	g1, _ := st.UpsertGroup(ctx, "alt.binaries.ghs.one", true)
+	if err := st.RecordGroupScan(ctx, g1.ID, GroupScanOutcome{
+		Articles: 10, Parts: 8, ServerHigh: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Advance the server head so g1 shows lag of 100 (head 1100, watermark 1000).
+	if _, err := st.Pool().Exec(ctx,
+		`UPDATE groups SET server_high = 1100, last_scanned_high = 1000 WHERE id = $1`, g1.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// g2: failing (2 consecutive failures), never succeeded.
+	g2, _ := st.UpsertGroup(ctx, "alt.binaries.ghs.two", true)
+	for i := 0; i < 2; i++ {
+		if err := st.RecordGroupScan(ctx, g2.ID, GroupScanOutcome{Err: "boom"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// g3: inactive — must be excluded from all aggregates.
+	g3, _ := st.UpsertGroup(ctx, "alt.binaries.ghs.three", false)
+	_ = g3
+
+	s, err := st.GroupHealthStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.ActiveGroups != 2 {
+		t.Errorf("active groups = %d, want 2 (inactive excluded)", s.ActiveGroups)
+	}
+	if s.GroupsBehind != 1 || s.MaxLag != 100 || s.TotalLag != 100 {
+		t.Errorf("lag aggregates = behind %d max %d total %d, want 1/100/100", s.GroupsBehind, s.MaxLag, s.TotalLag)
+	}
+	if s.GroupsFailing != 1 || s.MaxConsecutiveFailures != 2 {
+		t.Errorf("failure aggregates = failing %d max %d, want 1/2", s.GroupsFailing, s.MaxConsecutiveFailures)
+	}
+	if s.GroupsNeverScanned != 1 {
+		t.Errorf("never-scanned = %d, want 1 (g2)", s.GroupsNeverScanned)
+	}
+}
+
 // TestClassifyGroupHealth covers the pure health classifier across the
 // scenarios in the issue: healthy, lag warn/error, staleness, failure
 // escalation, never-scanned, and disabled groups.

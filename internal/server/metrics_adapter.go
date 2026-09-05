@@ -49,3 +49,17 @@ func workerSnapshot(m worker.Metrics) metrics.WorkerSnapshot {
 		NFOsFound:       float64(m.NFOsFound),
 	}
 }
+
+// circuitStateValue maps an NNTP circuit-breaker state string to a numeric
+// gauge value for Prometheus (#129): 0=closed, 1=half-open, 2=open. Unknown
+// states map to 0.
+func circuitStateValue(state string) float64 {
+	switch state {
+	case "open":
+		return 2
+	case "half-open":
+		return 1
+	default:
+		return 0
+	}
+}
