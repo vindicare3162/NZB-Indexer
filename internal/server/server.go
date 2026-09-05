@@ -308,10 +308,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	go wrk.Run(workerCtx)
 	go notifier.Run(workerCtx)
 	go authSvc.CleanupLoop(workerCtx, 10*time.Minute)
-	go runJobCleanupLoop(workerCtx, st, logger)
-	if cfg.Retention.Enabled && cfg.Retention.Days > 0 {
-		go runRetentionLoop(workerCtx, st, cfg.Retention, logger)
-	}
+	// Scheduled housekeeping (retention prune, retry-failed, ANALYZE, job
+	// cleanup, backup verification) as observable jobs with notifications (#130).
+	go newMaintenanceScheduler(st, cfg, notifier, logger).Run(workerCtx)
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -338,68 +337,6 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	cancelWorker()
 	logger.Info("goindex stopped")
 	return nil
-}
-
-// runJobCleanupLoop periodically prunes terminal job history older than 7 days
-// (#113) so the jobs table doesn't grow unbounded. Cancellable via ctx.
-func runJobCleanupLoop(ctx context.Context, st *store.Store, logger *slog.Logger) {
-	const retain = 7 * 24 * time.Hour
-	ticker := time.NewTicker(6 * time.Hour)
-	defer ticker.Stop()
-	cleanup := func() {
-		if n, err := st.CleanupOldJobs(ctx, retain); err != nil {
-			logger.Warn("job history cleanup failed", "err", err)
-		} else if n > 0 {
-			logger.Debug("cleaned up old jobs", "count", n)
-		}
-	}
-	cleanup()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			cleanup()
-		}
-	}
-}
-
-// runRetentionLoop periodically prunes raw parts for reconstructable, released,
-// fully-processed releases older than the retention window (#118). It runs on
-// its own goroutine, bounded per run and cancellable via ctx, so it never holds
-// an unbounded transaction and stops promptly on shutdown. Results are logged.
-func runRetentionLoop(ctx context.Context, st *store.Store, rc config.RetentionConfig, logger *slog.Logger) {
-	interval := rc.Interval
-	if interval <= 0 {
-		interval = 6 * time.Hour
-	}
-	olderThan := time.Duration(rc.Days) * 24 * time.Hour
-	logger.Info("raw-part retention enabled",
-		"days", rc.Days, "interval", interval, "batch_size", rc.BatchSize,
-		"max_batches_per_run", rc.MaxBatchesPerRun)
-
-	runOnce := func() {
-		deleted, err := st.PruneRetainedPartsAll(ctx, olderThan, rc.BatchSize, rc.MaxBatchesPerRun)
-		if err != nil {
-			logger.Error("retention prune failed", "err", err)
-			return
-		}
-		if deleted > 0 {
-			logger.Info("retention prune completed", "days", rc.Days, "parts_deleted", deleted)
-		}
-	}
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	runOnce() // an initial pass at startup
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			runOnce()
-		}
-	}
 }
 
 // buildEndpoints returns the failover endpoints for all ENABLED news servers,

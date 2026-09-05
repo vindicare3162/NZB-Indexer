@@ -31,6 +31,8 @@ type Config struct {
 	Health HealthConfig `yaml:"health"`
 	// Notify holds webhook/notification destinations (#137).
 	Notify NotifyConfig `yaml:"notify"`
+	// Maintenance holds scheduled housekeeping task settings (#130).
+	Maintenance MaintenanceConfig `yaml:"maintenance"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `yaml:"log_level"`
 }
@@ -74,6 +76,30 @@ type HealthConfig struct {
 	// group is warned/errored.
 	FailuresWarn  int `yaml:"failures_warn"`
 	FailuresError int `yaml:"failures_error"`
+}
+
+// MaintenanceConfig configures scheduled housekeeping tasks (#130). Each task
+// has an independent enablement and cadence. Retention and old-job cleanup were
+// previously fixed background loops; they are now unified here (retention still
+// also honours RetentionConfig for its window/batch limits).
+type MaintenanceConfig struct {
+	// RetryFailed re-queues failed post-processing releases on a cadence so
+	// transient provider issues recover without manual intervention.
+	RetryFailed MaintenanceTaskConfig `yaml:"retry_failed"`
+	// Analyze refreshes PostgreSQL planner statistics (ANALYZE).
+	Analyze MaintenanceTaskConfig `yaml:"analyze"`
+	// JobCleanup prunes terminal job history older than JobRetention.
+	JobCleanup MaintenanceTaskConfig `yaml:"job_cleanup"`
+	// JobRetention is how long terminal jobs are kept (0 = default 7d).
+	JobRetention time.Duration `yaml:"job_retention"`
+	// BackupVerify runs a read-only backup-readiness check.
+	BackupVerify MaintenanceTaskConfig `yaml:"backup_verify"`
+}
+
+// MaintenanceTaskConfig is the enablement + cadence for one maintenance task.
+type MaintenanceTaskConfig struct {
+	Enabled  bool          `yaml:"enabled"`
+	Interval time.Duration `yaml:"interval"`
 }
 
 // NotifyConfig configures outbound event notifications to HTTP webhooks (#137).
@@ -286,6 +312,15 @@ func Default() Config {
 			FailuresWarn:  1,
 			FailuresError: 5,
 		},
+		Maintenance: MaintenanceConfig{
+			// Old-job cleanup is on by default (bounds job history); the rest are
+			// opt-in so existing deployments are unaffected until enabled.
+			RetryFailed:  MaintenanceTaskConfig{Enabled: false, Interval: time.Hour},
+			Analyze:      MaintenanceTaskConfig{Enabled: false, Interval: 24 * time.Hour},
+			JobCleanup:   MaintenanceTaskConfig{Enabled: true, Interval: 6 * time.Hour},
+			JobRetention: 7 * 24 * time.Hour,
+			BackupVerify: MaintenanceTaskConfig{Enabled: false, Interval: 24 * time.Hour},
+		},
 		NNTP: NNTPConfig{
 			Port:                    563,
 			TLS:                     true,
@@ -409,6 +444,16 @@ func applyEnv(cfg *Config) {
 	envDur("GOINDEX_HEALTH_STALE_ERROR", &cfg.Health.StaleError)
 	envInt("GOINDEX_HEALTH_FAILURES_WARN", &cfg.Health.FailuresWarn)
 	envInt("GOINDEX_HEALTH_FAILURES_ERROR", &cfg.Health.FailuresError)
+
+	envBool("GOINDEX_MAINTENANCE_RETRY_FAILED_ENABLED", &cfg.Maintenance.RetryFailed.Enabled)
+	envDur("GOINDEX_MAINTENANCE_RETRY_FAILED_INTERVAL", &cfg.Maintenance.RetryFailed.Interval)
+	envBool("GOINDEX_MAINTENANCE_ANALYZE_ENABLED", &cfg.Maintenance.Analyze.Enabled)
+	envDur("GOINDEX_MAINTENANCE_ANALYZE_INTERVAL", &cfg.Maintenance.Analyze.Interval)
+	envBool("GOINDEX_MAINTENANCE_JOB_CLEANUP_ENABLED", &cfg.Maintenance.JobCleanup.Enabled)
+	envDur("GOINDEX_MAINTENANCE_JOB_CLEANUP_INTERVAL", &cfg.Maintenance.JobCleanup.Interval)
+	envDur("GOINDEX_MAINTENANCE_JOB_RETENTION", &cfg.Maintenance.JobRetention)
+	envBool("GOINDEX_MAINTENANCE_BACKUP_VERIFY_ENABLED", &cfg.Maintenance.BackupVerify.Enabled)
+	envDur("GOINDEX_MAINTENANCE_BACKUP_VERIFY_INTERVAL", &cfg.Maintenance.BackupVerify.Interval)
 
 	envStr("GOINDEX_AUTH_JWT_SECRET", &cfg.Auth.JWTSecret)
 	envDur("GOINDEX_AUTH_SESSION_TTL", &cfg.Auth.SessionTTL)

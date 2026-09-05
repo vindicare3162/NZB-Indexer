@@ -12,6 +12,12 @@ var capacityTables = []string{
 	"release_identifiers", "groups", "jobs",
 }
 
+// CapacityTableNames returns the fixed set of tables surfaced in capacity and
+// maintenance operations (a copy, so callers cannot mutate the allow-list).
+func CapacityTableNames() []string {
+	return append([]string(nil), capacityTables...)
+}
+
 // TableSize is the on-disk footprint of one table (#131).
 type TableSize struct {
 	Name       string `json:"name"`

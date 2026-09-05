@@ -41,6 +41,19 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Automated maintenance jobs (#130). A new `internal/maintenance` scheduler runs
+  routine housekeeping as observable, independently-configurable scheduled tasks:
+  raw-part retention pruning (#118), re-queuing failed post-processing (#132),
+  PostgreSQL statistics maintenance (`ANALYZE`), terminal job-history cleanup,
+  and a read-only backup-readiness check. Each task has its own enablement and
+  cadence (`maintenance.*` config / `GOINDEX_MAINTENANCE_*` env), is wrapped in a
+  persistent pipeline job so it shows up in job history as `maintenance:<task>`,
+  and publishes a notification (#137 — `retention.completed`, `backup.outcome`,
+  or a failure event) on completion or failure. A failing task never stops the
+  others, and all stop promptly on shutdown. The previously fixed retention and
+  job-cleanup loops are unified under this scheduler. Backup verification is
+  deliberately read-only (it validates that a dump could be taken; it does not
+  run or restore one). Documented in `docs/maintenance.md`.
 - Database growth and capacity-planning views (#131). A new admin capacity
   report turns the observed per-group ingest rate (the summed throughput EMA
   from #127) and current sizes into a storage forecast. `store.CapacityStats`
