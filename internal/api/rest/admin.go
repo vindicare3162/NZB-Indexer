@@ -64,6 +64,28 @@ func (a *API) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCapacity returns current database sizes, observed ingest rate, per-group
+// rankings, and growth/retention projections for capacity planning (#131).
+func (a *API) handleCapacity(w http.ResponseWriter, r *http.Request) {
+	stats, err := a.store.CapacityStats(r.Context(), parseIntDefault(r.URL.Query().Get("top"), 10))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to gather capacity stats")
+		return
+	}
+	// Forecast from the observed basis. The retention window (from config, #118)
+	// feeds the steady-state estimate; 0 means retention is disabled.
+	forecast := store.ProjectCapacity(
+		stats.DatabaseBytes, stats.ObservedArtsPerSecond, stats.BytesPerArticle,
+		a.retentionDays, nil)
+	writeJSON(w, http.StatusOK, capacityResponse{Stats: stats, Forecast: forecast})
+}
+
+// capacityResponse bundles the measured basis and the derived forecast (#131).
+type capacityResponse struct {
+	Stats    store.CapacityStats    `json:"stats"`
+	Forecast store.CapacityForecast `json:"forecast"`
+}
+
 // groupWithHealth is a group plus its derived health and estimated storage for
 // the admin listing (#127). The embedded Group is flattened into the JSON so
 // existing fields (id, name, lag inputs, etc.) are unchanged for the SPA.

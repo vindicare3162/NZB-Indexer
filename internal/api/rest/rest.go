@@ -68,6 +68,9 @@ type Store interface {
 	SetGroupScanConfig(ctx context.Context, id int64, priority int, forwardArticles *int64) error
 	// GroupStorageBytes estimates retained raw-part storage per group (#127).
 	GroupStorageBytes(ctx context.Context, ids []int64) (map[int64]int64, error)
+	// CapacityStats reports current sizes and observed ingest rate for capacity
+	// planning (#131).
+	CapacityStats(ctx context.Context, topN int) (store.CapacityStats, error)
 	DeleteGroup(ctx context.Context, id int64) error
 
 	// News servers (admin)
@@ -316,6 +319,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("GET /api/v1/admin/overview", admin(http.HandlerFunc(a.handleAdminOverview)))
 	mux.Handle("GET /api/v1/admin/discover", admin(http.HandlerFunc(a.handleDiscover)))
 	mux.Handle("GET /api/v1/admin/notifications", admin(http.HandlerFunc(a.handleNotifications)))
+	mux.Handle("GET /api/v1/admin/capacity", admin(http.HandlerFunc(a.handleCapacity)))
 
 	return mux
 }

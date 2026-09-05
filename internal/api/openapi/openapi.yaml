@@ -482,3 +482,11 @@ paths:
         - { name: limit, in: query, schema: { type: integer } }
       responses:
         '200': { description: Delivery history }
+  /admin/capacity:
+    get:
+      tags: [admin-observability]
+      summary: Database sizes, observed ingest rate, and growth/retention projections
+      parameters:
+        - { name: top, in: query, schema: { type: integer }, description: Per-group ranking size }
+      responses:
+        '200': { description: Capacity report }
