@@ -160,7 +160,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	// the keyless TVMaze provider unless another is configured. A nil enricher
 	// leaves the pipeline unchanged.
 	enricher := buildEnricher(st, cfg, logger)
+	// Outbound event notifications to configured webhooks (#137). Inert when no
+	// destination is enabled.
+	notifier := buildNotifier(cfg, logger)
 	wrk := worker.New(st, sc, asm, builder, pp, enricher, logger, wopts)
+	wrk.SetNotifier(notifier)
 	// Persistent pipeline jobs (#113): record manual triggers as jobs, and mark
 	// any jobs left running by a previous process as interrupted (recovery).
 	wrk.SetJobStore(st)
@@ -207,6 +211,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		FailuresWarn:  cfg.Health.FailuresWarn,
 		FailuresError: cfg.Health.FailuresError,
 	})
+	// Webhook notification delivery history for the admin endpoint (#137).
+	restAPI.SetNotifier(notifier)
 	// Live log streaming for the admin Server-Sent Events endpoint (#121).
 	restAPI.SetLogStreamer(logs)
 
@@ -269,6 +275,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	// server. Shut down gracefully when ctx is cancelled.
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	go wrk.Run(workerCtx)
+	go notifier.Run(workerCtx)
 	go authSvc.CleanupLoop(workerCtx, 10*time.Minute)
 	go runJobCleanupLoop(workerCtx, st, logger)
 	if cfg.Retention.Enabled && cfg.Retention.Days > 0 {

@@ -41,6 +41,19 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Webhooks and notification integrations (#137). A new `internal/notify` service
+  delivers typed pipeline events (job completed/failed, scan/stage failure, and
+  others) to configured HTTP webhook destinations. Delivery is fully decoupled
+  from indexing: producers enqueue events and return immediately, while a
+  bounded worker pool delivers them asynchronously with retries and exponential
+  backoff, optional HMAC-SHA256 body signing (`X-Goindex-Signature`), event-type
+  filtering per destination, and event-id deduplication — so a slow or failing
+  webhook can never block the pipeline. Destinations are configured under
+  `notify.webhooks` (name, URL, secret, event filter, enablement); generic JSON
+  payloads work with Discord/Slack/ntfy/Gotify-style receivers. Recent delivery
+  outcomes (status, attempts, last error) are retained in a bounded history and
+  surfaced at `GET /api/v1/admin/notifications` and in a new admin
+  "Notifications" panel.
 - Scale, concurrency, cancellation, and failure tests for the indexing pipeline
   (#135). New race-clean, wall-clock-independent tests exercise the worker over
   50 and 500 groups (each scanned exactly once), provider capacity below the

@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/vindicare/goindex/internal/assembler"
+	"github.com/vindicare/goindex/internal/notify"
 	"github.com/vindicare/goindex/internal/postprocess"
 	"github.com/vindicare/goindex/internal/release"
 	"github.com/vindicare/goindex/internal/scanner"
@@ -203,6 +204,28 @@ type Worker struct {
 	// per-group scan progress/error state is not recorded (aggregate metrics
 	// still update). The store.Store satisfies it.
 	scanRecorder GroupScanRecorder
+
+	// notifier emits pipeline events to external webhooks (#137). Optional:
+	// when nil, no notifications are sent. Emit is non-blocking and best-effort,
+	// so it never affects pipeline timing.
+	notifier Notifier
+}
+
+// Notifier receives pipeline events for external notification (#137). The
+// notify.Service satisfies it. Emit must be non-blocking.
+type Notifier interface {
+	Emit(e notify.Event)
+}
+
+// SetNotifier attaches an event notifier used to publish job and error events
+// to configured webhooks (#137). Optional.
+func (w *Worker) SetNotifier(n Notifier) { w.notifier = n }
+
+// emit publishes an event when a notifier is attached (best-effort).
+func (w *Worker) emit(e notify.Event) {
+	if w.notifier != nil {
+		w.notifier.Emit(e)
+	}
 }
 
 // GroupScanRecorder persists the outcome of the most recent scan/backfill pass
@@ -903,9 +926,20 @@ func (w *Worker) withJob(parent context.Context, jobID string, fn func(ctx conte
 	}
 	if err != nil {
 		_ = w.jobs.FinishJob(context.Background(), jobID, store.JobFailed, err.Error())
+		w.emit(notify.Event{
+			Type:    notify.EventJobFailed,
+			Title:   "Pipeline job failed",
+			Message: err.Error(),
+			Fields:  map[string]string{"job_id": jobID},
+		})
 		return
 	}
 	_ = w.jobs.FinishJob(context.Background(), jobID, store.JobCompleted, "")
+	w.emit(notify.Event{
+		Type:   notify.EventJobCompleted,
+		Title:  "Pipeline job completed",
+		Fields: map[string]string{"job_id": jobID},
+	})
 }
 
 // runTrackedScan runs a manual scan/backfill trigger under job tracking.
@@ -1083,6 +1117,11 @@ func (w *Worker) recordError(err error) {
 	w.mu.Lock()
 	w.metrics.LastError = err.Error()
 	w.mu.Unlock()
+	w.emit(notify.Event{
+		Type:    notify.EventScanFailed,
+		Title:   "Pipeline stage error",
+		Message: err.Error(),
+	})
 }
 
 // recordGroupScan persists the per-group outcome of a scan/backfill pass (#114)
