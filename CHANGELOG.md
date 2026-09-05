@@ -41,6 +41,16 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Scale, concurrency, cancellation, and failure tests for the indexing pipeline
+  (#135). New race-clean, wall-clock-independent tests exercise the worker over
+  50 and 500 groups (each scanned exactly once), provider capacity below the
+  configured worker concurrency, cancellation mid-dispatch, duplicate scan
+  triggers, group disablement/deletion between passes, and per-group failures
+  that must not abort a pass; plus store-level tests that drive concurrent
+  COPY-based ingestion across many groups while stats/search/group-listing
+  queries contend for the same pool, and confirm idempotent re-ingestion under
+  contention. A dispatch benchmark reports the worker fan-out overhead
+  independent of I/O.
 - Per-group lag, throughput, and health tracking (#127). Building on the
   per-pass scan state from #114, each group now retains derived signals across
   passes (migration 0019): the last successful overall/forward/backfill times,
