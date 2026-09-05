@@ -184,7 +184,18 @@ func (a *API) handleSearch(w http.ResponseWriter, r *http.Request) {
 		filter.Offset = 0
 	}
 
-	page, err := a.store.SearchReleasesPage(r.Context(), filter)
+	// Route through the optional derived search backend (OpenSearch, #139) when
+	// configured; it falls back to PostgreSQL internally on error. Otherwise use
+	// the store directly, preserving keyset pagination.
+	var (
+		page store.SearchResult
+		err  error
+	)
+	if a.searchBackend != nil {
+		page, err = a.searchBackend.Search(r.Context(), filter)
+	} else {
+		page, err = a.store.SearchReleasesPage(r.Context(), filter)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "search failed")
 		return

@@ -218,7 +218,31 @@ type API struct {
 	// endpoint (#133). Optional; nil omits that section.
 	errHistory ErrorHistorian
 
+	// searchBackend optionally routes release search through a derived index
+	// (OpenSearch, #139) with automatic PostgreSQL fallback. Nil (the default)
+	// uses PostgreSQL directly via the store, preserving keyset pagination.
+	searchBackend SearchBackend
+
+	// reindexer optionally rebuilds the derived search index from PostgreSQL
+	// (#139). Nil (the default) means no derived index is configured, so the
+	// reindex endpoint reports the feature is disabled.
+	reindexer Reindexer
+
 	log *slog.Logger
+}
+
+// Reindexer rebuilds the derived release-search index from PostgreSQL (#139),
+// returning the number of documents indexed. The server wires this only when
+// OpenSearch is enabled.
+type Reindexer interface {
+	Reindex(ctx context.Context) (int, error)
+}
+
+// SearchBackend answers release searches (#139). The default PostgreSQL path
+// uses the store directly; when an optional derived backend (OpenSearch) is
+// configured it is used instead, with fallback handled inside the backend.
+type SearchBackend interface {
+	Search(ctx context.Context, f store.SearchFilter) (store.SearchResult, error)
 }
 
 // NotifyHistorian exposes recent webhook delivery outcomes (#137). The
@@ -276,6 +300,14 @@ func (a *API) SetNotifier(n NotifyHistorian) { a.notifier = n }
 // SetErrorHistorian attaches the worker's recent-error source for the admin
 // diagnostics endpoint (#133). Optional; nil omits the in-process error list.
 func (a *API) SetErrorHistorian(e ErrorHistorian) { a.errHistory = e }
+
+// SetSearchBackend routes release search through an optional derived backend
+// (OpenSearch, #139). When nil (the default) search uses PostgreSQL directly.
+func (a *API) SetSearchBackend(b SearchBackend) { a.searchBackend = b }
+
+// SetReindexer attaches the derived-index rebuild trigger for the admin reindex
+// endpoint (#139). Optional; nil reports the feature is disabled.
+func (a *API) SetReindexer(r Reindexer) { a.reindexer = r }
 
 // New creates a REST API. servers, logs, and discoverer may be nil, disabling
 // their respective endpoints.
@@ -349,6 +381,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("GET /api/v1/admin/notifications", admin(http.HandlerFunc(a.handleNotifications)))
 	mux.Handle("GET /api/v1/admin/capacity", admin(http.HandlerFunc(a.handleCapacity)))
 	mux.Handle("GET /api/v1/admin/diagnostics", admin(http.HandlerFunc(a.handleDiagnostics)))
+	mux.Handle("POST /api/v1/admin/search/reindex", admin(http.HandlerFunc(a.handleSearchReindex)))
 
 	return mux
 }

@@ -41,6 +41,26 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Optional derived PostgreSQL-to-OpenSearch release search (#139). goindex can
+  now mirror releases into an OpenSearch/Elasticsearch index for richer fuzzy,
+  ranked, and independently scalable search, while **PostgreSQL remains the
+  system of record** for releases and all pipeline state. The feature is
+  **disabled by default** and fully optional: when it is off — or when
+  OpenSearch is unreachable — release search cleanly falls back to the existing
+  PostgreSQL search, so single-instance deployments are unaffected. A new
+  `search` package defines a `Backend` interface with a PostgreSQL backend
+  (authoritative, wraps the store search) and an OpenSearch backend (a thin
+  `net/http` REST adapter — no new client dependency) that builds a fuzzy
+  `multi_match` query with category/obfuscated filters and newest-first sort. A
+  `Fallback` backend queries OpenSearch first and transparently falls back to
+  PostgreSQL on error. The index is a rebuildable derivative: an admin endpoint
+  `POST /api/v1/admin/search/reindex` (admin-only; `503` when disabled)
+  idempotently rebuilds it from PostgreSQL by paging through every release, so
+  it recovers after an OpenSearch outage and a cancelled rebuild can simply be
+  re-run. New `opensearch` config (`enabled`, `url`, `index`, `timeout`) with
+  `GOINDEX_OPENSEARCH_*` overrides and startup validation. Consistency/lag
+  behaviour and deployment, backup, and security requirements are documented in
+  `docs/opensearch-search.md`.
 - Recent pipeline error history and actionable diagnostics (#133). The worker
   now retains a bounded, in-memory ring of recent pipeline errors (stage,
   affected group, message, timestamp, sequence) instead of a single last-error

@@ -216,6 +216,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	// Recent in-process pipeline error history for the admin diagnostics
 	// endpoint (#133).
 	restAPI.SetErrorHistorian(errorHistorian{wrk})
+	// Optional derived OpenSearch release search with PostgreSQL fallback (#139).
+	// Disabled by default: when off, search uses PostgreSQL directly.
+	if backend, reindexer := buildSearch(cfg, st, logger); backend != nil {
+		restAPI.SetSearchBackend(backend)
+		restAPI.SetReindexer(reindexer)
+		logger.Info("opensearch derived release search enabled", "index", cfg.OpenSearch.Index)
+	}
 	// Live log streaming for the admin Server-Sent Events endpoint (#121).
 	restAPI.SetLogStreamer(logs)
 
