@@ -1,7 +1,7 @@
 <script>
   import { api } from '../lib/api.js';
   import { buildBackfillPayload, describeBackfillField } from '../lib/backfill.js';
-  import { formatLag, lastScanLabel, hasScanError } from '../lib/groupscan.js';
+  import { formatLag, lastScanLabel, hasScanError, healthLevel, healthLabel, healthReasons, formatThroughput, formatBytes } from '../lib/groupscan.js';
   import { createToastStore } from '../lib/toasts.js';
   import { createConfirmStore } from '../lib/confirm.js';
   import { getToken } from '../lib/api.js';
@@ -767,11 +767,15 @@
       <thead><tr>
         <th><button class="linklike" onclick={() => sortGroupsBy('name')}>Group{groupQuery.sort === 'name' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
         <th>Active</th>
+        <th>Health</th>
         <th><button class="linklike" onclick={() => sortGroupsBy('priority')}>Priority{groupQuery.sort === 'priority' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
         <th>Fwd pos</th>
         <th><button class="linklike" onclick={() => sortGroupsBy('lag')}>Lag{groupQuery.sort === 'lag' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
+        <th><button class="linklike" onclick={() => sortGroupsBy('throughput')}>Rate{groupQuery.sort === 'throughput' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
         <th><button class="linklike" onclick={() => sortGroupsBy('last_scan')}>Last scan{groupQuery.sort === 'last_scan' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
+        <th><button class="linklike" onclick={() => sortGroupsBy('failures')}>Fails{groupQuery.sort === 'failures' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
         <th><button class="linklike" onclick={() => sortGroupsBy('backfill')}>Backfill{groupQuery.sort === 'backfill' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
+        <th><button class="linklike" onclick={() => sortGroupsBy('storage')}>Storage{groupQuery.sort === 'storage' ? (groupQuery.desc ? ' ▾' : ' ▴') : ''}</button></th>
         <th>Target</th>
         <th></th>
       </tr></thead>
@@ -780,16 +784,25 @@
           <tr>
             <td>{g.name}</td>
             <td>{g.active ? 'yes' : 'no'}</td>
+            <td>
+              <span class="badge" title={healthReasons(g).join('; ')}
+                    style="background:{healthLevel(g) === 'error' ? '#cf222e' : healthLevel(g) === 'warn' ? '#bf8700' : healthLevel(g) === 'ok' ? '#1a7f37' : '#57606a'}">
+                {healthLabel(g)}
+              </span>
+            </td>
             <td>{g.priority ?? 0}</td>
             <td>{g.last_scanned_high}</td>
             <td class="muted">{formatLag(g)}</td>
+            <td class="muted" style="white-space:nowrap">{formatThroughput(g)}</td>
             <td class="muted" style="white-space:nowrap">
               {lastScanLabel(g)}
               {#if hasScanError(g)}
                 <span class="badge" style="background:#cf222e" title={g.last_scan_error}>error</span>
               {/if}
             </td>
+            <td class="muted">{g.consecutive_failures ?? 0}</td>
             <td>{g.backfill_complete ? 'done' : g.backfill_low}</td>
+            <td class="muted" style="white-space:nowrap">{formatBytes(g.storage_bytes)}</td>
             <td class="muted">{backfillTargetLabel(g)}</td>
             <td class="row">
               <button class="secondary" onclick={() => toggleGroup(g)}>{g.active ? 'Disable' : 'Enable'}</button>
@@ -801,7 +814,7 @@
           </tr>
           {#if editingBackfillId === g.id}
             <tr>
-              <td colspan="9">
+              <td colspan="13">
                 <form class="panel" style="margin:0" onsubmit={(e) => { e.preventDefault(); saveBackfillTarget(g); }}>
                   <h4 style="margin:0 0 0.4rem">Group config — {g.name}</h4>
                   <p class="muted" style="margin:0 0 0.6rem; font-size:0.85rem">

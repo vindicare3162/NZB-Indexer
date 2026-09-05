@@ -11,7 +11,7 @@ import (
 
 // groupColumns is the shared SELECT/RETURNING column list for groups, kept in
 // one place so all group queries scan the same shape.
-const groupColumns = `id, name, active, last_scanned_high, backfill_low, backfill_complete, backfill_target_days, backfill_target_articles, last_scan_at, last_scan_backfill, last_scan_articles, last_scan_parts, server_high, last_scan_error, last_scan_error_at, priority, forward_target_articles, created_at, updated_at`
+const groupColumns = `id, name, active, last_scanned_high, backfill_low, backfill_complete, backfill_target_days, backfill_target_articles, last_scan_at, last_scan_backfill, last_scan_articles, last_scan_parts, server_high, last_scan_error, last_scan_error_at, priority, forward_target_articles, last_success_at, last_forward_at, last_backfill_at, consecutive_failures, throughput_arts_per_sec, created_at, updated_at`
 
 // scanGroup scans a row in groupColumns order into a Group.
 func scanGroup(row pgx.Row) (Group, error) {
@@ -21,6 +21,8 @@ func scanGroup(row pgx.Row) (Group, error) {
 		&g.LastScanAt, &g.LastScanBackfill, &g.LastScanArticles, &g.LastScanParts,
 		&g.ServerHigh, &g.LastScanError, &g.LastScanErrorAt,
 		&g.Priority, &g.ForwardTargetArticles,
+		&g.LastSuccessAt, &g.LastForwardAt, &g.LastBackfillAt,
+		&g.ConsecutiveFailures, &g.ThroughputArtsPerSec,
 		&g.CreatedAt, &g.UpdatedAt)
 	return g, err
 }
@@ -126,6 +128,13 @@ func groupSortExpr(sort string, desc bool) string {
 		col = "backfill_low"
 	case "priority":
 		col = "priority"
+	case "throughput":
+		col = "throughput_arts_per_sec"
+	case "failures":
+		col = "consecutive_failures"
+	case "storage":
+		// Estimated stored bytes for the group's retained raw parts (#127).
+		col = "(SELECT COALESCE(SUM(p.bytes), 0) FROM parts p WHERE p.group_id = groups.id)"
 	default:
 		col = "name"
 	}
@@ -311,9 +320,17 @@ type GroupScanOutcome struct {
 	// (0 when it could not be read); persisted only when > 0 so a failed pass
 	// that never read the bounds keeps the last known value.
 	ServerHigh int64
+	// DurationMS is the wall-clock duration of the pass in milliseconds, used
+	// to derive throughput (#127). 0 (or unset) skips the throughput update.
+	DurationMS int64
 	// Err is the pass error message ('' on success).
 	Err string
 }
+
+// throughputEMAWeight is the weight given to the newest sample when updating
+// the exponentially-weighted moving average of per-group throughput (#127). A
+// smaller value smooths more; 0.3 tracks recent change while damping spikes.
+const throughputEMAWeight = 0.3
 
 // RecordGroupScan records the outcome of the most recent scan/backfill pass for
 // a group: when it ran, how much it pulled, the observed server head, and any
@@ -323,18 +340,40 @@ type GroupScanOutcome struct {
 // when a positive value was observed, so a failure that never read the group
 // bounds does not zero out the last known head.
 func (s *Store) RecordGroupScan(ctx context.Context, id int64, o GroupScanOutcome) error {
+	success := o.Err == ""
+	// Sample throughput only for a successful pass that pulled articles over a
+	// measured interval; -1 signals "no sample" to the SQL EMA update below.
+	sample := -1.0
+	if success && o.Articles > 0 && o.DurationMS > 0 {
+		sample = float64(o.Articles) / (float64(o.DurationMS) / 1000.0)
+	}
+	// #114 fields plus the #127 derived signals. On success we advance the
+	// success timestamps (overall + forward/backfill), reset the failure
+	// counter, and fold the throughput sample into the EMA. On failure we bump
+	// the consecutive-failure counter and record the error, leaving the success
+	// timestamps and throughput untouched.
 	const q = `
 UPDATE groups SET
-    last_scan_at       = now(),
-    last_scan_backfill = $2,
-    last_scan_articles = $3,
-    last_scan_parts    = $4,
-    server_high        = CASE WHEN $5::bigint > 0 THEN $5::bigint ELSE server_high END,
-    last_scan_error    = $6,
-    last_scan_error_at = CASE WHEN $6 <> '' THEN now() ELSE NULL END,
-    updated_at         = now()
+    last_scan_at            = now(),
+    last_scan_backfill      = $2,
+    last_scan_articles      = $3,
+    last_scan_parts         = $4,
+    server_high             = CASE WHEN $5::bigint > 0 THEN $5::bigint ELSE server_high END,
+    last_scan_error         = $6,
+    last_scan_error_at      = CASE WHEN $6 <> '' THEN now() ELSE NULL END,
+    last_success_at         = CASE WHEN $7 THEN now() ELSE last_success_at END,
+    last_forward_at         = CASE WHEN $7 AND NOT $2 THEN now() ELSE last_forward_at END,
+    last_backfill_at        = CASE WHEN $7 AND $2 THEN now() ELSE last_backfill_at END,
+    consecutive_failures    = CASE WHEN $7 THEN 0 ELSE consecutive_failures + 1 END,
+    throughput_arts_per_sec = CASE
+        WHEN $8::double precision < 0 THEN throughput_arts_per_sec
+        WHEN throughput_arts_per_sec <= 0 THEN $8::double precision
+        ELSE throughput_arts_per_sec + $9::double precision * ($8::double precision - throughput_arts_per_sec)
+    END,
+    updated_at              = now()
 WHERE id = $1`
-	if _, err := s.pool.Exec(ctx, q, id, o.Backfill, o.Articles, o.Parts, o.ServerHigh, o.Err); err != nil {
+	if _, err := s.pool.Exec(ctx, q, id, o.Backfill, o.Articles, o.Parts,
+		o.ServerHigh, o.Err, success, sample, throughputEMAWeight); err != nil {
 		return fmt.Errorf("record group scan: %w", err)
 	}
 	return nil

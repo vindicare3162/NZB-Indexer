@@ -51,6 +51,20 @@ type Group struct {
 	Priority              int    `json:"priority"`
 	ForwardTargetArticles *int64 `json:"forward_target_articles,omitempty"`
 
+	// Per-group lag/throughput/health tracking (#127). These signals are
+	// retained across passes so operators can identify stalled, repeatedly
+	// failing, or retention-lagging groups.
+	// LastSuccessAt/LastForwardAt/LastBackfillAt are the times of the most
+	// recent successful pass overall, forward, and backfill (nil = never).
+	LastSuccessAt  *time.Time `json:"last_success_at,omitempty"`
+	LastForwardAt  *time.Time `json:"last_forward_at,omitempty"`
+	LastBackfillAt *time.Time `json:"last_backfill_at,omitempty"`
+	// ConsecutiveFailures counts failed passes since the last success.
+	ConsecutiveFailures int `json:"consecutive_failures"`
+	// ThroughputArtsPerSec is an EMA of ingest rate in articles/second across
+	// recent successful passes (0 = unknown).
+	ThroughputArtsPerSec float64 `json:"throughput_arts_per_sec"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

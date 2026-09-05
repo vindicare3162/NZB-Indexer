@@ -41,6 +41,19 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Per-group lag, throughput, and health tracking (#127). Building on the
+  per-pass scan state from #114, each group now retains derived signals across
+  passes (migration 0019): the last successful overall/forward/backfill times,
+  a consecutive-failure counter that resets on recovery, and an
+  exponentially-weighted moving average of ingest throughput (articles/second).
+  A configurable health classifier (`health.*` config / `GOINDEX_HEALTH_*`
+  env — lag, staleness, and failure thresholds) derives an actionable
+  `ok`/`warn`/`error`/`unknown` level with reasons, surfaced per group in the
+  admin listing along with estimated retained storage. The groups table gains
+  Health, Rate, Fails, and Storage columns, all server-side sortable (so
+  operators can find stalled, slow, repeatedly-failing, or storage-heavy
+  groups), and health is computed on read rather than exported as per-group
+  Prometheus series, avoiding unbounded metric cardinality.
 - Published OpenAPI specification for the REST API (#138). A hand-written
   OpenAPI 3.0 document (`internal/api/openapi/openapi.yaml`) documents every
   `/api/v1` endpoint — auth/setup, release search and download, per-user API

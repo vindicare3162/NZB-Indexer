@@ -27,6 +27,8 @@ type Config struct {
 	Metadata MetadataConfig `yaml:"metadata"`
 	// Retention holds raw-part retention settings.
 	Retention RetentionConfig `yaml:"retention"`
+	// Health holds per-group health-classification thresholds (#127).
+	Health HealthConfig `yaml:"health"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `yaml:"log_level"`
 }
@@ -52,6 +54,24 @@ type RetentionConfig struct {
 	// MaxBatchesPerRun caps how many batches a single automatic run deletes, so
 	// a run is time-bounded. Zero means drain fully.
 	MaxBatchesPerRun int `yaml:"max_batches_per_run"`
+}
+
+// HealthConfig holds the thresholds used to classify per-group scan health for
+// the admin group listing (#127). A zero value for any threshold disables that
+// particular check.
+type HealthConfig struct {
+	// LagWarn/LagError: forward article lag at or above which a group is
+	// warned/errored.
+	LagWarn  int64 `yaml:"lag_warn"`
+	LagError int64 `yaml:"lag_error"`
+	// StaleWarn/StaleError: age of the last successful pass at or above which a
+	// group is warned/errored.
+	StaleWarn  time.Duration `yaml:"stale_warn"`
+	StaleError time.Duration `yaml:"stale_error"`
+	// FailuresWarn/FailuresError: consecutive failed passes at or above which a
+	// group is warned/errored.
+	FailuresWarn  int `yaml:"failures_warn"`
+	FailuresError int `yaml:"failures_error"`
 }
 
 // MetadataConfig configures optional release metadata enrichment (matching
@@ -230,6 +250,14 @@ func Default() Config {
 			BatchSize:        5000,
 			MaxBatchesPerRun: 0, // 0 = drain fully per run
 		},
+		Health: HealthConfig{
+			LagWarn:       50000,
+			LagError:      500000,
+			StaleWarn:     6 * time.Hour,
+			StaleError:    24 * time.Hour,
+			FailuresWarn:  1,
+			FailuresError: 5,
+		},
 		NNTP: NNTPConfig{
 			Port:                    563,
 			TLS:                     true,
@@ -346,6 +374,13 @@ func applyEnv(cfg *Config) {
 	envDur("GOINDEX_RETENTION_INTERVAL", &cfg.Retention.Interval)
 	envInt("GOINDEX_RETENTION_BATCH_SIZE", &cfg.Retention.BatchSize)
 	envInt("GOINDEX_RETENTION_MAX_BATCHES_PER_RUN", &cfg.Retention.MaxBatchesPerRun)
+
+	envInt64("GOINDEX_HEALTH_LAG_WARN", &cfg.Health.LagWarn)
+	envInt64("GOINDEX_HEALTH_LAG_ERROR", &cfg.Health.LagError)
+	envDur("GOINDEX_HEALTH_STALE_WARN", &cfg.Health.StaleWarn)
+	envDur("GOINDEX_HEALTH_STALE_ERROR", &cfg.Health.StaleError)
+	envInt("GOINDEX_HEALTH_FAILURES_WARN", &cfg.Health.FailuresWarn)
+	envInt("GOINDEX_HEALTH_FAILURES_ERROR", &cfg.Health.FailuresError)
 
 	envStr("GOINDEX_AUTH_JWT_SECRET", &cfg.Auth.JWTSecret)
 	envDur("GOINDEX_AUTH_SESSION_TTL", &cfg.Auth.SessionTTL)
@@ -486,6 +521,14 @@ func envStr(key string, target *string) {
 func envInt(key string, target *int) {
 	if v, ok := os.LookupEnv(key); ok {
 		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			*target = n
+		}
+	}
+}
+
+func envInt64(key string, target *int64) {
+	if v, ok := os.LookupEnv(key); ok {
+		if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
 			*target = n
 		}
 	}

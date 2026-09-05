@@ -34,7 +34,51 @@ func (a *API) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	if page.Groups == nil {
 		page.Groups = []store.Group{}
 	}
-	writeJSON(w, http.StatusOK, page)
+
+	// Enrich each group with derived health and estimated storage (#127). The
+	// storage figures come from one batch query over the page's group ids.
+	ids := make([]int64, len(page.Groups))
+	for i, g := range page.Groups {
+		ids[i] = g.ID
+	}
+	storage, err := a.store.GroupStorageBytes(r.Context(), ids)
+	if err != nil {
+		// Storage is best-effort context; log-free degradation keeps the list
+		// usable even if the aggregate query fails.
+		storage = map[int64]int64{}
+	}
+	now := time.Now()
+	items := make([]groupWithHealth, len(page.Groups))
+	for i, g := range page.Groups {
+		items[i] = groupWithHealth{
+			Group:        g,
+			Health:       store.ClassifyGroupHealth(g, a.healthThresholds, now),
+			StorageBytes: storage[g.ID],
+		}
+	}
+	writeJSON(w, http.StatusOK, groupHealthPage{
+		Groups: items,
+		Total:  page.Total,
+		Limit:  page.Limit,
+		Offset: page.Offset,
+	})
+}
+
+// groupWithHealth is a group plus its derived health and estimated storage for
+// the admin listing (#127). The embedded Group is flattened into the JSON so
+// existing fields (id, name, lag inputs, etc.) are unchanged for the SPA.
+type groupWithHealth struct {
+	store.Group
+	Health       store.GroupHealth `json:"health"`
+	StorageBytes int64             `json:"storage_bytes"`
+}
+
+// groupHealthPage mirrors store.GroupPage but carries the enriched group items.
+type groupHealthPage struct {
+	Groups []groupWithHealth `json:"groups"`
+	Total  int               `json:"total"`
+	Limit  int               `json:"limit"`
+	Offset int               `json:"offset"`
 }
 
 type createGroupRequest struct {

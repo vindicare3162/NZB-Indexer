@@ -65,6 +65,8 @@ type Store interface {
 	SetGroupBackfillTarget(ctx context.Context, id int64, days *int, articles *int64) error
 	// SetGroupScanConfig sets a group's scan priority and forward budget (#126).
 	SetGroupScanConfig(ctx context.Context, id int64, priority int, forwardArticles *int64) error
+	// GroupStorageBytes estimates retained raw-part storage per group (#127).
+	GroupStorageBytes(ctx context.Context, ids []int64) (map[int64]int64, error)
 	DeleteGroup(ctx context.Context, id int64) error
 
 	// News servers (admin)
@@ -195,7 +197,12 @@ type API struct {
 	retentionDays       int
 	retentionBatchSize  int
 	retentionMaxBatches int
-	log       *slog.Logger
+
+	// Per-group health thresholds used to classify groups in the admin group
+	// listing (#127). Defaults are applied in New.
+	healthThresholds store.GroupHealthThresholds
+
+	log *slog.Logger
 }
 
 // SetSystemProbe attaches a health probe (NNTP pool / config facts) used by the
@@ -216,13 +223,20 @@ func (a *API) SetRetention(days, batchSize, maxBatches int) {
 	a.retentionMaxBatches = maxBatches
 }
 
+// SetGroupHealthThresholds configures the thresholds used to classify per-group
+// health in the admin group listing (#127). A zero-value struct field disables
+// that check; call with DefaultGroupHealthThresholds() to restore defaults.
+func (a *API) SetGroupHealthThresholds(t store.GroupHealthThresholds) {
+	a.healthThresholds = t
+}
+
 // New creates a REST API. servers, logs, and discoverer may be nil, disabling
 // their respective endpoints.
 func New(st Store, nzb NZBGenerator, authn Authenticator, session *auth.Service, jobs JobController, servers ServerManager, logs LogSource, discoverer Discoverer, log *slog.Logger) *API {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &API{store: st, nzb: nzb, authn: authn, jobs: jobs, servers: servers, logs: logs, discoverer: discoverer, session: session, log: log}
+	return &API{store: st, nzb: nzb, authn: authn, jobs: jobs, servers: servers, logs: logs, discoverer: discoverer, session: session, healthThresholds: store.DefaultGroupHealthThresholds(), log: log}
 }
 
 // Routes returns the REST API mux mounted under /api/v1.
