@@ -13,6 +13,7 @@ import (
 	"github.com/vindicare/goindex/internal/api/openapi"
 	"github.com/vindicare/goindex/internal/auth"
 	"github.com/vindicare/goindex/internal/logbuf"
+	"github.com/vindicare/goindex/internal/notify"
 	"github.com/vindicare/goindex/internal/store"
 )
 
@@ -202,7 +203,17 @@ type API struct {
 	// listing (#127). Defaults are applied in New.
 	healthThresholds store.GroupHealthThresholds
 
+	// notifier exposes webhook delivery history for the admin notifications
+	// endpoint (#137). Optional; nil disables it.
+	notifier NotifyHistorian
+
 	log *slog.Logger
+}
+
+// NotifyHistorian exposes recent webhook delivery outcomes (#137). The
+// notify.Service satisfies it.
+type NotifyHistorian interface {
+	History(limit int) []notify.Delivery
 }
 
 // SetSystemProbe attaches a health probe (NNTP pool / config facts) used by the
@@ -229,6 +240,11 @@ func (a *API) SetRetention(days, batchSize, maxBatches int) {
 func (a *API) SetGroupHealthThresholds(t store.GroupHealthThresholds) {
 	a.healthThresholds = t
 }
+
+// SetNotifier attaches the webhook notifier so the admin notifications endpoint
+// can report recent delivery history (#137). Optional; nil disables the
+// endpoint.
+func (a *API) SetNotifier(n NotifyHistorian) { a.notifier = n }
 
 // New creates a REST API. servers, logs, and discoverer may be nil, disabling
 // their respective endpoints.
@@ -299,8 +315,23 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("GET /api/v1/admin/events", admin(http.HandlerFunc(a.handleEvents)))
 	mux.Handle("GET /api/v1/admin/overview", admin(http.HandlerFunc(a.handleAdminOverview)))
 	mux.Handle("GET /api/v1/admin/discover", admin(http.HandlerFunc(a.handleDiscover)))
+	mux.Handle("GET /api/v1/admin/notifications", admin(http.HandlerFunc(a.handleNotifications)))
 
 	return mux
+}
+
+// handleNotifications returns recent webhook delivery outcomes (#137).
+func (a *API) handleNotifications(w http.ResponseWriter, r *http.Request) {
+	if a.notifier == nil {
+		writeJSON(w, http.StatusOK, []notify.Delivery{})
+		return
+	}
+	limit := parseIntDefault(r.URL.Query().Get("limit"), 100)
+	deliveries := a.notifier.History(limit)
+	if deliveries == nil {
+		deliveries = []notify.Delivery{}
+	}
+	writeJSON(w, http.StatusOK, deliveries)
 }
 
 // --- JSON helpers ---

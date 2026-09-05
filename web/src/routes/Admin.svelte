@@ -41,6 +41,7 @@
   let logLevel = $state('');
   let logTimer = null;
   let jobs = $state([]);
+  let notifications = $state([]);
   let newGroup = $state('');
   let bulkNames = $state('');
   let bulkBackfillDays = $state(7);
@@ -97,6 +98,7 @@
       logs = o.logs || [];
       applySchedule(o.schedule);
       loadJobs();
+      loadNotifications();
       loadGroups();
       // Surface any per-subsystem failures without blanking the rest.
       if (o.errors && Object.keys(o.errors).length > 0) {
@@ -181,6 +183,10 @@
     api.jobs(50).then((j) => { jobs = j || []; }).catch(() => {});
   }
 
+  function loadNotifications() {
+    api.notifications(50).then((n) => { notifications = n || []; }).catch(() => {});
+  }
+
   // loadGroups fetches the current page of groups from the server-side
   // paginated endpoint (#123).
   function loadGroups() {
@@ -234,6 +240,7 @@
     if (logTimer) return;
     logTimer = setInterval(() => {
       loadJobs();
+      loadNotifications();
       if (!sseUp) {
         loadLogs();
         api.status().then((s) => { status = s; }).catch(() => {});
@@ -657,6 +664,37 @@
     </table>
   {:else}
     <p class="muted" style="margin:0">No jobs yet. Trigger a scan, backfill, or post-processing pass to create one.</p>
+  {/if}
+</div>
+
+<div class="panel">
+  <div class="row" style="justify-content:space-between; align-items:center">
+    <h3 style="margin-top:0; margin-bottom:0">Notifications</h3>
+    <button class="secondary" onclick={loadNotifications}>Refresh</button>
+  </div>
+  <p class="muted">Recent webhook delivery outcomes. Configure destinations, event filters, and signing secrets under <code>notify.webhooks</code> in the server config. Delivery is asynchronous with retries, so notification failures never block indexing.</p>
+  {#if notifications.length > 0}
+    <table style="margin-top:0.4rem">
+      <thead><tr>
+        <th>Time</th><th>Destination</th><th>Event</th><th>Status</th><th>Attempts</th><th>Detail</th>
+      </tr></thead>
+      <tbody>
+        {#each notifications as d}
+          <tr>
+            <td class="muted" style="white-space:nowrap">{fmtTime(d.at)}</td>
+            <td>{d.destination}</td>
+            <td class="muted">{d.type}</td>
+            <td>
+              <span class="badge" style="background:{d.success ? '#1a7f37' : '#cf222e'}">{d.success ? 'delivered' : 'failed'}</span>
+            </td>
+            <td class="muted">{d.attempts}</td>
+            <td class="muted" title={d.last_error || ''}>{d.success ? (d.status_code || '') : (d.last_error || '')}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {:else}
+    <p class="muted" style="margin:0">No notifications delivered yet.</p>
   {/if}
 </div>
 

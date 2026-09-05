@@ -474,3 +474,11 @@ paths:
         - { name: q, in: query, schema: { type: string } }
       responses:
         '200': { description: Discovered groups }
+  /admin/notifications:
+    get:
+      tags: [admin-observability]
+      summary: Recent webhook notification delivery outcomes
+      parameters:
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Delivery history }

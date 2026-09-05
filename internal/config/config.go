@@ -29,6 +29,8 @@ type Config struct {
 	Retention RetentionConfig `yaml:"retention"`
 	// Health holds per-group health-classification thresholds (#127).
 	Health HealthConfig `yaml:"health"`
+	// Notify holds webhook/notification destinations (#137).
+	Notify NotifyConfig `yaml:"notify"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `yaml:"log_level"`
 }
@@ -72,6 +74,32 @@ type HealthConfig struct {
 	// group is warned/errored.
 	FailuresWarn  int `yaml:"failures_warn"`
 	FailuresError int `yaml:"failures_error"`
+}
+
+// NotifyConfig configures outbound event notifications to HTTP webhooks (#137).
+// Delivery is asynchronous with retries, so misconfigured or slow destinations
+// never block indexing.
+type NotifyConfig struct {
+	// Timeout bounds each HTTP delivery attempt (0 = default 10s).
+	Timeout time.Duration `yaml:"timeout"`
+	// MaxAttempts is the total send attempts per delivery (0 = default 3).
+	MaxAttempts int `yaml:"max_attempts"`
+	// Webhooks is the list of destinations.
+	Webhooks []WebhookConfig `yaml:"webhooks"`
+}
+
+// WebhookConfig is a single notification destination.
+type WebhookConfig struct {
+	// Name is a human label shown in delivery history.
+	Name string `yaml:"name"`
+	// URL is the webhook endpoint. Required for the destination to be usable.
+	URL string `yaml:"url"`
+	// Secret, when set, signs each request body with HMAC-SHA256.
+	Secret string `yaml:"secret"`
+	// Events filters which event types are delivered (empty = all).
+	Events []string `yaml:"events"`
+	// Enabled gates delivery. Default false so adding a stub is inert.
+	Enabled bool `yaml:"enabled"`
 }
 
 // MetadataConfig configures optional release metadata enrichment (matching
