@@ -787,6 +787,24 @@ func (a *API) handleRetryFailed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "failed releases requeued", "requeued": n})
 }
 
+// handleSearchReindex rebuilds the optional derived search index (OpenSearch)
+// from PostgreSQL, the authoritative source (#139). PostgreSQL remains
+// authoritative throughout; the rebuild is idempotent, so it can be re-run
+// safely after an OpenSearch outage. When no derived index is configured it
+// reports the feature is disabled.
+func (a *API) handleSearchReindex(w http.ResponseWriter, r *http.Request) {
+	if a.reindexer == nil {
+		writeError(w, http.StatusServiceUnavailable, "derived search index is not enabled")
+		return
+	}
+	n, err := a.reindexer.Reindex(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "search index rebuilt", "indexed": n})
+}
+
 // handleBackfillSegments snapshots durable NZB segments for legacy releases
 // that lack them, making them retention-safe. Bounded per call; run repeatedly
 // to process a large backlog.

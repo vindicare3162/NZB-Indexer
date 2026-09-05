@@ -498,3 +498,15 @@ paths:
         - { name: limit, in: query, schema: { type: integer } }
       responses:
         '200': { description: Aggregated error history and remediation hints }
+  /admin/search/reindex:
+    post:
+      tags: [admin-pipeline]
+      summary: Rebuild the optional derived OpenSearch release index from PostgreSQL (#139)
+      description: >-
+        Rebuilds the optional derived OpenSearch release-search index from
+        PostgreSQL, which stays authoritative. The rebuild is idempotent and can
+        be re-run to recover after an OpenSearch outage. Returns 503 when the
+        derived index is not enabled.
+      responses:
+        '200': { description: Index rebuilt }
+        '503': { description: Derived search index is not enabled }

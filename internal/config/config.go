@@ -33,8 +33,29 @@ type Config struct {
 	Notify NotifyConfig `yaml:"notify"`
 	// Maintenance holds scheduled housekeeping task settings (#130).
 	Maintenance MaintenanceConfig `yaml:"maintenance"`
+	// OpenSearch holds the optional derived release-search index settings (#139).
+	OpenSearch OpenSearchConfig `yaml:"opensearch"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `yaml:"log_level"`
+}
+
+// OpenSearchConfig configures the optional derived PostgreSQL-to-OpenSearch
+// release-search index (#139). PostgreSQL always remains authoritative; this
+// index is a derived, rebuildable search accelerator. Disabled by default so
+// single-instance deployments stay PostgreSQL-only, and search cleanly falls
+// back to PostgreSQL whenever it is disabled or unreachable.
+type OpenSearchConfig struct {
+	// Enabled turns on routing release search through the OpenSearch backend
+	// (with automatic PostgreSQL fallback on error). When false, search uses
+	// PostgreSQL exclusively.
+	Enabled bool `yaml:"enabled"`
+	// URL is the OpenSearch/Elasticsearch base endpoint, e.g.
+	// "http://localhost:9200". Required when Enabled.
+	URL string `yaml:"url"`
+	// Index is the index name holding release documents.
+	Index string `yaml:"index"`
+	// Timeout bounds each HTTP request to OpenSearch (0 = default 10s).
+	Timeout time.Duration `yaml:"timeout"`
 }
 
 // RetentionConfig configures raw-part retention (#118): pruning the raw article
@@ -321,6 +342,13 @@ func Default() Config {
 			JobRetention: 7 * 24 * time.Hour,
 			BackupVerify: MaintenanceTaskConfig{Enabled: false, Interval: 24 * time.Hour},
 		},
+		OpenSearch: OpenSearchConfig{
+			// Disabled by default: single-instance deployments stay
+			// PostgreSQL-only until an operator opts in.
+			Enabled: false,
+			Index:   "goindex-releases",
+			Timeout: 10 * time.Second,
+		},
 		NNTP: NNTPConfig{
 			Port:                    563,
 			TLS:                     true,
@@ -455,6 +483,11 @@ func applyEnv(cfg *Config) {
 	envBool("GOINDEX_MAINTENANCE_BACKUP_VERIFY_ENABLED", &cfg.Maintenance.BackupVerify.Enabled)
 	envDur("GOINDEX_MAINTENANCE_BACKUP_VERIFY_INTERVAL", &cfg.Maintenance.BackupVerify.Interval)
 
+	envBool("GOINDEX_OPENSEARCH_ENABLED", &cfg.OpenSearch.Enabled)
+	envStr("GOINDEX_OPENSEARCH_URL", &cfg.OpenSearch.URL)
+	envStr("GOINDEX_OPENSEARCH_INDEX", &cfg.OpenSearch.Index)
+	envDur("GOINDEX_OPENSEARCH_TIMEOUT", &cfg.OpenSearch.Timeout)
+
 	envStr("GOINDEX_AUTH_JWT_SECRET", &cfg.Auth.JWTSecret)
 	envDur("GOINDEX_AUTH_SESSION_TTL", &cfg.Auth.SessionTTL)
 	envInt("GOINDEX_AUTH_DEFAULT_RATE_LIMIT", &cfg.Auth.DefaultRateLimit)
@@ -529,6 +562,15 @@ func (c Config) Validate() error {
 	}
 	if c.Retention.MaxBatchesPerRun < 0 {
 		errs = append(errs, "retention.max_batches_per_run must not be negative (0 = drain fully)")
+	}
+
+	if c.OpenSearch.Enabled {
+		if c.OpenSearch.URL == "" {
+			errs = append(errs, "opensearch.url is required when opensearch.enabled is true")
+		}
+		if c.OpenSearch.Index == "" {
+			errs = append(errs, "opensearch.index is required when opensearch.enabled is true")
+		}
 	}
 
 	if c.Auth.DefaultRateLimit <= 0 {

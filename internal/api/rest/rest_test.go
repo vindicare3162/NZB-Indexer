@@ -1177,3 +1177,72 @@ func TestBackfillSegments(t *testing.T) {
 		t.Errorf("non-admin status = %d, want 403", rec.Code)
 	}
 }
+
+// stubReindexer implements Reindexer for the admin reindex endpoint test.
+type stubReindexer struct {
+	n   int
+	err error
+}
+
+func (s stubReindexer) Reindex(context.Context) (int, error) { return s.n, s.err }
+
+// stubSearchBackend implements SearchBackend, recording that it was consulted.
+type stubSearchBackend struct {
+	called bool
+	result store.SearchResult
+}
+
+func (s *stubSearchBackend) Search(context.Context, store.SearchFilter) (store.SearchResult, error) {
+	s.called = true
+	return s.result, nil
+}
+
+func TestAdminSearchReindex(t *testing.T) {
+	env := setup(t)
+
+	// Not enabled -> 503.
+	rec := do(t, env, http.MethodPost, "/api/v1/admin/search/reindex", env.adminTok, nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("without reindexer, status = %d, want 503", rec.Code)
+	}
+
+	// Enabled -> reports indexed count.
+	env.api.SetReindexer(stubReindexer{n: 42})
+	rec = do(t, env, http.MethodPost, "/api/v1/admin/search/reindex", env.adminTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reindex status = %d, body=%s", rec.Code, rec.Body)
+	}
+	var resp map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if int(resp["indexed"].(float64)) != 42 {
+		t.Errorf("indexed = %v, want 42", resp["indexed"])
+	}
+
+	// Non-admin forbidden.
+	rec = do(t, env, http.MethodPost, "/api/v1/admin/search/reindex", env.userTok, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("non-admin status = %d, want 403", rec.Code)
+	}
+}
+
+func TestSearchRoutesThroughBackendWhenSet(t *testing.T) {
+	env := setup(t)
+	backend := &stubSearchBackend{result: store.SearchResult{
+		Total:    1,
+		Releases: []store.Release{{GUID: "os-1", Name: "From OpenSearch"}},
+	}}
+	env.api.SetSearchBackend(backend)
+
+	rec := do(t, env, http.MethodGet, "/api/v1/releases?q=test", env.userTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search status = %d, body=%s", rec.Code, rec.Body)
+	}
+	if !backend.called {
+		t.Fatal("expected search to route through the configured backend")
+	}
+	var resp searchResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Total != 1 || len(resp.Releases) != 1 || resp.Releases[0].GUID != "os-1" {
+		t.Errorf("resp = %+v, want the backend result", resp)
+	}
+}
