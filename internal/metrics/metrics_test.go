@@ -85,6 +85,71 @@ func TestMiddlewareAndHandlerExposeMetrics(t *testing.T) {
 	}
 }
 
+func TestGroupHealthAndNNTPHealthMetrics(t *testing.T) {
+	m := New(Providers{
+		GroupHealth: func(context.Context) (GroupHealthSnapshot, error) {
+			return GroupHealthSnapshot{
+				ActiveGroups: 12, GroupsBehind: 3, MaxLag: 4200, TotalLag: 9000,
+				GroupsFailing: 1, MaxConsecutiveFailures: 2,
+				OldestSuccessAgeSeconds: 7200, GroupsNeverScanned: 4,
+			}, nil
+		},
+		NNTPHealth: func() []ProviderHealthSnapshot {
+			return []ProviderHealthSnapshot{
+				{Name: "primary", CircuitState: 0, TotalSuccess: 100, TotalFailures: 2, PoolOpen: 5, PoolIdle: 3},
+				{Name: "backup", CircuitState: 2, ConsecutiveFailures: 5, CircuitOpens: 1},
+			}
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		"goindex_groups_active 12",
+		"goindex_groups_behind 3",
+		"goindex_group_lag_max_articles 4200",
+		"goindex_group_lag_total_articles 9000",
+		"goindex_groups_failing 1",
+		"goindex_group_consecutive_failures_max 2",
+		"goindex_group_oldest_success_age_seconds 7200",
+		"goindex_groups_never_scanned 4",
+		`goindex_nntp_provider_circuit_state{server="primary"} 0`,
+		`goindex_nntp_provider_circuit_state{server="backup"} 2`,
+		`goindex_nntp_provider_consecutive_failures{server="backup"} 5`,
+		`goindex_nntp_provider_success_total{server="primary"} 100`,
+		`goindex_nntp_provider_circuit_opens_total{server="backup"} 1`,
+		"goindex_metrics_scrape_errors_total 0",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics output missing %q", want)
+		}
+	}
+
+	// Cardinality guard: exactly one circuit-state series per configured server
+	// (the label set is bounded by the server name, never per-group).
+	if n := strings.Count(body, "goindex_nntp_provider_circuit_state{"); n != 2 {
+		t.Errorf("circuit-state series count = %d, want 2 (one per provider)", n)
+	}
+}
+
+func TestGroupHealthScrapeErrorCounted(t *testing.T) {
+	m := New(Providers{
+		GroupHealth: func(context.Context) (GroupHealthSnapshot, error) {
+			return GroupHealthSnapshot{}, context.DeadlineExceeded
+		},
+	})
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), "goindex_metrics_scrape_errors_total 1") {
+		t.Errorf("expected a scrape error to be counted:\n%s", rec.Body.String())
+	}
+}
+
 func TestScrapeErrorCounted(t *testing.T) {
 	m := New(Providers{
 		Pipeline: func(context.Context) (PipelineSnapshot, error) {

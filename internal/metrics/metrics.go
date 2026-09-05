@@ -51,6 +51,40 @@ type Providers struct {
 	// operators can see when the pipeline is contending for connections and
 	// whether the API/control plane has headroom (#117). Nil omits the metrics.
 	Pools func() PoolSnapshot
+	// GroupHealth reports aggregate group-freshness signals (#129). Bounded
+	// scalar gauges only (no per-group series). Nil omits the metrics.
+	GroupHealth func(ctx context.Context) (GroupHealthSnapshot, error)
+	// NNTPHealth reports per-provider circuit/failure/pool state (#129). Labeled
+	// by the configured server name, which is bounded (operators configure a
+	// handful of servers). Nil omits the metrics.
+	NNTPHealth func() []ProviderHealthSnapshot
+}
+
+// GroupHealthSnapshot is the aggregate group-freshness view for metrics (#129).
+// It carries only bounded scalars, never per-group rows.
+type GroupHealthSnapshot struct {
+	ActiveGroups            float64
+	GroupsBehind            float64
+	MaxLag                  float64
+	TotalLag                float64
+	GroupsFailing           float64
+	MaxConsecutiveFailures  float64
+	OldestSuccessAgeSeconds float64
+	GroupsNeverScanned      float64
+}
+
+// ProviderHealthSnapshot is one NNTP provider's observable health for metrics
+// (#129). Name is used as a bounded label.
+type ProviderHealthSnapshot struct {
+	Name string
+	// CircuitState is 0 (closed), 1 (half-open), or 2 (open).
+	CircuitState        float64
+	ConsecutiveFailures float64
+	TotalFailures       float64
+	TotalSuccess        float64
+	CircuitOpens        float64
+	PoolOpen            float64
+	PoolIdle            float64
 }
 
 // AuthCacheSnapshot reports API-key auth cache activity.
@@ -115,7 +149,8 @@ func New(p Providers) *Metrics {
 	}
 	reg.MustRegister(m.httpRequests, m.httpDuration)
 
-	if p.Pipeline != nil || p.Worker != nil || p.AuthCache != nil {
+	if p.Pipeline != nil || p.Worker != nil || p.AuthCache != nil ||
+		p.Pools != nil || p.GroupHealth != nil || p.NNTPHealth != nil {
 		reg.MustRegister(newPipelineCollector(p))
 	}
 	return m
