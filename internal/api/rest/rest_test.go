@@ -57,6 +57,7 @@ type mockStore struct {
 	scanCfgGroupID   int64
 	scanCfgPriority  int
 	scanCfgForward   *int64
+	groupStorage     map[int64]int64
 }
 
 func (m *mockStore) Ping(context.Context) error { return m.pingErr }
@@ -204,6 +205,13 @@ func (m *mockStore) SetGroupScanConfig(_ context.Context, id int64, priority int
 	m.scanCfgPriority = priority
 	m.scanCfgForward = forwardArticles
 	return nil
+}
+func (m *mockStore) GroupStorageBytes(_ context.Context, ids []int64) (map[int64]int64, error) {
+	out := map[int64]int64{}
+	for _, id := range ids {
+		out[id] = m.groupStorage[id]
+	}
+	return out, nil
 }
 func (m *mockStore) CountUsers(context.Context) (int64, error) { return m.userCount, nil }
 func (m *mockStore) ListUsers(context.Context) ([]store.User, error) { return m.users, nil }

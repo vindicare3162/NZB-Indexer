@@ -701,14 +701,16 @@ func (w *Worker) runScan(ctx context.Context, group string, backfill bool) {
 				}
 				w.scanGroupBegin(g.Name)
 				var (
-					res scanner.ScanResult
+					res  scanner.ScanResult
 					serr error
 				)
+				passStart := time.Now()
 				if backfill {
 					res, serr = w.scan.ScanBackfill(ctx, g.Name)
 				} else {
 					res, serr = w.scan.ScanForward(ctx, g.Name)
 				}
+				passDur := time.Since(passStart)
 				if serr != nil {
 					w.recordError(fmt.Errorf("scan %s: %w", g.Name, serr))
 				} else {
@@ -717,7 +719,7 @@ func (w *Worker) runScan(ctx context.Context, group string, backfill bool) {
 					w.metrics.PartsInserted += res.PartsInserted
 					w.mu.Unlock()
 				}
-				w.recordGroupScan(ctx, g, res, serr)
+				w.recordGroupScan(ctx, g, res, serr, passDur)
 				w.scanGroupEnd(g.Name)
 			}
 		}()
@@ -1087,7 +1089,7 @@ func (w *Worker) recordError(err error) {
 // when a recorder is attached. Best-effort: a failure to record is logged and
 // swallowed so it never disrupts the pass. A cancelled pass (ctx done) is not
 // recorded, since the outcome is incomplete and the write would fail anyway.
-func (w *Worker) recordGroupScan(ctx context.Context, g store.Group, res scanner.ScanResult, scanErr error) {
+func (w *Worker) recordGroupScan(ctx context.Context, g store.Group, res scanner.ScanResult, scanErr error, dur time.Duration) {
 	if w.scanRecorder == nil || ctx.Err() != nil {
 		return
 	}
@@ -1104,6 +1106,7 @@ func (w *Worker) recordGroupScan(ctx context.Context, g store.Group, res scanner
 		Articles:   res.ArticlesPulled,
 		Parts:      res.PartsInserted,
 		ServerHigh: res.ServerHigh,
+		DurationMS: dur.Milliseconds(),
 		Err:        errMsg,
 	}); err != nil {
 		w.log.Warn("failed to record group scan state", "group", g.Name, "err", err)

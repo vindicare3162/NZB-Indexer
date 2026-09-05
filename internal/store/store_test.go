@@ -59,8 +59,8 @@ func TestMigrateUpDownAndVersion(t *testing.T) {
 	if dirty {
 		t.Fatal("schema is dirty after migrate up")
 	}
-	if v != 18 {
-		t.Fatalf("expected schema version 18, got %d", v)
+	if v != 19 {
+		t.Fatalf("expected schema version 19, got %d", v)
 	}
 
 	// Re-running up should be a no-op, not an error.

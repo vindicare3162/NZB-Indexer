@@ -198,6 +198,15 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	})
 	// Raw-part retention window/batch defaults for the admin retention endpoints.
 	restAPI.SetRetention(cfg.Retention.Days, cfg.Retention.BatchSize, cfg.Retention.MaxBatchesPerRun)
+	// Per-group health thresholds for the admin group listing (#127).
+	restAPI.SetGroupHealthThresholds(store.GroupHealthThresholds{
+		LagWarn:       cfg.Health.LagWarn,
+		LagError:      cfg.Health.LagError,
+		StaleWarn:     cfg.Health.StaleWarn,
+		StaleError:    cfg.Health.StaleError,
+		FailuresWarn:  cfg.Health.FailuresWarn,
+		FailuresError: cfg.Health.FailuresError,
+	})
 	// Live log streaming for the admin Server-Sent Events endpoint (#121).
 	restAPI.SetLogStreamer(logs)
 

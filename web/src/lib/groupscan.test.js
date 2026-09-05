@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { groupLag, formatLag, lastScanLabel, hasScanError, relativeTime } from './groupscan.js';
+import {
+  groupLag, formatLag, lastScanLabel, hasScanError, relativeTime,
+  healthLevel, healthLabel, healthReasons, formatThroughput, formatBytes,
+} from './groupscan.js';
 
 describe('groupLag / formatLag', () => {
   it('returns null when server head unknown', () => {
@@ -50,6 +53,43 @@ describe('hasScanError', () => {
     expect(hasScanError({ last_scan_error: '' })).toBe(false);
     expect(hasScanError({})).toBe(false);
     expect(hasScanError(null)).toBe(false);
+  });
+});
+
+describe('health helpers (#127)', () => {
+  it('reads level and label, defaulting to unknown', () => {
+    expect(healthLevel({ health: { level: 'warn' } })).toBe('warn');
+    expect(healthLevel({})).toBe('unknown');
+    expect(healthLevel(null)).toBe('unknown');
+    expect(healthLabel({ health: { level: 'ok' } })).toBe('OK');
+    expect(healthLabel({ health: { level: 'error' } })).toBe('Error');
+    expect(healthLabel({})).toBe('Unknown');
+  });
+  it('returns reasons list', () => {
+    expect(healthReasons({ health: { reasons: ['a', 'b'] } })).toEqual(['a', 'b']);
+    expect(healthReasons({})).toEqual([]);
+  });
+});
+
+describe('formatThroughput', () => {
+  it('renders rate with one decimal below 100 and rounded above', () => {
+    expect(formatThroughput({ throughput_arts_per_sec: 12.34 })).toBe('12.3 art/s');
+    expect(formatThroughput({ throughput_arts_per_sec: 1500 })).toBe('1,500 art/s');
+  });
+  it('is empty when unknown', () => {
+    expect(formatThroughput({ throughput_arts_per_sec: 0 })).toBe('');
+    expect(formatThroughput({})).toBe('');
+    expect(formatThroughput(null)).toBe('');
+  });
+});
+
+describe('formatBytes', () => {
+  it('renders compact human sizes', () => {
+    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(512)).toBe('512 B');
+    expect(formatBytes(1024)).toBe('1.0 KB');
+    expect(formatBytes(1536)).toBe('1.5 KB');
+    expect(formatBytes(1024 * 1024 * 1024)).toBe('1.0 GB');
   });
 });
 
