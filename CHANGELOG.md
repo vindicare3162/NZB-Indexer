@@ -41,6 +41,20 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   with `pushQuery`/`replaceQuery` and back/forward support.
 
 ### Added
+- Recent pipeline error history and actionable diagnostics (#133). The worker
+  now retains a bounded, in-memory ring of recent pipeline errors (stage,
+  affected group, message, timestamp, sequence) instead of a single last-error
+  string — so concurrent worker failures no longer overwrite one another. A new
+  admin diagnostics view (`GET /api/v1/admin/diagnostics`) unifies that
+  in-process history with the durable error surfaces: active groups whose last
+  scan failed (#114), releases stuck in failed post-processing with their last
+  error, permanence, and attempt count (#132), and recent failed jobs (#113).
+  It carries summary counts (failed/permanent releases, groups with errors) and
+  actionable remediation hints, and a new "Diagnostics" admin panel renders it
+  with a one-click retry for non-permanent post-processing failures. Error
+  messages are stage/error text only (no article contents or credentials); the
+  in-process history is documented as process-lifetime scope while per-group and
+  per-release errors persist in the database.
 - Automated maintenance jobs (#130). A new `internal/maintenance` scheduler runs
   routine housekeeping as observable, independently-configurable scheduled tasks:
   raw-part retention pruning (#118), re-queuing failed post-processing (#132),

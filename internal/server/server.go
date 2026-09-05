@@ -213,6 +213,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	})
 	// Webhook notification delivery history for the admin endpoint (#137).
 	restAPI.SetNotifier(notifier)
+	// Recent in-process pipeline error history for the admin diagnostics
+	// endpoint (#133).
+	restAPI.SetErrorHistorian(errorHistorian{wrk})
 	// Live log streaming for the admin Server-Sent Events endpoint (#121).
 	restAPI.SetLogStreamer(logs)
 

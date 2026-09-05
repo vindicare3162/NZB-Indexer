@@ -86,6 +86,7 @@ var expectedOps = map[string][]string{
 	"/admin/discover":                 {"get"},
 	"/admin/notifications":            {"get"},
 	"/admin/capacity":                 {"get"},
+	"/admin/diagnostics":              {"get"},
 }
 
 func TestSpecCoversRESTRoutes(t *testing.T) {

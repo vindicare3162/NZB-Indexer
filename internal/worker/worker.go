@@ -209,7 +209,37 @@ type Worker struct {
 	// when nil, no notifications are sent. Emit is non-blocking and best-effort,
 	// so it never affects pipeline timing.
 	notifier Notifier
+
+	// errHistory is a bounded ring buffer of recent pipeline errors (#133), so
+	// concurrent worker failures do not overwrite one another the way a single
+	// last-error field does. Guarded by errMu. In-memory only: the history
+	// covers the current process lifetime (durable per-group and per-release
+	// errors are retained in the database).
+	errMu      sync.Mutex
+	errHistory []PipelineError
+	errSeq     int64
 }
+
+// PipelineError is one recorded pipeline failure retained in the worker's
+// bounded in-memory history (#133). Messages are stage/error text only — no
+// article contents or credentials.
+type PipelineError struct {
+	// Seq is a monotonically increasing id (newest highest), usable as an
+	// acknowledge cursor.
+	Seq int64 `json:"seq"`
+	// Stage is the pipeline stage (scan/backfill/assemble/build/postprocess/
+	// enrich), or "" when unknown.
+	Stage string `json:"stage,omitempty"`
+	// Group is the affected newsgroup when the failure is group-scoped.
+	Group string `json:"group,omitempty"`
+	// Message is the error text.
+	Message string `json:"message"`
+	// At is when the error was recorded.
+	At time.Time `json:"at"`
+}
+
+// maxErrHistory bounds the in-memory pipeline-error ring (#133).
+const maxErrHistory = 200
 
 // Notifier receives pipeline events for external notification (#137). The
 // notify.Service satisfies it. Emit must be non-blocking.
@@ -637,7 +667,7 @@ func (w *Worker) runEnrich(ctx context.Context) {
 	w.stageStart("enrich")
 	defer w.stageEnd("enrich")
 	if err := w.enrich.Run(ctx); err != nil {
-		w.recordError(fmt.Errorf("metadata enrichment: %w", err))
+		w.recordStageError("enrich", "", fmt.Errorf("metadata enrichment: %w", err))
 	}
 }
 
@@ -735,7 +765,11 @@ func (w *Worker) runScan(ctx context.Context, group string, backfill bool) {
 				}
 				passDur := time.Since(passStart)
 				if serr != nil {
-					w.recordError(fmt.Errorf("scan %s: %w", g.Name, serr))
+					stage := "scan"
+					if backfill {
+						stage = "backfill"
+					}
+					w.recordStageError(stage, g.Name, fmt.Errorf("scan %s: %w", g.Name, serr))
 				} else {
 					w.mu.Lock()
 					w.metrics.ArticlesPulled += res.ArticlesPulled
@@ -777,7 +811,7 @@ func (w *Worker) runAssemble(ctx context.Context) (busy bool) {
 	defer w.stageEnd("assemble")
 	asmRes, err := w.asm.Assemble(ctx)
 	if err != nil {
-		w.recordError(fmt.Errorf("assemble: %w", err))
+		w.recordStageError("assemble", "", fmt.Errorf("assemble: %w", err))
 		return false
 	}
 	w.mu.Lock()
@@ -803,7 +837,7 @@ func (w *Worker) runBuild(ctx context.Context) (busy bool) {
 	defer w.stageEnd("release")
 	buildRes, err := w.build.Build(ctx)
 	if err != nil {
-		w.recordError(fmt.Errorf("build releases: %w", err))
+		w.recordStageError("build", "", fmt.Errorf("build releases: %w", err))
 		return false
 	}
 	w.mu.Lock()
@@ -841,7 +875,7 @@ func (w *Worker) runPostProcess(ctx context.Context) (busy bool) {
 
 	ppRes, err := w.pp.Run(ctx)
 	if err != nil {
-		w.recordError(fmt.Errorf("post-process: %w", err))
+		w.recordStageError("postprocess", "", fmt.Errorf("post-process: %w", err))
 		return false
 	}
 	w.mu.Lock()
@@ -1113,15 +1147,71 @@ func (w *Worker) stageEnd(stage string) {
 }
 
 func (w *Worker) recordError(err error) {
-	w.log.Warn("pipeline stage error", "err", err)
+	w.recordStageError("", "", err)
+}
+
+// recordStageError records a pipeline failure with its stage and (optional)
+// affected group into the bounded error history (#133), updates the last-error
+// summary, logs it, and emits a notification. Capturing stage/group here means
+// concurrent failures are all retained rather than overwriting one another.
+func (w *Worker) recordStageError(stage, group string, err error) {
+	if err == nil {
+		return
+	}
+	msg := err.Error()
+	w.log.Warn("pipeline stage error", "stage", stage, "group", group, "err", msg)
+
 	w.mu.Lock()
-	w.metrics.LastError = err.Error()
+	w.metrics.LastError = msg
 	w.mu.Unlock()
+
+	w.errMu.Lock()
+	w.errSeq++
+	e := PipelineError{Seq: w.errSeq, Stage: stage, Group: group, Message: msg, At: time.Now()}
+	w.errHistory = append(w.errHistory, e)
+	if len(w.errHistory) > maxErrHistory {
+		w.errHistory = w.errHistory[len(w.errHistory)-maxErrHistory:]
+	}
+	w.errMu.Unlock()
+
 	w.emit(notify.Event{
 		Type:    notify.EventScanFailed,
 		Title:   "Pipeline stage error",
-		Message: err.Error(),
+		Message: msg,
+		Fields:  fieldsFor(stage, group),
 	})
+}
+
+// fieldsFor builds notification fields, omitting empty values.
+func fieldsFor(stage, group string) map[string]string {
+	f := map[string]string{}
+	if stage != "" {
+		f["stage"] = stage
+	}
+	if group != "" {
+		f["group"] = group
+	}
+	if len(f) == 0 {
+		return nil
+	}
+	return f
+}
+
+// RecentErrors returns up to limit most-recent pipeline errors, newest first
+// (#133). limit <= 0 returns all retained errors. The history is in-memory and
+// scoped to the current process lifetime.
+func (w *Worker) RecentErrors(limit int) []PipelineError {
+	w.errMu.Lock()
+	defer w.errMu.Unlock()
+	n := len(w.errHistory)
+	if limit > 0 && limit < n {
+		n = limit
+	}
+	out := make([]PipelineError, 0, n)
+	for i := len(w.errHistory) - 1; i >= 0 && len(out) < n; i-- {
+		out = append(out, w.errHistory[i])
+	}
+	return out
 }
 
 // recordGroupScan persists the per-group outcome of a scan/backfill pass (#114)

@@ -43,6 +43,7 @@
   let jobs = $state([]);
   let notifications = $state([]);
   let capacity = $state(null);
+  let diagnostics = $state(null);
   let newGroup = $state('');
   let bulkNames = $state('');
   let bulkBackfillDays = $state(7);
@@ -101,6 +102,7 @@
       loadJobs();
       loadNotifications();
       loadCapacity();
+      loadDiagnostics();
       loadGroups();
       // Surface any per-subsystem failures without blanking the rest.
       if (o.errors && Object.keys(o.errors).length > 0) {
@@ -191,6 +193,10 @@
 
   function loadCapacity() {
     api.capacity(10).then((c) => { capacity = c; }).catch(() => {});
+  }
+
+  function loadDiagnostics() {
+    api.diagnostics(50).then((d) => { diagnostics = d; }).catch(() => {});
   }
 
   // loadGroups fetches the current page of groups from the server-side
@@ -670,6 +676,84 @@
     </table>
   {:else}
     <p class="muted" style="margin:0">No jobs yet. Trigger a scan, backfill, or post-processing pass to create one.</p>
+  {/if}
+</div>
+
+<div class="panel">
+  <div class="row" style="justify-content:space-between; align-items:center">
+    <h3 style="margin-top:0; margin-bottom:0">Diagnostics</h3>
+    <button class="secondary" onclick={loadDiagnostics}>Refresh</button>
+  </div>
+  <p class="muted">Recent pipeline errors from every source. Pipeline stage errors are kept in memory for this process; per-group and per-release errors are retained in the database.</p>
+  {#if diagnostics}
+    {#if diagnostics.summary.retryable_release_hint || diagnostics.summary.group_error_hint}
+      <div class="muted" style="font-size:0.85rem; margin-bottom:0.5rem">
+        {#if diagnostics.summary.failed_release_count > 0}
+          <div>{diagnostics.summary.failed_release_count} failed release(s) ({diagnostics.summary.permanent_release_count} permanent).
+            {#if diagnostics.summary.retryable_release_hint}
+              <button class="secondary" onclick={() => retryFailedPP()}>Retry failed post-processing</button>
+            {/if}
+          </div>
+        {/if}
+        {#if diagnostics.summary.group_error_hint}
+          <div>{diagnostics.summary.group_error_count} group(s) with scan errors. {diagnostics.summary.group_error_hint}</div>
+        {/if}
+      </div>
+    {/if}
+
+    {#if diagnostics.pipeline_errors.length > 0}
+      <h4 style="margin:0.6rem 0 0.2rem">Recent pipeline stage errors</h4>
+      <table>
+        <thead><tr><th>Time</th><th>Stage</th><th>Group</th><th>Message</th></tr></thead>
+        <tbody>
+          {#each diagnostics.pipeline_errors as e (e.seq)}
+            <tr>
+              <td class="muted" style="white-space:nowrap">{fmtTime(e.at)}</td>
+              <td>{e.stage || '—'}</td>
+              <td class="muted">{e.group || '—'}</td>
+              <td class="muted">{e.message}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+
+    {#if diagnostics.release_errors.length > 0}
+      <h4 style="margin:0.8rem 0 0.2rem">Failed post-processing releases</h4>
+      <table>
+        <thead><tr><th>Release</th><th>Attempts</th><th>State</th><th>Last error</th></tr></thead>
+        <tbody>
+          {#each diagnostics.release_errors as r (r.guid)}
+            <tr>
+              <td><a href="#/release/{r.guid}">{r.name || r.guid}</a></td>
+              <td class="muted">{r.attempts}</td>
+              <td>
+                <span class="badge" style="background:{r.permanent ? '#cf222e' : '#bf8700'}">{r.permanent ? 'permanent' : 'retryable'}</span>
+              </td>
+              <td class="muted">{r.last_error}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+
+    {#if diagnostics.group_errors.length > 0}
+      <h4 style="margin:0.8rem 0 0.2rem">Groups with scan errors</h4>
+      <table>
+        <thead><tr><th>Group</th><th>Error</th></tr></thead>
+        <tbody>
+          {#each diagnostics.group_errors as g (g.id)}
+            <tr><td>{g.name}</td><td class="muted">{g.last_scan_error}</td></tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+
+    {#if diagnostics.pipeline_errors.length === 0 && diagnostics.release_errors.length === 0 && diagnostics.group_errors.length === 0 && diagnostics.failed_jobs.length === 0}
+      <p class="muted" style="margin:0">No recent errors. The pipeline is healthy.</p>
+    {/if}
+  {:else}
+    <p class="muted" style="margin:0">Diagnostics not loaded yet.</p>
   {/if}
 </div>
 
