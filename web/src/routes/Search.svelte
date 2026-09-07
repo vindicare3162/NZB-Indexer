@@ -12,6 +12,7 @@
   let error = $state('');
   let searched = $state(false);
   let copied = $state(''); // guid of the row whose NZB URL was just copied
+  let downloading = $state(''); // guid of the row whose NZB is being downloaded
 
   // Editable form fields, seeded from the URL. The URL is the source of truth
   // for a *committed* search; these bind the inputs before commit.
@@ -110,6 +111,17 @@
     } catch { /* clipboard unavailable; the visible NZB link still works */ }
   }
 
+  async function downloadNzb(guid) {
+    downloading = guid;
+    try {
+      await api.downloadNZB(guid);
+    } catch (err) {
+      // Silently fail on the search page — the user can use the detail page.
+    } finally {
+      downloading = '';
+    }
+  }
+
   const catNames = $derived(new Map(categories.map((c) => [c.id, c.name])));
   function catName(id) {
     if (id == null) return '—';
@@ -170,7 +182,10 @@
               <td>{fmtSize(r.size_bytes)}</td>
               <td>{fmtDate(r.posted_at)}</td>
               <td class="row" style="gap:0.4rem">
-                <a href={api.nzbUrl(r.guid)}>NZB</a>
+                <button type="button" class="secondary" style="padding:0.1rem 0.4rem; font-size:0.75rem"
+                        onclick={() => downloadNzb(r.guid)} disabled={downloading === r.guid}>
+                  {downloading === r.guid ? '...' : 'NZB'}
+                </button>
                 <button type="button" class="secondary" style="padding:0.1rem 0.4rem; font-size:0.75rem"
                         onclick={() => copyNzb(r.guid)} title="Copy NZB URL">
                   {copied === r.guid ? 'Copied' : 'Copy'}

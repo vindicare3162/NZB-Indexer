@@ -7,8 +7,10 @@
   let files = $state([]);
   let metadata = $state(null);
   let identifiers = $state([]);
-  let error = $state('');
   let loading = $state(true);
+  let error = $state('');
+  let downloading = $state(false);
+  let dlError = $state('');
 
   $effect(() => {
     loading = true;
@@ -23,6 +25,19 @@
       .catch((err) => { error = err.message || 'Failed to load release'; })
       .finally(() => { loading = false; });
   });
+
+  async function downloadNZB() {
+    if (!release) return;
+    downloading = true;
+    dlError = '';
+    try {
+      await api.downloadNZB(release.guid);
+    } catch (err) {
+      dlError = err.message || 'Download failed';
+    } finally {
+      downloading = false;
+    }
+  }
 
   function fmtSize(bytes) {
     if (!bytes) return '—';
@@ -49,7 +64,10 @@
       <span class="badge">{release.pp_status}</span>
     </div>
     <p style="margin-top:1rem">
-      <a href={api.nzbUrl(release.guid)}><button>Download NZB</button></a>
+      <button onclick={downloadNZB} disabled={downloading}>
+        {downloading ? 'Downloading\u2026' : 'Download NZB'}
+      </button>
+      {#if dlError}<span class="error" style="margin-left:0.5rem">{dlError}</span>{/if}
     </p>
   </div>
 

@@ -59,3 +59,37 @@ depth, worker throughput (rates), and HTTP request/error/latency panels.
   port. The application does not gate `/metrics` itself.
 - The pipeline gauges reuse the same cheap planner-estimate query as the admin
   status page, so scraping is inexpensive even with tens of millions of parts.
+
+## Deployed instance (Unraid at 192.168.1.51)
+
+### Prometheus scrape config
+
+Add to your prometheus.yml:
+
+```yaml
+scrape_configs:
+  - job_name: 'goindex'
+    static_configs:
+      - targets: ['192.168.1.51:8093']
+    metrics_path: /metrics
+    scrape_interval: 30s
+```
+
+### Grafana dashboard
+
+Import docs/grafana/goindex-dashboard.json in Grafana with a Prometheus datasource.
+
+Key panels: pipeline depth, worker activity, NNTP/DB pool saturation, HTTP rate/latency, Go runtime.
+
+### Synthetic monitoring
+
+Run via Unraid User Scripts every 5 minutes:
+
+```sh
+curl -fsS --max-time 10 http://192.168.1.51:8093/api/v1/health || logger -t goindex-monitor "FAILED"
+curl -fsS --max-time 10 http://192.168.1.51:8093/api/v1/ready || logger -t goindex-monitor "FAILED"
+```
+
+### Admin UI
+
+http://192.168.1.51:8093/#/admin provides: system health, pipeline stats, active stages, jobs, capacity, logs, per-group health.

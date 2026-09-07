@@ -26,7 +26,9 @@ async function request(method, path, body) {
 
   if (res.status === 401) {
     setToken('');
-    throw new ApiError('Not authenticated', 401);
+    let msg = 'Not authenticated';
+    try { const data = await res.clone().json(); if (data && data.error) msg = data.error; } catch (_) { }
+    throw new ApiError(msg, 401);
   }
   if (!res.ok) {
     let msg = `Request failed (${res.status})`;
@@ -67,7 +69,32 @@ export const api = {
     return request('GET', `/releases?${params.toString()}`);
   },
   release: (guid) => request('GET', `/releases/${encodeURIComponent(guid)}`),
+  // nzbUrl builds the download URL for direct links (used in search result rows).
   nzbUrl: (guid) => `/api/v1/releases/${encodeURIComponent(guid)}/nzb`,
+  downloadNZB: async (guid) => {
+    const token = getToken();
+    const res = await fetch(`/api/v1/releases/${encodeURIComponent(guid)}/nzb`, {
+      headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+    });
+    if (res.status === 401) {
+      setToken('');
+      let msg = 'Not authenticated';
+      try { const data = await res.clone().json(); if (data && data.error) msg = data.error; } catch (_) {}
+      throw new ApiError(msg, 401);
+    }
+    if (!res.ok) throw new ApiError(`Download failed (${res.status})`, res.status);
+    // Determine filename from Content-Disposition or fall back to guid.nzb.
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    const filename = match ? match[1] : `${guid}.nzb`;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
 
   myKeys: () => request('GET', '/apikeys'),
   createKey: (label) => request('POST', '/apikeys', { label }),
