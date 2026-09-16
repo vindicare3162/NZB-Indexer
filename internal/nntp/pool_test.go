@@ -30,6 +30,7 @@ type fakeConn struct {
 
 	pingErr error
 	closed  bool
+	spent   bool
 
 	// failN makes the next failN operations return failErr (to exercise
 	// retry). Decremented on each qualifying call.
@@ -75,6 +76,21 @@ func (f *fakeConn) body(_ context.Context, messageID string) (io.ReadCloser, err
 	}
 	return io.NopCloser(strings.NewReader(f.bodyData)), nil
 }
+
+func (f *fakeConn) bodyHeader(_ context.Context, messageID string) (string, error) {
+	if f.bodyErr != nil {
+		return "", f.bodyErr
+	}
+	for _, line := range strings.Split(f.bodyData, "\r\n") {
+		if strings.HasPrefix(line, "=ybegin") {
+			f.spent = true // mirrors the real conn abandoning the response
+			return line, nil
+		}
+	}
+	return "", ErrNoYencHeader
+}
+
+func (f *fakeConn) spentConn() bool { return f.spent }
 
 func (f *fakeConn) ping() error { return f.pingErr }
 
@@ -357,5 +373,59 @@ func TestTrimAndEnsureAngle(t *testing.T) {
 	}
 	if got := ensureAngle("<abc@host>"); got != "<abc@host>" {
 		t.Errorf("ensureAngle no-op = %q", got)
+	}
+}
+
+func TestBodyHeaderReadsControlLineAndDiscardsConnection(t *testing.T) {
+	var dials int32
+	var conns []*fakeConn
+	var mu sync.Mutex
+
+	const ybegin = "=ybegin part=1871 total=16147 line=128 size=11573468670 name=abc123"
+	d := func(cfg Config) (conn, error) {
+		atomic.AddInt32(&dials, 1)
+		mu.Lock()
+		defer mu.Unlock()
+		c := &fakeConn{id: len(conns), bodyData: ybegin + "\r\nencoded payload\r\n"}
+		conns = append(conns, c)
+		return c, nil
+	}
+
+	p := newWithDialer(Config{MaxConns: 2}, d)
+	defer p.Close()
+	ctx := context.Background()
+
+	line, err := p.BodyHeader(ctx, "abc@example.com")
+	if err != nil {
+		t.Fatalf("BodyHeader: %v", err)
+	}
+	if line != ybegin {
+		t.Errorf("line = %q, want %q", line, ybegin)
+	}
+
+	// The response was abandoned part-way, so that connection must not be
+	// pooled for reuse — the next call has to dial a fresh one.
+	if _, err := p.BodyHeader(ctx, "def@example.com"); err != nil {
+		t.Fatalf("second BodyHeader: %v", err)
+	}
+	if got := atomic.LoadInt32(&dials); got != 2 {
+		t.Errorf("dials = %d, want 2 (spent connection must be discarded)", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !conns[0].closed {
+		t.Error("expected the spent connection to be closed")
+	}
+}
+
+func TestBodyHeaderNonYencArticle(t *testing.T) {
+	d := func(cfg Config) (conn, error) {
+		return &fakeConn{bodyData: "just plain text\r\nno control line\r\n"}, nil
+	}
+	p := newWithDialer(Config{MaxConns: 1}, d)
+	defer p.Close()
+
+	if _, err := p.BodyHeader(context.Background(), "x@example.com"); !errors.Is(err, ErrNoYencHeader) {
+		t.Errorf("err = %v, want ErrNoYencHeader", err)
 	}
 }

@@ -52,16 +52,12 @@ var (
 	reYencMarker = regexp.MustCompile(`(?i)\byenc\b`)
 	reWhitespace = regexp.MustCompile(`\s+`)
 
-	// A LEADING file counter like "[002/113]" that counts files within a
-	// multi-file collection, distinct from the trailing yEnc segment counter
-	// "(1/464)". Two posting styles are supported:
-	//   [002/113] "file.rar" yEnc (1/464)          -- counter at the start
-	//   Release.Name [64/65] - "file.par2" yEnc ... -- title prefix, then counter
-	// To stay unambiguous, the file counter must use SQUARE brackets (the yEnc
-	// segment counter conventionally uses parentheses), and any prefix before
-	// it must not itself contain a bracketed counter. Bracket style at the very
-	// start is also accepted for the classic layout.
-	reLeadingFileCounter = regexp.MustCompile(`^[^\[\]]*\[(\d{1,6})\s*/\s*(\d{1,6})\]`)
+	// maxCounterToNameGap bounds how far a file counter may sit from the quoted
+	// filename it enumerates. Every posting style places them adjacent, give or
+	// take a short separator like " - ", so a small gap is what separates a real
+	// file counter from an unrelated "n/m"-shaped token earlier in the subject
+	// (a year range such as "[2009/2010]", say).
+	maxCounterToNameGap = 8
 
 	// Trailing archive/volume/parity extensions used to reduce a per-file name
 	// to the collection base name (so all volumes of a set share one key).
@@ -77,9 +73,12 @@ var (
 func ParseSubject(subject string) ParsedSubject {
 	res := ParsedSubject{}
 
-	// Extract a quoted filename if present.
-	if m := reQuotedName.FindStringSubmatch(subject); m != nil {
-		res.FileName = strings.TrimSpace(m[1])
+	// Extract a quoted filename if present. Its position also anchors the file
+	// counter search below (see fileCounter).
+	nameLo := -1
+	if m := reQuotedName.FindStringSubmatchIndex(subject); m != nil {
+		res.FileName = strings.TrimSpace(subject[m[2]:m[3]])
+		nameLo = m[0]
 	}
 
 	// The segment counter "(part/total)" is what varies per article; capture
@@ -103,7 +102,7 @@ func ParseSubject(subject string) ParsedSubject {
 
 	res.Normalized = normalizeSubject(subject, segLo, segHi)
 
-	parseCollection(subject, segLo, segHi, &res)
+	parseCollection(subject, segLo, segHi, nameLo, &res)
 	return res
 }
 
@@ -118,8 +117,44 @@ func ParseSubject(subject string) ParsedSubject {
 // When no leading file counter is present (a plain single-file post), the key
 // is left empty and the assembler falls back to the normalized subject, so
 // single-file behaviour is unchanged.
-func parseCollection(subject string, segLo, segHi int, res *ParsedSubject) {
-	loc := reLeadingFileCounter.FindStringSubmatchIndex(subject)
+// fileCounter locates the counter that enumerates files within a collection,
+// as opposed to the trailing yEnc segment counter. It returns the submatch
+// index slice of the chosen counter, or nil when the subject carries none.
+//
+// Posting styles vary more than one anchored pattern can express:
+//
+//	[002/113] "file.rar" yEnc (1/464)                     counter first
+//	Release.Name [64/65] - "file.par2" yEnc (1/12)         after a title
+//	[10764]-[FULL]-[#grp]-[ Title ]-[03/25] - "file.r00"   after other brackets
+//	cbc - rmr - s6e07 - (30/36) - "file.PAR2" yEnc (1/12)  parenthesised
+//
+// Requiring the counter to be the first bracketed group, in square brackets,
+// missed the latter two outright — every file of such a post then became its
+// own binary and its own release. What the styles share instead is position:
+// the file counter sits just before the quoted filename, while the yEnc
+// segment counter follows it. Select on that ordering rather than on bracket
+// style or index, and take the counter closest to the filename when several
+// qualify.
+func fileCounter(subject string, segLo, segHi, nameLo int) []int {
+	var best []int
+	for _, m := range reParenParts.FindAllStringSubmatchIndex(subject, -1) {
+		if m[0] == segLo && m[1] == segHi {
+			continue // the yEnc segment counter, not a file counter
+		}
+		if nameLo >= 0 {
+			// Anything at or past the filename is a segment counter or noise;
+			// anything far ahead of it is an unrelated "n/m"-shaped token.
+			if m[1] > nameLo || nameLo-m[1] > maxCounterToNameGap {
+				continue
+			}
+		}
+		best = m
+	}
+	return best
+}
+
+func parseCollection(subject string, segLo, segHi, nameLo int, res *ParsedSubject) {
+	loc := fileCounter(subject, segLo, segHi, nameLo)
 	if loc == nil {
 		return
 	}
@@ -129,13 +164,10 @@ func parseCollection(subject string, segLo, segHi int, res *ParsedSubject) {
 	if total < 2 {
 		return
 	}
-	// The bracket span of the file counter itself (the `[` just precedes the
-	// first captured digit; the `]` just follows the last). Used to guard
-	// against a subject where the leading counter IS the trailing yEnc segment
-	// counter, e.g. `[1/445] "blob" yEnc (1/445)` — one file, not a collection.
-	// (In practice the file counter now uses square brackets and the yEnc
-	// counter parentheses, so these spans never coincide, but keep the guard.)
-	brLo, brHi := loc[2]-1, loc[5]+1
+	// Span of the counter itself, used below to split the title prefix from it
+	// and to guard against the counter actually being the yEnc segment counter
+	// (e.g. `[1/445] "blob" yEnc (1/445)` — one file, not a collection).
+	brLo, brHi := loc[0], loc[1]
 	if segLo == brLo && segHi == brHi {
 		return
 	}
@@ -152,9 +184,6 @@ func parseCollection(subject string, segLo, segHi int, res *ParsedSubject) {
 	//      no title prefix, but the per-file name carries a volume/parity
 	//      extension. Key on the filename base so all volumes share one key.
 	//
-	// A subject with a leading counter but neither a meaningful title prefix nor
-	// a usable archive filename base is left ungrouped (treated as a single
-	// file), so bare obfuscated blobs never merge with unrelated posts.
 	if title := collectionTitle(subject, brLo); title != "" {
 		res.FileNumber = fileNum
 		res.CollectionFiles = total
@@ -166,7 +195,29 @@ func parseCollection(subject string, segLo, segHi int, res *ParsedSubject) {
 			res.FileNumber = fileNum
 			res.CollectionFiles = total
 			res.CollectionKey = base + "/" + strconv.Itoa(total)
+			return
 		}
+	}
+
+	// Fallback for obfuscated posts: no title prefix and no archive extension,
+	// but a leading [n/total] file counter with total >= 2. Use the quoted
+	// filename (the obfuscated name) as the collection key. All files of the
+	// same obfuscated post share the same quoted filename, so they all group
+	// together into one release. This is false-merge-safe because two unrelated
+	// obfuscated posts would need to share the same random hex string and file
+	// count, which is effectively impossible.
+	// Guard: if the file counter values match the segment counter values
+	// (fileNum=1, total=TotalParts), it's a single multi-segment file, not a
+	// collection. The positional guard above only catches when the bracket
+	// types match; this catches [1/445] ... yEnc (1/445) where bracket types
+	// differ.
+	if fileNum == 1 && total > 0 && total == res.TotalParts && res.TotalParts > 0 {
+		return
+	}
+	if res.FileName != "" && total >= 2 {
+		res.FileNumber = fileNum
+		res.CollectionFiles = total
+		res.CollectionKey = res.FileName + "/" + strconv.Itoa(total)
 	}
 }
 

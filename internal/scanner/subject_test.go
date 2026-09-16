@@ -216,8 +216,107 @@ func TestParseCollection(t *testing.T) {
 	// An obfuscated blob with a leading counter but NO archive extension AND no
 	// meaningful title prefix is treated as a single file (avoid merging
 	// unrelated posts). The counter is at the very start, so there is no title.
+	// As of the fix for obfuscated multi-file collections, these now DO get a
+	// collection key keyed on the quoted filename + file count, because all 20
+	// files of the same obfuscated post share the same obfuscated name and
+	// should be grouped together into one release.
 	bare := ParseSubject(`[2/20] "NSV6gyBkS9rHcooOonLqQV89OqtlE" yEnc (1/50)`)
-	if bare.CollectionKey != "" {
-		t.Errorf("bare no-extension blob treated as collection: %q", bare.CollectionKey)
+	if bare.CollectionKey == "" {
+		t.Fatal("obfuscated multi-file post should now get a collection key")
 	}
+	if bare.CollectionKey != "NSV6gyBkS9rHcooOonLqQV89OqtlE/20" {
+		t.Errorf("collection key = %q, want %q", bare.CollectionKey, "NSV6gyBkS9rHcooOonLqQV89OqtlE/20")
+	}
+	if bare.FileNumber != 2 || bare.CollectionFiles != 20 {
+		t.Errorf("file number = %d/%d, want 2/20", bare.FileNumber, bare.CollectionFiles)
+	}
+}
+
+// TestParseCollectionCounterPlacement covers file-counter styles that the
+// original leading-square-bracket-only pattern missed, each of which caused
+// every file of a post to become its own release (#178 follow-up). Subjects
+// are real examples taken from the index.
+func TestParseCollectionCounterPlacement(t *testing.T) {
+	cases := []struct {
+		name     string
+		subject  string
+		wantFile int
+		wantOf   int
+	}{
+		{
+			name:     "counter after other bracketed segments",
+			subject:  `[10764]-[FULL]-[#a.b.teevee@EFNet]-[ Body.Language.S01E10.DVDRip.XviD-aAF ]-[03/25] - "aaf-body.language.s01e10.next.stop.porn.r00" yEnc (1/12)`,
+			wantFile: 3, wantOf: 25,
+		},
+		{
+			name:     "parenthesised file counter",
+			subject:  `cbc - rmr - s6e07 - (30/36) - "081118.cbc.the.mercer.report.s6e07.640x464.xvid.mp3.vol00+01.PAR2" yEnc (1/12)`,
+			wantFile: 30, wantOf: 36,
+		},
+		{
+			name:     "counter after a bracketed presenter tag",
+			subject:  `[United-Forums.co.uk Present] The IMDB Top 100 Movies *Repost* [00/90] - "08 Pulp Fiction (1994).par2" yEnc (1/9)`,
+			wantFile: 0, wantOf: 90,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseSubject(tc.subject)
+			if got.CollectionKey == "" {
+				t.Fatalf("no collection key; every file of this post would become its own release")
+			}
+			if got.FileNumber != tc.wantFile || got.CollectionFiles != tc.wantOf {
+				t.Errorf("file counter = %d/%d, want %d/%d",
+					got.FileNumber, got.CollectionFiles, tc.wantFile, tc.wantOf)
+			}
+		})
+	}
+}
+
+// TestParseCollectionIgnoresNonCounters guards the widened search against
+// "n/m"-shaped tokens that are not file counters.
+func TestParseCollectionIgnoresNonCounters(t *testing.T) {
+	// A year range far from the filename must not be read as a file counter:
+	// doing so sets an unreachable collection_files and the post never
+	// completes.
+	got := ParseSubject(`Some.Documentary.Series [2009/2010] Collectors Edition - "disc1.rar" yEnc (1/50)`)
+	if got.CollectionFiles == 2010 {
+		t.Errorf("year range parsed as a file counter: files=%d", got.CollectionFiles)
+	}
+
+	// The yEnc segment counter alone is not a file counter.
+	got = ParseSubject(`"single.file.mkv" yEnc (1/50)`)
+	if got.CollectionKey != "" {
+		t.Errorf("segment counter treated as collection: key=%q", got.CollectionKey)
+	}
+}
+
+// TestParseCollectionGroupsWholePost is the property that matters: every file
+// of one post must produce the same collection key, since that key is what
+// folds them into a single binary (and so a single release).
+func TestParseCollectionGroupsWholePost(t *testing.T) {
+	post := []string{
+		`[10764]-[FULL]-[#a.b.teevee@EFNet]-[ Body.Language.S01E10.DVDRip.XviD-aAF ]-[01/25] - "aaf-body.language.s01e10.next.stop.porn.nfo" yEnc (1/1)`,
+		`[10764]-[FULL]-[#a.b.teevee@EFNet]-[ Body.Language.S01E10.DVDRip.XviD-aAF ]-[03/25] - "aaf-body.language.s01e10.next.stop.porn.r00" yEnc (1/20)`,
+		`[10764]-[FULL]-[#a.b.teevee@EFNet]-[ Body.Language.S01E10.DVDRip.XviD-aAF ]-[20/25] - "aaf-body.language.s01e10.next.stop.porn.sfv" yEnc (1/1)`,
+		`[10764]-[FULL]-[#a.b.teevee@EFNet]-[ Body.Language.S01E10.DVDRip.XviD-aAF ]-[24/25] - "aaf-body.language.s01e10.next.stop.porn.vol07+8.par2" yEnc (1/13)`,
+	}
+
+	var key string
+	for i, subj := range post {
+		got := ParseSubject(subj)
+		if got.CollectionKey == "" {
+			t.Fatalf("file %d produced no collection key", i)
+		}
+		if i == 0 {
+			key = got.CollectionKey
+			continue
+		}
+		if got.CollectionKey != key {
+			t.Errorf("file %d key = %q, want %q (post would split into separate releases)",
+				i, got.CollectionKey, key)
+		}
+	}
+	t.Logf("shared collection key: %s", key)
 }

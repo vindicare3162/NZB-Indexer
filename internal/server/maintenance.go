@@ -9,6 +9,7 @@ import (
 	"github.com/vindicare/goindex/internal/config"
 	"github.com/vindicare/goindex/internal/maintenance"
 	"github.com/vindicare/goindex/internal/store"
+	"github.com/vindicare/goindex/internal/yencverify"
 )
 
 // jobRecorderAdapter adapts *store.Store to maintenance.JobRecorder, whose
@@ -30,9 +31,56 @@ func (a jobRecorderAdapter) FinishJob(ctx context.Context, id, state, errMsg str
 // (#130). Retention pruning is included here when retention is enabled, unifying
 // it with the other scheduled tasks; its window/batch limits come from
 // RetentionConfig.
-func buildMaintenanceTasks(st *store.Store, cfg config.Config) []maintenance.Task {
+func buildMaintenanceTasks(st *store.Store, cfg config.Config, fetch yencverify.Fetcher, log *slog.Logger) []maintenance.Task {
 	m := cfg.Maintenance
 	var tasks []maintenance.Task
+
+	// yEnc verification (#178). Articles whose Subject carries no "(n/m)"
+	// counter can only be told apart from genuine single-part posts by their
+	// yEnc header, so they are held out of assembly until checked here. Each
+	// check reads only the control line rather than the ~750KB body, which
+	// trades wall-clock (a fresh connection per article, since the abandoned
+	// response makes it unusable) for roughly 250x less transfer.
+	//
+	// Both passes draw on the same small NNTP connection budget as scanning and
+	// post-processing, so they are not sized equally: repairing already-released
+	// stubs is the finite, high-value job and gets the larger share, while the
+	// far larger pool of never-assembled ambiguous parts trickles along behind
+	// it and can be left running indefinitely.
+	if fetch != nil {
+		repair := yencverify.New(fetch, st, log, yencverify.Options{
+			BatchLimit:  500,
+			Concurrency: 4,
+		})
+		backlog := yencverify.New(fetch, st, log, yencverify.Options{
+			BatchLimit:  100,
+			Concurrency: 1,
+		})
+		tasks = append(tasks,
+			maintenance.Task{
+				Name: "yenc-repair", Interval: time.Minute, Enabled: true,
+				Run: func(ctx context.Context) (string, error) {
+					r, err := repair.RunRepair(ctx)
+					if err != nil {
+						return "", err
+					}
+					return fmt.Sprintf("rechecked %d stub releases: %d genuinely complete, %d discarded as fragments, %d failed",
+						r.Checked, r.Standalone, r.Fragments, r.Failed), nil
+				},
+			},
+			maintenance.Task{
+				Name: "yenc-verify", Interval: 2 * time.Minute, Enabled: true,
+				Run: func(ctx context.Context) (string, error) {
+					r, err := backlog.Run(ctx)
+					if err != nil {
+						return "", err
+					}
+					return fmt.Sprintf("checked %d articles: %d standalone, %d fragments, %d failed",
+						r.Checked, r.Standalone, r.Fragments, r.Failed), nil
+				},
+			},
+		)
+	}
 
 	if cfg.Retention.Enabled && cfg.Retention.Days > 0 {
 		interval := cfg.Retention.Interval
@@ -116,6 +164,6 @@ func buildMaintenanceTasks(st *store.Store, cfg config.Config) []maintenance.Tas
 
 // newMaintenanceScheduler builds the scheduler from config, wiring job history
 // and notifications (#130).
-func newMaintenanceScheduler(st *store.Store, cfg config.Config, notifier maintenance.Notifier, log *slog.Logger) *maintenance.Scheduler {
-	return maintenance.New(buildMaintenanceTasks(st, cfg), jobRecorderAdapter{st: st}, notifier, log)
+func newMaintenanceScheduler(st *store.Store, cfg config.Config, fetch yencverify.Fetcher, notifier maintenance.Notifier, log *slog.Logger) *maintenance.Scheduler {
+	return maintenance.New(buildMaintenanceTasks(st, cfg, fetch, log), jobRecorderAdapter{st: st}, notifier, log)
 }

@@ -5,10 +5,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// sanitizeText makes s safe for a PostgreSQL text column. Post-processing
+// recovers names and NFO text from arbitrary posted binary/text content
+// (often not UTF-8, e.g. Latin-1/CP1252), so unlike overview headers this
+// text is never guaranteed valid going in. NUL is technically valid UTF-8 but
+// PostgreSQL's text type is NUL-terminated internally and rejects it anyway
+// ("invalid byte sequence for encoding UTF8": 0x00), so it is stripped too.
+func sanitizeText(s string) string {
+	if strings.IndexByte(s, 0) >= 0 {
+		s = strings.ReplaceAll(s, "\x00", "")
+	}
+	if !utf8.ValidString(s) {
+		s = strings.ToValidUTF8(s, "�")
+	}
+	return s
+}
 
 // PendingRelease is a release awaiting post-processing, with the message-ids
 // of its candidate NFO/PAR2 segments.
@@ -63,17 +81,40 @@ func (s *Store) ListPendingReleases(ctx context.Context, limit int) ([]PendingRe
 	// Claim a batch of due releases and bump their attempt counter in one
 	// statement. 'pending' releases are always due; 'failed' ones are retried
 	// until they reach MaxPPAttempts.
+	//
+	// The two statuses are selected as separate, independently-limited
+	// branches (rather than one OR'd predicate with a computed ORDER BY) so
+	// each can use its own index: idx_releases_pp_pending_due lets the
+	// (normally huge) 'pending' branch walk pre-sorted rows and stop after
+	// LIMIT, instead of sorting the entire releases table to find the top N
+	// (previously a SQLSTATE 57014 timeout once pending releases numbered in
+	// the millions). 'failed' releases are a tiny fraction of the table, so
+	// idx_releases_pp_status already makes that branch cheap. At most 2*limit
+	// rows are ever combined before the final priority sort+limit.
 	rows, err := s.pool.Query(ctx, `
-WITH due AS (
-    SELECT id
+WITH pending_due AS (
+    SELECT id, created_at
     FROM releases
-    WHERE pp_permanent = FALSE
-      AND (
-        pp_status = 'pending'
-        OR (pp_status = 'failed' AND pp_attempts < $2
-            AND (next_retry_at IS NULL OR next_retry_at <= now()))
-      )
-    ORDER BY (pp_status = 'pending') DESC, created_at DESC
+    WHERE pp_status = 'pending' AND pp_permanent = FALSE
+    ORDER BY created_at DESC
+    LIMIT $1
+),
+failed_due AS (
+    SELECT id, created_at
+    FROM releases
+    WHERE pp_status = 'failed' AND pp_permanent = FALSE
+      AND pp_attempts < $2
+      AND (next_retry_at IS NULL OR next_retry_at <= now())
+    ORDER BY created_at DESC
+    LIMIT $1
+),
+due AS (
+    SELECT id FROM (
+        SELECT id, created_at, TRUE AS is_pending FROM pending_due
+        UNION ALL
+        SELECT id, created_at, FALSE AS is_pending FROM failed_due
+    ) combined
+    ORDER BY is_pending DESC, created_at DESC
     LIMIT $1
 )
 UPDATE releases r
@@ -304,7 +345,7 @@ func (s *Store) ApplyPostProcessing(ctx context.Context, id int64, res ReleasePP
 		// the obfuscated flag here is safe.
 		if _, err := tx.Exec(ctx,
 			`UPDATE releases SET name = $2, search_name = $3, obfuscated = false, updated_at = now() WHERE id = $1`,
-			id, res.Name, res.SearchName); err != nil {
+			id, sanitizeText(res.Name), sanitizeText(res.SearchName)); err != nil {
 			return fmt.Errorf("rename release: %w", err)
 		}
 	}
@@ -316,8 +357,9 @@ func (s *Store) ApplyPostProcessing(ctx context.Context, id int64, res ReleasePP
 		}
 	}
 	if res.NFO != nil {
+		nfo := sanitizeText(*res.NFO)
 		if _, err := tx.Exec(ctx,
-			`UPDATE releases SET nfo = $2, updated_at = now() WHERE id = $1`, id, *res.NFO); err != nil {
+			`UPDATE releases SET nfo = $2, updated_at = now() WHERE id = $1`, id, nfo); err != nil {
 			return fmt.Errorf("set nfo: %w", err)
 		}
 	}
@@ -329,7 +371,7 @@ func (s *Store) ApplyPostProcessing(ctx context.Context, id int64, res ReleasePP
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO release_files (release_id, file_name, size_bytes, segments)
              VALUES ($1, $2, $3, $4)`,
-			id, f.FileName, f.SizeBytes, segJSON); err != nil {
+			id, sanitizeText(f.FileName), f.SizeBytes, segJSON); err != nil {
 			return fmt.Errorf("insert release file: %w", err)
 		}
 	}

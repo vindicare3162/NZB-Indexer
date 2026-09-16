@@ -47,6 +47,31 @@ AND EXISTS (
       AND coalesce(r.posted_at, r.created_at) < $1
 )`
 
+// retentionCandidateBinariesCTE identifies the (small) set of binaries whose
+// parts are retention candidates. Queries that need to touch actual candidate
+// parts MUST join out from this set into `parts` (indexed by binary_id) rather
+// than filtering `parts` directly with an EXISTS/correlated-subquery predicate
+// (retentionCandidateWhere): with hundreds of millions of assigned parts and
+// only a small fraction ever eligible, the planner can end up choosing a full
+// scan of `parts` (a merge/hash join or, worse, a sequential scan) instead of
+// per-binary index lookups, since eligible rows are sparse and scattered
+// across the whole table. Driving from binaries/releases first (filtered by
+// indexed pp_status and the tiny released/binaries join) and only then
+// touching parts via indexed binary_id lookups keeps cost proportional to the
+// actual candidate set, not to the whole table. MATERIALIZED pins this as a
+// small intermediate result so the planner can't merge it back into a
+// parts-driven plan.
+const retentionCandidateBinariesCTE = `
+candidate_binaries AS MATERIALIZED (
+    SELECT b.id
+    FROM binaries b
+    JOIN releases r ON r.binary_id = b.id
+    WHERE b.released = TRUE
+      AND r.pp_status = 'done'
+      AND r.segments <> '[]'::jsonb
+      AND coalesce(r.posted_at, r.created_at) < $1
+)`
+
 // RetentionReport summarises the parts a retention pass would delete (dry-run),
 // plus why the bulk of parts are retained.
 type RetentionReport struct {
@@ -85,8 +110,10 @@ func (s *Store) RetentionCandidates(ctx context.Context, olderThan time.Duration
 	cutoff := time.Now().Add(-olderThan)
 	rep := RetentionReport{Cutoff: cutoff}
 
-	// Candidate aggregate in one scan.
-	const aggQ = `
+	// Candidate aggregate, driven from the small candidate-binaries set (see
+	// retentionCandidateBinariesCTE) rather than scanning `parts` directly.
+	aggQ := `
+WITH ` + retentionCandidateBinariesCTE + `
 SELECT
     count(*)                              AS parts,
     coalesce(sum(p.bytes), 0)             AS bytes,
@@ -94,8 +121,8 @@ SELECT
     count(DISTINCT p.group_id)            AS groups,
     min(p.posted_at)                      AS oldest,
     max(p.posted_at)                      AS newest
-FROM parts p
-WHERE ` + retentionCandidateWhere
+FROM candidate_binaries cb
+JOIN parts p ON p.binary_id = cb.id`
 	var oldest, newest *time.Time
 	if err := s.pool.QueryRow(ctx, aggQ, cutoff).Scan(
 		&rep.CandidateParts, &rep.CandidateBytes, &rep.CandidateReleases,
@@ -113,15 +140,19 @@ WHERE ` + retentionCandidateWhere
 		return rep, fmt.Errorf("retention unassigned count: %w", err)
 	}
 
-	// Retained: assigned but not (yet) safely prunable.
-	const notReconQ = `
-SELECT count(*)
-FROM parts p
-WHERE p.binary_id IS NOT NULL
-  AND NOT (` + retentionCandidateWhere + `)`
-	if err := s.pool.QueryRow(ctx, notReconQ, cutoff).Scan(&rep.Retained.NotReconstructable); err != nil {
-		return rep, fmt.Errorf("retention not-reconstructable count: %w", err)
+	// Retained: assigned but not (yet) safely prunable. Computed as
+	// (all assigned parts) - (candidates) rather than a direct NOT-EXISTS scan
+	// of `parts`, for the same reason the candidate aggregate above avoids
+	// scanning `parts` directly: with hundreds of millions of assigned parts
+	// and a small eligible fraction, a per-row NOT EXISTS check is
+	// prohibitively expensive at this scale.
+	var assignedTotal int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM parts WHERE binary_id IS NOT NULL`,
+	).Scan(&assignedTotal); err != nil {
+		return rep, fmt.Errorf("retention assigned count: %w", err)
 	}
+	rep.Retained.NotReconstructable = assignedTotal - rep.CandidateParts
 
 	return rep, nil
 }
@@ -137,17 +168,26 @@ func (s *Store) PruneRetainedParts(ctx context.Context, olderThan time.Duration,
 	}
 	cutoff := time.Now().Add(-olderThan)
 
-	// Delete a bounded set of candidate part ids. Selecting ids first keeps the
-	// delete's row lock scope small and the batch strictly bounded.
-	const q = `
-DELETE FROM parts
-WHERE id IN (
+	// Delete a bounded set of candidate part ids, discovered by joining out
+	// from the small candidate-binaries set (see retentionCandidateBinariesCTE)
+	// via indexed binary_id lookups rather than scanning `parts` directly (see
+	// that constant's comment for why). Each eligible binary contributes at
+	// most maxPartsPerBinary rows to one batch, so no single binary can crowd
+	// out the rest of the batch; the outer LIMIT still bounds total work.
+	// Selecting ids first keeps the delete's row lock scope small and the
+	// batch strictly bounded.
+	const maxPartsPerBinary = 2000
+	q := `
+WITH ` + retentionCandidateBinariesCTE + `,
+doomed AS (
     SELECT p.id
-    FROM parts p
-    WHERE ` + retentionCandidateWhere + `
-    ORDER BY p.id
+    FROM candidate_binaries cb
+    CROSS JOIN LATERAL (
+        SELECT id FROM parts WHERE binary_id = cb.id LIMIT ` + fmt.Sprint(maxPartsPerBinary) + `
+    ) p
     LIMIT $2
-)`
+)
+DELETE FROM parts WHERE id IN (SELECT id FROM doomed)`
 	ct, err := s.pool.Exec(ctx, q, cutoff, batchSize)
 	if err != nil {
 		return 0, fmt.Errorf("prune retained parts: %w", err)

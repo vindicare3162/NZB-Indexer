@@ -6,6 +6,43 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 
 ## [Unreleased]
 
+### Fixed
+- Single-segment fragments are no longer released as if they were complete
+  files (#178). Posts whose Subject carries no `(n/m)` segment counter — a
+  common anti-indexing tactic — left `total_parts = 0`, and the assembler
+  treated "unknown total" as "complete after one article". A lone ~700KB
+  article of a multi-gigabyte post therefore became a finished release whose
+  NZB contained one segment; on this deployment that described 94% of all
+  `done` releases (806,625 of 857,167), with sampled articles turning out to
+  be e.g. segment 1871 of 16147 of a 10.8GB file. The true part/total/size is
+  only ever in the article's yEnc body header (`=ybegin part=N total=M size=S
+  name=…`), never guaranteed in the Subject, so such parts are now held out of
+  assembly until a new `yenc-verify` pass fetches the body and reads it.
+  Genuinely standalone posts (`total=1`) assemble as before; real fragments are
+  routed into collection assembly keyed on the yEnc `name=` field — which every
+  segment of one file repeats verbatim, and which is immune to per-segment
+  Subject randomisation — so a binary now waits for all its segments and
+  reports the real total. A companion `yenc-repair` pass re-checks releases
+  promoted before this existed, discarding the ones that were only ever a
+  fragment and resetting their part for proper reassembly.
+- Assembly and post-processing no longer stall the pipeline at scale (#177).
+  The assembler's link step filtered `parts` without the predicate its partial
+  index required, so the planner fell back to sorting ~1.8B rows (plan cost
+  545M) and every batch hit the statement timeout — meaning no binary was
+  assembled at all. Discovery also scanned linearly through groupings, so a few
+  pathological reposted-spam keys (over 1M unlinked parts each, scattered across
+  the whole table) could consume an entire batch; discovery now uses an index
+  skip-scan and each key contributes a bounded number of rows per pass.
+  `ListPendingReleases` had the same shape of problem — an `OR`'d status filter
+  with a computed `ORDER BY` that matched no index, forcing a full scan and sort
+  of the `releases` table on every cycle — and now selects each status as its
+  own index-backed, independently limited branch.
+- Article text that is not valid UTF-8 no longer aborts writes (#177). NUL
+  bytes pass Go's `utf8.ValidString` but PostgreSQL rejects them outright, so
+  overview sanitising missed them; post-processing wrote recovered names and NFO
+  text with no sanitising at all. Both paths now strip NULs and replace invalid
+  sequences.
+
 ### Changed
 - Admin action feedback and confirmation flows overhauled (#122). Every admin
   action now gives distinct, dismissible toast feedback (success or error,

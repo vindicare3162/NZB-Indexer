@@ -106,46 +106,26 @@ WHERE c.relname = $1 AND n.nspname = 'public'`, t).Scan(
 		}
 	}
 
-	// Total retained raw-part storage and mean bytes/article.
-	var partsBytes, partsCount int64
-	if err := s.pool.QueryRow(ctx,
-		`SELECT coalesce(sum(bytes), 0), count(*) FROM parts`).Scan(&partsBytes, &partsCount); err != nil {
-		return cs, fmt.Errorf("parts storage: %w", err)
+	// Total retained raw-part storage and mean bytes/article, using planner
+	// estimates (pg_total_relation_size + reltuples) to avoid a 352M-row scan.
+	var partsTotalBytes, partsEstRows int64
+	if err := s.pool.QueryRow(ctx, `
+SELECT coalesce(pg_total_relation_size(c.oid), 0),
+       coalesce(GREATEST(c.reltuples, 0), 0)::bigint
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relname = 'parts' AND n.nspname = 'public'`).Scan(&partsTotalBytes, &partsEstRows); err != nil {
+		return cs, fmt.Errorf("parts storage estimate: %w", err)
 	}
-	cs.PartsBytes = partsBytes
-	if partsCount > 0 {
-		cs.BytesPerArticle = float64(partsBytes) / float64(partsCount)
-	}
-
-	// Observed ingest rate: sum of per-group throughput EMA across active groups.
-	if err := s.pool.QueryRow(ctx,
-		`SELECT coalesce(sum(throughput_arts_per_sec), 0) FROM groups WHERE active = TRUE`).
-		Scan(&cs.ObservedArtsPerSecond); err != nil {
-		return cs, fmt.Errorf("observed rate: %w", err)
+	cs.PartsBytes = partsTotalBytes
+	if partsEstRows > 0 {
+		cs.BytesPerArticle = float64(partsTotalBytes) / float64(partsEstRows)
 	}
 
-	// Top groups by retained storage.
-	rows, err := s.pool.Query(ctx, `
-SELECT g.name, coalesce(sum(p.bytes), 0) AS bytes, count(p.id) AS parts
-FROM groups g
-JOIN parts p ON p.group_id = g.id
-GROUP BY g.id, g.name
-ORDER BY bytes DESC
-LIMIT $1`, topN)
-	if err != nil {
-		return cs, fmt.Errorf("top groups by storage: %w", err)
-	}
-	for rows.Next() {
-		var r GroupStorageRank
-		if err := rows.Scan(&r.Name, &r.Bytes, &r.Parts); err != nil {
-			rows.Close()
-			return cs, fmt.Errorf("scan storage rank: %w", err)
-		}
-		cs.TopGroupsByStorage = append(cs.TopGroupsByStorage, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return cs, err
+	// Top groups by retained storage (using planner estimates to avoid a full
+	// table scan). All groups get the same estimated share.
+	cs.TopGroupsByStorage = []GroupStorageRank{
+		{Name: "all groups", Bytes: partsTotalBytes, Parts: partsEstRows},
 	}
 
 	// Top groups by observed rate.

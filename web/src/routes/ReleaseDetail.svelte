@@ -9,8 +9,10 @@
   let identifiers = $state([]);
   let loading = $state(true);
   let error = $state('');
+  let related = $state([]);
   let downloading = $state(false);
   let dlError = $state('');
+  let copied = $state(false);
 
   $effect(() => {
     loading = true;
@@ -21,6 +23,7 @@
         files = res.files || [];
         metadata = res.metadata || null;
         identifiers = res.identifiers || [];
+        related = res.related || [];
       })
       .catch((err) => { error = err.message || 'Failed to load release'; })
       .finally(() => { loading = false; });
@@ -37,6 +40,22 @@
     } finally {
       downloading = false;
     }
+  }
+
+  async function copyNZBUrl() {
+    if (!release) return;
+    try {
+      await navigator.clipboard.writeText(
+        new URL(api.nzbUrl(release.guid), window.location.origin).href
+      );
+      copied = true;
+      setTimeout(() => { copied = false; }, 1500);
+    } catch { /* clipboard unavailable */ }
+  }
+
+  function fmtTime(s) {
+    if (!s) return '—';
+    return new Date(s).toLocaleDateString();
   }
 
   function fmtSize(bytes) {
@@ -67,6 +86,12 @@
       <button onclick={downloadNZB} disabled={downloading}>
         {downloading ? 'Downloading\u2026' : 'Download NZB'}
       </button>
+      <button class="secondary" onclick={copyNZBUrl} disabled={!release}>
+        {copied ? 'Copied!' : 'Copy NZB URL'}
+      </button>
+      {#if release.nfo}
+        <a href={api.nzbUrl(release.guid)} download={release.guid + '.nfo'} class="secondary" style="display:inline-block; padding:0.5rem 0.9rem; border-radius:6px; text-decoration:none; font-size:0.9rem; background:var(--panel-2,#21262f); color:var(--text,#e6e9ef); border:1px solid var(--border,#2b313c)">Download NFO</a>
+      {/if}
       {#if dlError}<span class="error" style="margin-left:0.5rem">{dlError}</span>{/if}
     </p>
   </div>
@@ -129,6 +154,24 @@
               <td>{f.file_name}</td>
               <td>{fmtSize(f.size_bytes)}</td>
               <td>{(f.segments || []).length}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  {/if}
+
+  {#if related.length > 0}
+    <div class="panel">
+      <h3 style="margin-top:0">Related releases</h3>
+      <table>
+        <thead><tr><th>Name</th><th>Size</th><th>Posted</th></tr></thead>
+        <tbody>
+          {#each related as r}
+            <tr>
+              <td><a href="#/release/{encodeURIComponent(r.guid)}">{r.name}</a></td>
+              <td>{fmtSize(r.size_bytes)}</td>
+              <td>{fmtTime(r.posted_at)}</td>
             </tr>
           {/each}
         </tbody>

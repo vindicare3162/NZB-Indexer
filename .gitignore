@@ -1,6 +1,8 @@
 # Binaries
 /goindex
 /goindex.exe
+/goindex-linux-amd64
+/goindex-latest.tar
 *.exe
 *.out
 

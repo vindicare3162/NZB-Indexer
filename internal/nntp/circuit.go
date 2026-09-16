@@ -12,8 +12,11 @@ import (
 // instead of hammering the dead provider (a "retry storm"). The circuitBreaker
 // tracks consecutive failures per provider and, once a threshold is crossed,
 // "opens" the circuit for a cooldown window during which the provider is
-// skipped. After the cooldown a single probe is allowed (half-open); success
-// closes the circuit and restores the provider, another failure re-opens it.
+// skipped. The cooldown increases exponentially with each open cycle (up to
+// a max), so a persistently failing provider is probed less and less often.
+// After the cooldown a single probe is allowed (half-open); success closes the
+// circuit and resets the backoff; another failure re-opens it with a longer
+// cooldown.
 
 // circuitState is the breaker state.
 type circuitState int
@@ -44,6 +47,11 @@ type circuitBreaker struct {
 	threshold int
 	// cooldown is how long the circuit stays open before a probe is allowed.
 	cooldown time.Duration
+	// maxCooldown caps the exponential backoff for the cooldown.
+	maxCooldown time.Duration
+	// currentCooldown is the actively applied cooldown (starts at cooldown,
+	// doubles each open cycle, capped at maxCooldown).
+	currentCooldown time.Duration
 	// now is injectable for deterministic tests (defaults to time.Now).
 	now func() time.Time
 
@@ -69,11 +77,17 @@ func newCircuitBreaker(threshold int, cooldown time.Duration) *circuitBreaker {
 	if cooldown <= 0 {
 		cooldown = 30 * time.Second
 	}
+	maxCooldown := 30 * time.Minute
+	if cooldown*16 > maxCooldown {
+		maxCooldown = cooldown * 16
+	}
 	return &circuitBreaker{
-		threshold: threshold,
-		cooldown:  cooldown,
-		now:       time.Now,
-		state:     circuitClosed,
+		threshold:       threshold,
+		cooldown:        cooldown,
+		maxCooldown:     maxCooldown,
+		currentCooldown: cooldown,
+		now:             time.Now,
+		state:           circuitClosed,
 	}
 }
 
@@ -95,7 +109,7 @@ func (c *circuitBreaker) allow() (ok bool, probe bool) {
 		c.probing = true
 		return true, true
 	default: // open
-		if c.now().Sub(c.openedAt) >= c.cooldown {
+		if c.now().Sub(c.openedAt) >= c.currentCooldown {
 			c.state = circuitHalfOpen
 			c.probing = true
 			return true, true
@@ -110,6 +124,7 @@ func (c *circuitBreaker) recordSuccess() {
 	defer c.mu.Unlock()
 	c.consecutiveFailures = 0
 	c.state = circuitClosed
+	c.currentCooldown = c.cooldown // reset backoff on success
 	c.probing = false
 	c.lastErr = ""
 	c.lastErrKind = ErrKindNone
@@ -133,6 +148,7 @@ func (c *circuitBreaker) recordFailure(err error) {
 	if kind == ErrKindAuth || c.consecutiveFailures >= c.threshold {
 		if c.state != circuitOpen {
 			c.opens++
+			c.backoffCooldown()
 		}
 		c.state = circuitOpen
 		c.openedAt = c.now()
@@ -143,7 +159,22 @@ func (c *circuitBreaker) recordFailure(err error) {
 			c.state = circuitOpen
 			c.openedAt = c.now()
 			c.opens++
+			c.backoffCooldown()
 		}
+	}
+}
+
+// backoffCooldown doubles the current cooldown (exponential backoff) up to
+// the configured max, so a persistently failing provider is probed less often.
+func (c *circuitBreaker) backoffCooldown() {
+	// opens starts at 1 after the first open, so first backoff is cooldown * 2^0 = cooldown.
+	shift := uint(c.opens - 1)
+	if shift > 10 {
+		shift = 10
+	}
+	c.currentCooldown = c.cooldown << shift
+	if c.currentCooldown > c.maxCooldown {
+		c.currentCooldown = c.maxCooldown
 	}
 }
 
@@ -156,6 +187,7 @@ type circuitSnapshot struct {
 	TotalFailures       int64
 	TotalSuccess        int64
 	Opens               int64
+	CooldownSecs        int64  `json:"cooldown_secs"`
 }
 
 func (c *circuitBreaker) snapshot() circuitSnapshot {
@@ -169,5 +201,6 @@ func (c *circuitBreaker) snapshot() circuitSnapshot {
 		TotalFailures:       c.totalFailures,
 		TotalSuccess:        c.totalSuccess,
 		Opens:               c.opens,
+		CooldownSecs:        int64(c.currentCooldown.Seconds()),
 	}
 }

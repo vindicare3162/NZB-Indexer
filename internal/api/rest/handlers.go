@@ -268,6 +268,26 @@ func (a *API) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {
 		ids = []store.ReleaseIdentifier{}
 	}
 	resp["identifiers"] = ids
+
+	// Include related releases with similar name (best-effort, top 5).
+	if rel.SearchName != "" {
+		parts := strings.Fields(rel.SearchName)
+		if len(parts) > 3 { parts = parts[:3] }
+		query := strings.Join(parts, " ")
+		related, _, err := a.store.SearchReleases(r.Context(), store.SearchFilter{
+			Query: query,
+			Limit: 6,
+		})
+		if err == nil {
+			filtered := make([]store.Release, 0, len(related))
+			for _, r2 := range related {
+				if r2.ID != rel.ID { filtered = append(filtered, r2) }
+			}
+			if len(filtered) > 5 { filtered = filtered[:5] }
+			resp["related"] = filtered
+		}
+	}
+
 	writeJSON(w, http.StatusOK, resp)
 }
 

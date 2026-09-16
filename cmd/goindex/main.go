@@ -47,6 +47,8 @@ func run(args []string) error {
 			return runServe(args[1:])
 		case "healthcheck":
 			return runHealthcheck(args[1:])
+		case "fix-collections":
+			return runFixCollections(args[1:])
 		}
 	}
 

@@ -1,8 +1,10 @@
 package nntp
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -28,6 +30,12 @@ type conn interface {
 	// It honours the context deadline by applying it as a socket read deadline,
 	// so a stalled read cannot block indefinitely.
 	body(ctx context.Context, messageID string) (io.ReadCloser, error)
+	// bodyHeader returns only the article's leading yEnc control line,
+	// abandoning the rest of the response.
+	bodyHeader(ctx context.Context, messageID string) (string, error)
+	// spentConn reports that the connection was left mid-response and must be
+	// discarded rather than reused.
+	spentConn() bool
 	// ping cheaply checks the connection is still usable.
 	ping() error
 	// close terminates the connection.
@@ -46,6 +54,10 @@ type netConn struct {
 	// overCmd is the header-overview command this server accepts ("XOVER" or
 	// "OVER"), resolved lazily on first use.
 	overCmd string
+	// spent records that a response was abandoned part-way (see bodyHeader),
+	// leaving unread data on the wire. Such a connection cannot carry another
+	// command and must be discarded rather than returned to the pool.
+	spent bool
 }
 
 // dialLib establishes a real connection, optionally over TLS, then switches
@@ -269,6 +281,71 @@ func (c *netConn) body(ctx context.Context, messageID string) (io.ReadCloser, er
 	return io.NopCloser(strings.NewReader(strings.Join(lines, "\r\n"))), nil
 }
 
+// maxYencHeaderLines bounds how far into a body we look for the yEnc control
+// line. It is normally the very first line; anything beyond a handful of lines
+// means this is not a yEnc post and there is no point downloading more.
+const maxYencHeaderLines = 8
+
+// ErrNoYencHeader indicates the article carried no "=ybegin" control line
+// within the first few lines, so it is not a yEnc post.
+var ErrNoYencHeader = errors.New("nntp: no yEnc header in article body")
+
+// bodyHeader fetches only the leading yEnc control line of an article and
+// stops reading, leaving the rest of the response on the wire.
+//
+// The yEnc header ("=ybegin part=N total=M size=S name=...") is the only
+// reliable record of a post's true shape when the Subject carries no "(n/m)"
+// counter (#178) — but it sits in the first line of a body that is typically
+// ~750KB. Reading just that line cuts the transfer by roughly two orders of
+// magnitude, which is the difference between classifying a large backlog in
+// days rather than never.
+//
+// The trade-off is the connection: the unread remainder makes it unusable for
+// further commands, so it is marked spent and the pool discards it. Callers
+// therefore pay a reconnect per article instead of a full download.
+func (c *netConn) bodyHeader(ctx context.Context, messageID string) (string, error) {
+	if dl, ok := ctx.Deadline(); ok {
+		_ = c.raw.SetDeadline(dl)
+		defer c.raw.SetDeadline(time.Time{}) //nolint:errcheck
+	}
+
+	id, err := c.tp.Cmd("BODY %s", ensureAngle(messageID))
+	if err != nil {
+		return "", err
+	}
+	c.tp.StartResponse(id)
+	defer c.tp.EndResponse(id)
+
+	// 222 = body follows.
+	if _, _, err := c.tp.ReadCodeLine(222); err != nil {
+		return "", err
+	}
+
+	r := textproto.NewReader(bufio.NewReader(c.tp.DotReader()))
+	for i := 0; i < maxYencHeaderLines; i++ {
+		line, err := r.ReadLine()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				// Whole body consumed without a header: short article, and the
+				// response is fully drained, so the connection stays usable.
+				return "", ErrNoYencHeader
+			}
+			c.spent = true
+			return "", err
+		}
+		if strings.HasPrefix(line, "=ybegin") {
+			// Deliberately abandon the remainder: that saving is the point.
+			c.spent = true
+			return line, nil
+		}
+	}
+	c.spent = true
+	return "", ErrNoYencHeader
+}
+
+// spentConn reports whether this connection was left mid-response.
+func (c *netConn) spentConn() bool { return c.spent }
+
 func (c *netConn) ping() error {
 	// DATE is a lightweight, always-available keepalive.
 	_, _, err := c.simpleCmd("DATE")
@@ -276,6 +353,12 @@ func (c *netConn) ping() error {
 }
 
 func (c *netConn) close() error {
+	// A spent connection still has an unread response in flight, so a QUIT
+	// handshake would read body data instead of a status line (and could block
+	// for the length of that body). Drop the socket instead.
+	if c.spent {
+		return c.raw.Close()
+	}
 	// Best-effort QUIT, then close the socket.
 	id, err := c.tp.Cmd("QUIT")
 	if err == nil {
@@ -356,6 +439,13 @@ func parseNNTPDate(s string) (time.Time, error) {
 // Unicode replacement character, so the value is safe to store in a UTF-8
 // TEXT column. Valid UTF-8 (the common case) is returned unchanged.
 func toValidUTF8(s string) string {
+	// NUL is a technically-valid UTF-8 codepoint, so utf8.ValidString lets it
+	// through, but PostgreSQL's text type is NUL-terminated internally and
+	// rejects it outright ("invalid byte sequence for encoding UTF8": 0x00).
+	// Strip it before the validity check below.
+	if strings.IndexByte(s, 0) >= 0 {
+		s = strings.ReplaceAll(s, "\x00", "")
+	}
 	if utf8.ValidString(s) {
 		return s
 	}

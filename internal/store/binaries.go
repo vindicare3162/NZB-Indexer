@@ -36,6 +36,16 @@ func (s *Store) AssembleBinaries(ctx context.Context, limit int) (int, error) {
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	// Some groupings accumulate over years of reposts and end up scattered
+	// across the entire table's physical storage, so folding them requires
+	// many non-sequential heap reads even though only a bounded number of
+	// groupings is selected per batch. The default statement_timeout is tuned
+	// for interactive queries and is too short for that; extend it for this
+	// transaction only.
+	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = '5min'`); err != nil {
+		return 0, fmt.Errorf("set assemble timeout: %w", err)
+	}
+
 	collTouched, err := assembleCollectionsBatch(ctx, tx, limit)
 	if err != nil {
 		return 0, err
@@ -70,16 +80,57 @@ func (s *Store) AssembleBinaries(ctx context.Context, limit int) (int, error) {
 //           parts are touched, matching the original per-group link predicate.
 func assembleSinglesBatch(ctx context.Context, tx pgx.Tx, limit int) (int, error) {
 	const q = `
-WITH agg AS (
+WITH RECURSIVE keys AS (
+    (
+        SELECT group_id, norm_subject, poster
+        FROM parts
+        WHERE binary_id IS NULL AND collection_key = '' AND norm_subject <> '' AND total_parts > 0
+        ORDER BY group_id, norm_subject, poster
+        LIMIT 1
+    )
+    UNION ALL
+    (
+        SELECT nxt.group_id, nxt.norm_subject, nxt.poster
+        FROM keys k
+        CROSS JOIN LATERAL (
+            SELECT p.group_id, p.norm_subject, p.poster
+            FROM parts p
+            WHERE p.binary_id IS NULL AND p.collection_key = '' AND p.norm_subject <> '' AND p.total_parts > 0
+              AND (p.group_id, p.norm_subject, p.poster) > (k.group_id, k.norm_subject, k.poster)
+            ORDER BY p.group_id, p.norm_subject, p.poster
+            LIMIT 1
+        ) nxt
+    )
+),
+limited_keys AS (
+    SELECT * FROM keys LIMIT $1
+),
+-- See the analogous comment in assembleCollectionsBatch: cap rows considered
+-- per key so a pathologically large (typically reposted spam) grouping can't
+-- blow the batch's time budget by forcing a scattered scan of its full
+-- history. collected_parts accumulates additively across calls, so a capped
+-- key just finishes over more batches.
+selected AS (
+    SELECT p.ctid, p.total_parts, p.bytes, p.posted_at,
+           k.group_id, k.norm_subject, k.poster
+    FROM limited_keys k
+    CROSS JOIN LATERAL (
+        SELECT ctid, total_parts, bytes, posted_at
+        FROM parts
+        WHERE group_id = k.group_id AND norm_subject = k.norm_subject
+          AND poster = k.poster AND binary_id IS NULL
+          AND collection_key = '' AND norm_subject <> '' AND total_parts > 0
+        LIMIT 500
+    ) p
+),
+agg AS (
     SELECT group_id, norm_subject, poster,
            count(*)                      AS collected,
            coalesce(max(total_parts), 0) AS declared_total,
            coalesce(sum(bytes), 0)       AS total_bytes,
            min(posted_at)                AS earliest
-    FROM parts
-    WHERE binary_id IS NULL AND collection_key = '' AND norm_subject <> ''
+    FROM selected
     GROUP BY group_id, norm_subject, poster
-    LIMIT $1
 ),
 ups AS (
     INSERT INTO binaries
@@ -103,8 +154,9 @@ ups AS (
 linked AS (
     UPDATE parts p SET binary_id = u.id
     FROM ups u
-    WHERE p.group_id = u.group_id AND p.norm_subject = u.norm_subject
-      AND p.poster = u.poster AND p.binary_id IS NULL AND p.collection_key = ''
+    JOIN selected s ON s.group_id = u.group_id AND s.norm_subject = u.norm_subject
+        AND s.poster = u.poster
+    WHERE p.ctid = s.ctid
     RETURNING 1
 )
 SELECT (SELECT count(*) FROM ups)`
@@ -124,16 +176,59 @@ SELECT (SELECT count(*) FROM ups)`
 // unique key still applies. Returns the number of binaries touched.
 func assembleCollectionsBatch(ctx context.Context, tx pgx.Tx, limit int) (int, error) {
 	const q = `
-WITH agg AS (
+WITH RECURSIVE keys AS (
+    (
+        SELECT group_id, collection_key, poster
+        FROM parts
+        WHERE binary_id IS NULL AND collection_key <> ''
+        ORDER BY group_id, collection_key, poster
+        LIMIT 1
+    )
+    UNION ALL
+    (
+        SELECT nxt.group_id, nxt.collection_key, nxt.poster
+        FROM keys k
+        CROSS JOIN LATERAL (
+            SELECT p.group_id, p.collection_key, p.poster
+            FROM parts p
+            WHERE p.binary_id IS NULL AND p.collection_key <> ''
+              AND (p.group_id, p.collection_key, p.poster) > (k.group_id, k.collection_key, k.poster)
+            ORDER BY p.group_id, p.collection_key, p.poster
+            LIMIT 1
+        ) nxt
+    )
+),
+limited_keys AS (
+    SELECT * FROM keys LIMIT $1
+),
+-- Some collection keys (typically reposted spam) accumulate far more unlinked
+-- parts than any real release ever would, scattered across years of inserts.
+-- Aggregating a whole such group in one pass means heap-fetching every one of
+-- its rows, which can be arbitrarily slow regardless of indexing. Cap how many
+-- of each key's rows this pass considers (via a per-key LIMIT, which Postgres
+-- *can* satisfy cheaply by stopping the index scan early); collected_parts
+-- already accumulates additively across calls (see ON CONFLICT below), so a
+-- capped key simply finishes over several batches instead of one.
+selected AS (
+    SELECT p.ctid, p.file_number, p.collection_files, p.bytes, p.posted_at,
+           k.group_id, k.collection_key, k.poster
+    FROM limited_keys k
+    CROSS JOIN LATERAL (
+        SELECT ctid, file_number, collection_files, bytes, posted_at
+        FROM parts
+        WHERE group_id = k.group_id AND collection_key = k.collection_key
+          AND poster = k.poster AND binary_id IS NULL AND collection_key <> ''
+        LIMIT 500
+    ) p
+),
+agg AS (
     SELECT group_id, collection_key, poster,
            count(DISTINCT file_number)        AS distinct_files,
            coalesce(max(collection_files), 0) AS declared_files,
            coalesce(sum(bytes), 0)            AS total_bytes,
            min(posted_at)                     AS earliest
-    FROM parts
-    WHERE binary_id IS NULL AND collection_key <> ''
+    FROM selected
     GROUP BY group_id, collection_key, poster
-    LIMIT $1
 ),
 ups AS (
     INSERT INTO binaries
@@ -160,8 +255,9 @@ ups AS (
 linked AS (
     UPDATE parts p SET binary_id = u.id
     FROM ups u
-    WHERE p.group_id = u.group_id AND p.collection_key = u.collection_key
-      AND p.poster = u.poster AND p.binary_id IS NULL
+    JOIN selected s ON s.group_id = u.group_id AND s.collection_key = u.collection_key
+        AND s.poster = u.poster
+    WHERE p.ctid = s.ctid
     RETURNING 1
 )
 SELECT (SELECT count(*) FROM ups)`
@@ -178,10 +274,16 @@ func (s *Store) ListCompleteUnreleasedBinaries(ctx context.Context, limit int) (
 	if limit <= 0 {
 		limit = 500
 	}
+	// total_parts > 0 excludes binaries whose completeness was never actually
+	// established (#178): a part whose Subject carried no segment counter used
+	// to be folded into a binary marked complete after a single article, which
+	// then promoted to a release whose NZB held one segment of what was often a
+	// multi-gigabyte post. Such binaries are unwound and re-verified rather
+	// than released, so releasing is now restricted to a known segment count.
 	const q = `
 SELECT id, group_id, norm_subject, poster, total_parts, collected_parts, total_bytes, posted_at, complete, released, created_at, updated_at, collection_key, collection_files
 FROM binaries
-WHERE complete = TRUE AND released = FALSE
+WHERE complete = TRUE AND released = FALSE AND total_parts > 0
 ORDER BY updated_at
 LIMIT $1`
 	rows, err := s.pool.Query(ctx, q, limit)

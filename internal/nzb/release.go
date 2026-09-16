@@ -67,10 +67,15 @@ func (g *Generator) ForGUID(ctx context.Context, guid string) (data []byte, file
 		file.Groups = []string{groupName}
 	}
 	for i, s := range segs {
-		num := s.PartNumber
-		if num <= 0 {
-			num = i + 1
-		}
+		// Use sequential numbering for all segments. The part_number column
+		// in parts is unreliable for migrated data — it often stores the
+		// file-level counter [n/32] or per-file segment counter (k/N)
+		// inconsistently, leading to duplicate segment numbers that cause
+		// download clients to fetch N copies of the same data. Sequential
+		// numbering guarantees every segment has a unique number. When
+		// release_files exist (post-processing completed), per-file segment
+		// numbers are used via the release_files path instead.
+		num := i + 1
 		file.Segments = append(file.Segments, Segment{
 			MessageID: s.MessageID,
 			Bytes:     s.Bytes,

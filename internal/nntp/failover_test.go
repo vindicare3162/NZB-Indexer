@@ -161,3 +161,95 @@ func TestFailoverProtocolErrorNoFailover(t *testing.T) {
 		t.Errorf("circuit = %s, want closed (protocol error is not a health problem)", fp.Health()[0].Circuit)
 	}
 }
+
+func TestLoadBalanceRoundRobin(t *testing.T) {
+	// Two healthy providers that return different GroupInfo.High values
+	// so we can detect which one served each request.
+	factory := func(cfg Config) *Pool {
+		d := func(c Config) (conn, error) {
+			// Each provider returns a unique high value based on its host.
+			var high int64 = 100
+			if c.Host == "provider-b" {
+				high = 200
+			}
+			return &fakeConn{groupInfo: GroupInfo{High: high}}, nil
+		}
+		return newWithDialer(cfg, d)
+	}
+	eps := []EndpointConfig{
+		{ID: 1, Name: "a", Priority: 0, Config: Config{Host: "provider-a", MaxConns: 2}},
+		{ID: 2, Name: "b", Priority: 10, Config: Config{Host: "provider-b", MaxConns: 2}},
+	}
+	fp := newFailoverWithPool(eps, FailoverOptions{
+		FailureThreshold: 3,
+		Cooldown:         time.Minute,
+		LoadBalance:      true,
+	}, factory)
+	defer fp.Close()
+
+	// With load balancing, the first call goes to provider-a (startIndex=0%2=0),
+	// the second to provider-b (startIndex=1%2=1), the third to a (index=2%2=0).
+	infos := make([]int64, 4)
+	for i := 0; i < 4; i++ {
+		info, err := fp.SelectGroupInfo(context.Background(), "g")
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		infos[i] = info.High
+	}
+
+	// Verify round-robin pattern: a, b, a, b
+	if infos[0] != 100 || infos[1] != 200 || infos[2] != 100 || infos[3] != 200 {
+		t.Errorf("expected round-robin [100, 200, 100, 200], got %v", infos)
+	}
+
+	// Both circuits should remain closed (no failures).
+	for _, h := range fp.Health() {
+		if h.Circuit != "closed" {
+			t.Errorf("provider %s circuit = %s, want closed", h.Name, h.Circuit)
+		}
+	}
+}
+
+func TestLoadBalanceSkipsOpenCircuit(t *testing.T) {
+	// Provider-a is down (dial fails), provider-b is healthy.
+	// With load balancing, all requests should go to provider-b.
+	factory := func(cfg Config) *Pool {
+		d := func(c Config) (conn, error) {
+			if c.Host == "down" {
+				return nil, net.UnknownNetworkError("connection refused")
+			}
+			return &fakeConn{groupInfo: GroupInfo{High: 42}}, nil
+		}
+		return newWithDialer(cfg, d)
+	}
+	eps := []EndpointConfig{
+		{ID: 1, Name: "down", Priority: 0, Config: Config{Host: "down", MaxConns: 1}},
+		{ID: 2, Name: "up", Priority: 10, Config: Config{Host: "up", MaxConns: 1}},
+	}
+	fp := newFailoverWithPool(eps, FailoverOptions{
+		FailureThreshold: 1,
+		Cooldown:         time.Minute,
+		LoadBalance:      true,
+	}, factory)
+	defer fp.Close()
+
+	for i := 0; i < 3; i++ {
+		info, err := fp.SelectGroupInfo(context.Background(), "g")
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		if info.High != 42 {
+			t.Errorf("call %d: info.High = %d, want 42 from provider-b", i, info.High)
+		}
+	}
+
+	// Provider-a circuit should be open (tripped on first attempt).
+	health := fp.Health()
+	if health[0].Circuit != "open" {
+		t.Errorf("down provider circuit = %s, want open", health[0].Circuit)
+	}
+	if health[1].Circuit != "closed" {
+		t.Errorf("up provider circuit = %s, want closed", health[1].Circuit)
+	}
+}

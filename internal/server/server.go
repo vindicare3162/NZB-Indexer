@@ -69,6 +69,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	pool := nntp.NewFailover(endpoints, nntp.FailoverOptions{
 		FailureThreshold: cfg.NNTP.CircuitFailureThreshold,
 		Cooldown:         cfg.NNTP.CircuitCooldown,
+		LoadBalance:      cfg.NNTP.LoadBalance,
 	})
 	defer pool.Close()
 	if active, err := st.GetActiveServer(ctx); err == nil {
@@ -100,7 +101,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		BackfillMaxArticles: int64(cfg.Scan.BackfillMaxArticles),
 	})
 	asm := assembler.New(st, logger, assembler.Options{
-		BatchLimit: 1000,
+		// Bounds the number of groupings folded per call (#177): each
+		// grouping can pull up to 500 parts (see binaries.go), so this also
+		// bounds worst-case scattered-row reads per batch when the backlog
+		// contains very large (e.g. long-reposted spam) groupings.
+		BatchLimit: 200,
 		StaleAfter: 14 * 24 * time.Hour,
 	})
 	builder := release.New(st, logger, release.Options{BatchLimit: 1000})
@@ -320,7 +325,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	go authSvc.CleanupLoop(workerCtx, 10*time.Minute)
 	// Scheduled housekeeping (retention prune, retry-failed, ANALYZE, job
 	// cleanup, backup verification) as observable jobs with notifications (#130).
-	go newMaintenanceScheduler(st, cfg, notifier, logger).Run(workerCtx)
+	go newMaintenanceScheduler(st, cfg, pool, notifier, logger).Run(workerCtx)
 
 	serverErr := make(chan error, 1)
 	go func() {

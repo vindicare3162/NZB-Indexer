@@ -222,7 +222,9 @@ func (p *Pool) withConn(ctx context.Context, fn func(conn) error) error {
 
 		err = fn(c)
 		if err == nil {
-			p.release(c, false)
+			// A connection left mid-response (see bodyHeader) cannot carry
+			// another command, so it is discarded rather than pooled.
+			p.release(c, c.spentConn())
 			return nil
 		}
 
@@ -234,7 +236,7 @@ func (p *Pool) withConn(ctx context.Context, fn func(conn) error) error {
 			lastErr = err
 			continue
 		}
-		p.release(c, false)
+		p.release(c, c.spentConn())
 		return err
 	}
 	return lastErr
@@ -312,6 +314,25 @@ func (p *Pool) Body(ctx context.Context, messageID string) ([]byte, error) {
 		return nil
 	})
 	return data, err
+}
+
+// BodyHeader fetches only an article's leading yEnc control line, reading a
+// few KB instead of the whole body (often ~750KB). It is how an article's true
+// part/total/size is determined when the Subject carries no counter (#178),
+// cheaply enough to do at scale. The connection used is discarded afterwards,
+// so this trades a reconnect for the saved transfer. Returns ErrNoYencHeader
+// if the article is not a yEnc post.
+func (p *Pool) BodyHeader(ctx context.Context, messageID string) (string, error) {
+	var line string
+	err := p.withConn(ctx, func(c conn) error {
+		l, err := c.bodyHeader(ctx, messageID)
+		if err != nil {
+			return err
+		}
+		line = l
+		return nil
+	})
+	return line, err
 }
 
 // sleepCtx sleeps for d or until ctx is done.

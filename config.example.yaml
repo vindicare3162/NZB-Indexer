@@ -34,6 +34,11 @@ nntp:
   # Keep at or below your provider's connection limit.
   max_conns: 20
   connect_timeout: 30s
+  # Load balance across all configured providers (round-robin) instead of
+  # active/passive failover. When true, every provider serves requests equally
+  # regardless of priority. Circuit breaking still isolates a failing provider.
+  # (env: GOINDEX_NNTP_LOAD_BALANCE)
+  # load_balance: false
 
 scan:
   groups:

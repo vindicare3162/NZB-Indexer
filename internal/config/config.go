@@ -234,6 +234,9 @@ type NNTPConfig struct {
 	CircuitCooldown time.Duration `yaml:"circuit_cooldown"`
 	// ConnectTimeout bounds dialing a new connection.
 	ConnectTimeout time.Duration `yaml:"connect_timeout"`
+	// LoadBalance enables round-robin across all configured providers when
+	// true (default: false, which uses active/passive failover by priority).
+	LoadBalance bool `yaml:"load_balance"`
 }
 
 // ScanConfig configures the header scanner and backfill.

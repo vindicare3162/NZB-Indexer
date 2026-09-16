@@ -40,6 +40,11 @@ type FailoverOptions struct {
 	FailureThreshold int
 	// Cooldown is how long a circuit stays open before a probe is allowed.
 	Cooldown time.Duration
+	// LoadBalance enables round-robin across all healthy providers instead of
+	// priority-based active/passive failover. When true, the pool distributes
+	// requests across all healthy endpoints regardless of priority. Circuit
+	// breaking still isolates a failing provider until it recovers.
+	LoadBalance bool
 }
 
 type endpoint struct {
@@ -49,11 +54,15 @@ type endpoint struct {
 }
 
 // FailoverPool routes NNTP operations across prioritized providers with circuit
-// breaking and failover.
+// breaking and failover. When LoadBalance is enabled, requests are distributed
+// across all healthy providers in round-robin fashion. When disabled (default),
+// the highest-priority healthy provider is used (active/passive failover).
 type FailoverPool struct {
 	mu        sync.RWMutex
 	endpoints []*endpoint // sorted by priority (lower first)
 	opts      FailoverOptions
+	// rrIndex is the next endpoint index for round-robin load balancing.
+	rrIndex int
 	// newPool builds an underlying pool for an endpoint (injectable for tests).
 	newPool func(Config) *Pool
 }
@@ -128,10 +137,19 @@ func (fp *FailoverPool) Close() {
 // is returned to the caller immediately without failover — it is not a provider
 // health problem. Auth errors trip the breaker and fail over. Returns
 // ErrNoHealthyServer when no endpoint's circuit allows a request.
+//
+// When LoadBalance is enabled, the pool round-robins across all healthy
+// endpoints rather than always picking the highest-priority one.
 func (fp *FailoverPool) run(ctx context.Context, fn func(*Pool) error) error {
 	fp.mu.RLock()
 	eps := make([]*endpoint, len(fp.endpoints))
 	copy(eps, fp.endpoints)
+	loadBalance := fp.opts.LoadBalance
+	startIndex := 0
+	if loadBalance && len(eps) > 0 {
+		startIndex = fp.rrIndex % len(eps)
+		fp.rrIndex++
+	}
 	fp.mu.RUnlock()
 
 	if len(eps) == 0 {
@@ -140,7 +158,9 @@ func (fp *FailoverPool) run(ctx context.Context, fn func(*Pool) error) error {
 
 	var lastErr error
 	attempted := false
-	for _, e := range eps {
+	for i := 0; i < len(eps); i++ {
+		idx := (startIndex + i) % len(eps)
+		e := eps[idx]
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -233,6 +253,22 @@ func (fp *FailoverPool) Body(ctx context.Context, messageID string) ([]byte, err
 		return nil
 	})
 	return data, err
+}
+
+// BodyHeader fetches only an article's leading yEnc control line, failing over
+// across providers. Like Body, a retention (430) response is returned to the
+// caller rather than triggering failover.
+func (fp *FailoverPool) BodyHeader(ctx context.Context, messageID string) (string, error) {
+	var line string
+	err := fp.run(ctx, func(p *Pool) error {
+		l, err := p.BodyHeader(ctx, messageID)
+		if err != nil {
+			return err
+		}
+		line = l
+		return nil
+	})
+	return line, err
 }
 
 // Stats reports aggregate pool utilisation across all endpoints (open + idle

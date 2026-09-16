@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
   import { buildBackfillPayload, describeBackfillField } from '../lib/backfill.js';
   import { formatLag, lastScanLabel, hasScanError, healthLevel, healthLabel, healthReasons, formatThroughput, formatBytes } from '../lib/groupscan.js';
@@ -41,6 +42,23 @@
   let logLevel = $state('');
   let logTimer = null;
   let jobs = $state([]);
+  // Show only the most recent 2 jobs per type to reduce clutter.
+  let recentJobs = $derived.by(() => {
+    const byType = {};
+    for (const j of jobs) {
+      if (!byType[j.type]) byType[j.type] = [];
+      byType[j.type].push(j);
+    }
+    for (const type of Object.keys(byType)) {
+      byType[type].sort((a, b) => {
+        const aTime = a.finished_at || a.started_at || '';
+        const bTime = b.finished_at || b.started_at || '';
+        return bTime.localeCompare(aTime);
+      });
+      byType[type] = byType[type].slice(0, 2);
+    }
+    return Object.values(byType).flat();
+  });
   let notifications = $state([]);
   let capacity = $state(null);
   let diagnostics = $state(null);
@@ -68,6 +86,14 @@
   let backfillForm = $state({ days: '', articles: '', priority: '', forward: '' });
   let backfillFormError = $state('');
   let backfillSaving = $state(false);
+  let activeTab = $state('system');
+  const tabs = [
+    { id: 'system', label: 'System' },
+    { id: 'pipeline', label: 'Pipeline' },
+    { id: 'data', label: 'Data' },
+    { id: 'config', label: 'Config' },
+    { id: 'logs', label: 'Logs' },
+  ];
 
   // Raw-part retention (#118).
   let retentionDays = $state('');
@@ -79,10 +105,11 @@
   // only the most recent response is applied.
   let overviewToken = 0;
   let overviewLoading = $state(false);
+  let initialLoadDone = $state(false);
 
-  // loadAll fetches the whole dashboard in a single aggregated request
-  // (/admin/overview) instead of many independent calls. Overlapping calls are
-  // coalesced and stale responses discarded.
+  // loadAll fetches the core dashboard data once on mount. It does not
+  // reload on every reactive change because the /admin/overview endpoint
+  // triggers expensive full-table scans on parts (352M rows).
   async function loadAll() {
     if (overviewLoading) return; // avoid overlapping refreshes
     const token = ++overviewToken;
@@ -90,8 +117,6 @@
     try {
       const o = await api.overview();
       if (token !== overviewToken) return; // a newer load superseded this one
-      // Groups are loaded via the dedicated paginated endpoint (#123); the
-      // overview only carries a bounded first page + total for the dashboard.
       users = o.users || [];
       servers = o.servers || [];
       status = o.status ?? null;
@@ -99,11 +124,8 @@
       health = o.health ?? null;
       logs = o.logs || [];
       applySchedule(o.schedule);
-      loadJobs();
-      loadNotifications();
-      loadCapacity();
-      loadDiagnostics();
-      loadGroups();
+      loadJobs(); // lightweight, kept on initial load
+      loadNotifications(); // lightweight
       // Surface any per-subsystem failures without blanking the rest.
       if (o.errors && Object.keys(o.errors).length > 0) {
         error = 'Some data could not be loaded: ' + Object.keys(o.errors).join(', ');
@@ -114,6 +136,7 @@
       if (token === overviewToken) error = e.message || 'Failed to load admin overview';
     } finally {
       if (token === overviewToken) overviewLoading = false;
+      initialLoadDone = true;
     }
   }
 
@@ -251,10 +274,12 @@
   function startPolling() {
     if (logTimer) return;
     logTimer = setInterval(() => {
-      loadJobs();
-      loadNotifications();
+      // Only poll lightweight endpoints on each cycle.
+      // Capacity, diagnostics, and groups are loaded lazily by tab.
+      api.jobs(50).then((j) => { jobs = j || []; }).catch(() => {});
+      api.notifications(50).then((n) => { notifications = n || []; }).catch(() => {});
       if (!sseUp) {
-        loadLogs();
+        api.logs(logLevel, 200).then((l) => { logs = l || []; }).catch(() => {});
         api.status().then((s) => { status = s; }).catch(() => {});
       }
     }, 5000);
@@ -286,6 +311,32 @@
       loadJobs();
     } catch (e) { fail(e); }
   }
+  // onMount: load core data once, outside reactive context.
+  onMount(() => {
+    loadAll();
+  });
+
+  // Load tab-specific data when the user switches to a tab.
+  // This effect runs whenever activeTab changes, regardless of initialLoadDone.
+  $effect(() => {
+    const tab = activeTab;
+    if (tab === 'pipeline') {
+      loadCapacity();
+      loadDiagnostics();
+      loadNotifications();
+    }
+    if (tab === 'system') {
+      loadNotifications();
+    }
+    if (tab === 'config') {
+      loadGroups();
+      api.servers().then((s) => { servers = s || []; }).catch(() => {});
+      api.schedule().then(applySchedule).catch(() => {});
+    }
+    if (tab === 'logs') {
+      loadLogs();
+    }
+  });
 
   function fmtTime(s) {
     if (!s) return '';
@@ -324,6 +375,29 @@
       loadAll();
     } catch (e) { fail(e); }
   }
+  // onMount: load core data once, outside reactive context.
+  onMount(() => {
+    loadAll();
+  });
+
+  // Load tab-specific data when the user switches to a tab.
+  $effect(() => {
+    const tab = activeTab;
+    if (tab === 'pipeline') {
+      loadCapacity();
+      loadDiagnostics();
+      loadNotifications();
+    }
+    if (tab === 'system') {
+      loadNotifications();
+    }
+    if (tab === 'config') {
+      loadGroups();
+    }
+    if (tab === 'logs') {
+      loadLogs();
+    }
+  });
   async function toggleServer(s) {
     try {
       // password null = leave unchanged
@@ -343,8 +417,6 @@
     try { await api.deleteServer(s.id); notify(`Deleted server ${s.name || s.host}`); loadAll(); }
     catch (e) { fail(e); }
   }
-
-  $effect(loadAll);
 
   async function addGroup() {
     error = '';
@@ -570,8 +642,16 @@
 {/if}
 
 <h2>Admin</h2>
+<div class="tabs">
+  {#each tabs as tab}
+    <button class="tab" class:active={activeTab === tab.id} onclick={() => { activeTab = tab.id; }}>
+      {tab.label}
+    </button>
+  {/each}
+</div>
 {#if error}<p class="error">{error}</p>{/if}
 
+{#if activeTab === 'system'}
 {#if health}
   <div class="panel">
     <h3 style="margin-top:0">
@@ -630,7 +710,9 @@
     {/if}
   </div>
 {/if}
+{/if}
 
+{#if activeTab === 'system'}
 <div class="panel">
   <h3 style="margin-top:0">Current tasks</h3>
   {#if activeStages.length > 0}
@@ -643,7 +725,9 @@
     <p class="muted" style="margin:0">Idle — no pipeline tasks running.</p>
   {/if}
 </div>
+{/if}
 
+{#if activeTab === 'pipeline'}
 <div class="panel">
   <div class="row" style="justify-content:space-between; align-items:center">
     <h3 style="margin-top:0; margin-bottom:0">Jobs</h3>
@@ -651,12 +735,13 @@
   </div>
   <p class="muted">Manual scan, backfill, and post-processing triggers are tracked here with progress and cancellation. History is retained for 7 days.</p>
   {#if jobs.length > 0}
+    <p class="muted" style="margin:0 0 0.4rem">Showing the last 2 jobs per type ({jobs.length} total).</p>
     <table style="margin-top:0.4rem">
       <thead>
         <tr><th>Type</th><th>Target</th><th>State</th><th>Progress</th><th>Started</th><th>Finished</th><th>Detail</th><th></th></tr>
       </thead>
       <tbody>
-        {#each jobs as j (j.id)}
+        {#each recentJobs as j (j.id)}
           <tr>
             <td>{j.type}</td>
             <td>{j.target || '—'}</td>
@@ -678,7 +763,9 @@
     <p class="muted" style="margin:0">No jobs yet. Trigger a scan, backfill, or post-processing pass to create one.</p>
   {/if}
 </div>
+{/if}
 
+{#if activeTab === 'pipeline'}
 <div class="panel">
   <div class="row" style="justify-content:space-between; align-items:center">
     <h3 style="margin-top:0; margin-bottom:0">Diagnostics</h3>
@@ -756,7 +843,9 @@
     <p class="muted" style="margin:0">Diagnostics not loaded yet.</p>
   {/if}
 </div>
+{/if}
 
+{#if activeTab === 'pipeline'}
 <div class="panel">
   <div class="row" style="justify-content:space-between; align-items:center">
     <h3 style="margin-top:0; margin-bottom:0">Notifications</h3>
@@ -829,7 +918,9 @@
     <p class="muted" style="margin:0">Capacity data not loaded yet.</p>
   {/if}
 </div>
+{/if}
 
+{#if activeTab === 'config'}
 <div class="panel">
   <h3 style="margin-top:0">News servers</h3>
   <div class="row" style="flex-wrap:wrap">
@@ -868,7 +959,9 @@
     <p class="muted">No news servers configured.</p>
   {/if}
 </div>
+{/if}
 
+{#if activeTab === 'config'}
 <div class="panel">
   <h3 style="margin-top:0">Discover newsgroups</h3>
   <p class="muted" style="margin-top:0">Search the groups your provider carries and add ones to index. The first search fetches the full list from the provider (can take a few seconds).</p>
@@ -901,7 +994,9 @@
     </div>
   {/if}
 </div>
+{/if}
 
+{#if activeTab === 'config'}
 <div class="panel">
   <h3 style="margin-top:0">Newsgroups</h3>
   <div class="row">
@@ -1051,7 +1146,9 @@
     <button class="secondary" onclick={() => backfillSegments()}>Backfill NZB segments</button>
   </div>
 </div>
+{/if}
 
+{#if activeTab === 'data'}
 <div class="panel">
   <h3 style="margin-top:0">Raw-part retention</h3>
   <p class="muted">
@@ -1083,7 +1180,9 @@
     </div>
   {/if}
 </div>
+{/if}
 
+{#if activeTab === 'data'}
 <div class="panel">
   <h3 style="margin-top:0">Schedule</h3>
   <p class="muted">How often each pipeline stage runs. Use durations like <code>30s</code>, <code>5m</code>, <code>1h</code>. Changes apply live and persist across restarts.</p>
@@ -1099,7 +1198,9 @@
     </div>
   </form>
 </div>
+{/if}
 
+{#if activeTab === 'config'}
 <div class="panel">
   <h3 style="margin-top:0">Users</h3>
   <div class="row">
@@ -1125,6 +1226,7 @@
   {/if}
 </div>
 
+{#if activeTab === 'pipeline'}
 <div class="panel">
   <h3 style="margin-top:0">Pipeline depth</h3>
   {#if stats}
@@ -1165,7 +1267,10 @@
     <p class="muted">No status available.</p>
   {/if}
 </div>
+{/if}
+{/if}
 
+{#if activeTab === 'logs'}
 <div class="panel">
   <div class="row" style="justify-content:space-between">
     <h3 style="margin:0">Logs</h3>
@@ -1198,8 +1303,33 @@
     </div>
   {/if}
 </div>
+{/if}
 
 <style>
+  .tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border, #2b313c);
+  }
+  .tab {
+    background: none;
+    color: var(--muted, #9aa4b2);
+    border: 1px solid transparent;
+    border-bottom: none;
+    padding: 0.5rem 1rem;
+    border-radius: 6px 6px 0 0;
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+  .tab:hover { color: var(--text, #e6e9ef); background: var(--panel-2, #21262f); }
+  .tab.active {
+    color: var(--text, #e6e9ef);
+    background: var(--panel, #181b22);
+    border-color: var(--border, #2b313c);
+    border-bottom-color: var(--panel, #181b22);
+    margin-bottom: -1px;
+  }
   /* Toast stack: fixed, top-right, above content (#122). */
   .toasts {
     position: fixed;
