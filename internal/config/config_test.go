@@ -51,6 +51,7 @@ func TestEnvOverridesDefaults(t *testing.T) {
 	t.Setenv("GOINDEX_NNTP_PORT", "119")
 	t.Setenv("GOINDEX_NNTP_TLS", "false")
 	t.Setenv("GOINDEX_NNTP_MAX_CONNS", "25")
+	t.Setenv("GOINDEX_NNTP_LOAD_BALANCE", "true")
 	t.Setenv("GOINDEX_SCAN_GROUPS", "alt.binaries.foo, alt.binaries.bar ,")
 	t.Setenv("GOINDEX_SCAN_INTERVAL", "5m")
 	t.Setenv("GOINDEX_SCAN_DOWNSTREAM_INTERVAL", "3m")
@@ -65,6 +66,11 @@ func TestEnvOverridesDefaults(t *testing.T) {
 	}
 	if cfg.NNTP.Host != "news.provider.net" {
 		t.Errorf("NNTP.Host = %q, want news.provider.net", cfg.NNTP.Host)
+	}
+	// config.example.yaml documents this env var; without a binding the flag is
+	// unreachable on env-only deployments.
+	if !cfg.NNTP.LoadBalance {
+		t.Error("NNTP.LoadBalance = false, want true from GOINDEX_NNTP_LOAD_BALANCE")
 	}
 	if cfg.NNTP.Port != 119 {
 		t.Errorf("NNTP.Port = %d, want 119", cfg.NNTP.Port)

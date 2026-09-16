@@ -106,7 +106,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		// bounds worst-case scattered-row reads per batch when the backlog
 		// contains very large (e.g. long-reposted spam) groupings.
 		BatchLimit: 200,
-		StaleAfter: 14 * 24 * time.Hour,
+		// Collections with no declared file count settle on quiet time. Well
+		// clear of the scan interval so a post still being scanned is not
+		// released before its remaining files arrive.
+		SettleQuietAfter: 3 * time.Hour,
+		StaleAfter:       14 * 24 * time.Hour,
 	})
 	builder := release.New(st, logger, release.Options{BatchLimit: 1000})
 	pp := postprocess.New(pool, st, logger, postprocess.Options{

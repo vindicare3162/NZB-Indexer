@@ -156,6 +156,17 @@ func fileCounter(subject string, segLo, segHi, nameLo int) []int {
 func parseCollection(subject string, segLo, segHi, nameLo int, res *ParsedSubject) {
 	loc := fileCounter(subject, segLo, segHi, nameLo)
 	if loc == nil {
+		// No file counter anywhere. A multi-file post can still be recognised
+		// when its filenames carry archive/parity extensions: every volume of
+		// one set reduces to the same base name, so that base groups them.
+		// How many files the set holds is unknowable from the Subject, which
+		// is why CollectionFiles stays 0 — completeness for these is settled
+		// on quiet time instead of a declared count (see SettleQuietCollections).
+		if res.FileName != "" && reCollectionVolExt.MatchString(res.FileName) {
+			if base := collectionBase(res.FileName); base != "" {
+				res.CollectionKey = "b:" + base
+			}
+		}
 		return
 	}
 	fileNum := atoi(subject[loc[2]:loc[3]])

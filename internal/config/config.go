@@ -442,6 +442,7 @@ func applyEnv(cfg *Config) {
 	envStr("GOINDEX_NNTP_USERNAME", &cfg.NNTP.Username)
 	envStr("GOINDEX_NNTP_PASSWORD", &cfg.NNTP.Password)
 	envInt("GOINDEX_NNTP_MAX_CONNS", &cfg.NNTP.MaxConns)
+	envBool("GOINDEX_NNTP_LOAD_BALANCE", &cfg.NNTP.LoadBalance)
 	envDur("GOINDEX_NNTP_CONNECT_TIMEOUT", &cfg.NNTP.ConnectTimeout)
 	envInt("GOINDEX_NNTP_CIRCUIT_FAILURE_THRESHOLD", &cfg.NNTP.CircuitFailureThreshold)
 	envDur("GOINDEX_NNTP_CIRCUIT_COOLDOWN", &cfg.NNTP.CircuitCooldown)

@@ -52,9 +52,16 @@ func buildMaintenanceTasks(st *store.Store, cfg config.Config, fetch yencverify.
 			BatchLimit:  500,
 			Concurrency: 4,
 		})
+		// Sized so a pass finishes inside its interval: the scheduler does not
+		// skip an overlapping run, and overlapping passes multiply connection
+		// demand on a budget already shared with scanning and post-processing —
+		// which is what previously exhausted the provider's connection limit and
+		// failed whole batches at once. At ~2.5s per article (a fresh connection
+		// each, since the header read abandons the response) three in parallel
+		// clear ~150 in well under two minutes.
 		backlog := yencverify.New(fetch, st, log, yencverify.Options{
-			BatchLimit:  100,
-			Concurrency: 1,
+			BatchLimit:  150,
+			Concurrency: 3,
 		})
 		tasks = append(tasks,
 			maintenance.Task{

@@ -35,6 +35,7 @@ type drainRepo struct {
 	touchedSeq []int // returned in order; missing entries return 0
 	calls      int
 	aged       int64
+	settled    int64
 }
 
 func (d *drainRepo) AssembleBinaries(_ context.Context, _ int) (int, error) {
@@ -47,6 +48,9 @@ func (d *drainRepo) AssembleBinaries(_ context.Context, _ int) (int, error) {
 }
 func (d *drainRepo) AgeOutStaleBinaries(_ context.Context, _ time.Duration) (int64, error) {
 	return d.aged, nil
+}
+func (d *drainRepo) SettleQuietCollections(_ context.Context, _ time.Duration, _ int) (int64, error) {
+	return d.settled, nil
 }
 func (d *drainRepo) ListCompleteUnreleasedBinaries(_ context.Context, _ int) ([]store.Binary, error) {
 	return nil, nil

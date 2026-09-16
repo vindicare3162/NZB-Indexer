@@ -15,6 +15,7 @@ import (
 type Repo interface {
 	AssembleBinaries(ctx context.Context, limit int) (int, error)
 	AgeOutStaleBinaries(ctx context.Context, olderThan time.Duration) (int64, error)
+	SettleQuietCollections(ctx context.Context, quietFor time.Duration, limit int) (int64, error)
 	ListCompleteUnreleasedBinaries(ctx context.Context, limit int) ([]store.Binary, error)
 }
 
@@ -27,6 +28,11 @@ type Options struct {
 	// rather than one fixed batch. Zero means a sensible default; a negative
 	// value means unlimited (drain fully).
 	MaxBatchesPerRun int
+	// SettleQuietAfter is how long a collection with no declared file count may
+	// go without new parts before it is taken as complete. Must comfortably
+	// exceed the scan interval, since a post's files arrive across one or two
+	// passes. Zero disables settling.
+	SettleQuietAfter time.Duration
 	// StaleAfter is how long an incomplete binary may go without new parts
 	// before it is aged out. Zero disables age-out.
 	StaleAfter time.Duration
@@ -65,6 +71,9 @@ type Result struct {
 	// rather than stopping at the per-run batch cap.
 	Drained      bool
 	StaleRemoved int64
+	// Settled is how many undeclared-count collections were completed on quiet
+	// time this run.
+	Settled int64
 }
 
 // Assemble folds pending parts into binaries and ages out stale incompletes.
@@ -98,6 +107,16 @@ func (a *Assembler) Assemble(ctx context.Context) (Result, error) {
 		}
 	}
 
+	// Collections whose file count was never declared cannot be measured against
+	// a total, so they are completed once they stop receiving parts.
+	if a.opts.SettleQuietAfter > 0 {
+		settled, err := a.repo.SettleQuietCollections(ctx, a.opts.SettleQuietAfter, 0)
+		if err != nil {
+			return res, fmt.Errorf("settle quiet collections: %w", err)
+		}
+		res.Settled = settled
+	}
+
 	if a.opts.StaleAfter > 0 {
 		removed, err := a.repo.AgeOutStaleBinaries(ctx, a.opts.StaleAfter)
 		if err != nil {
@@ -108,7 +127,7 @@ func (a *Assembler) Assemble(ctx context.Context) (Result, error) {
 
 	a.log.Info("assembly pass complete",
 		"binaries_touched", res.BinariesTouched, "batches", res.Batches,
-		"drained", res.Drained, "stale_removed", res.StaleRemoved)
+		"drained", res.Drained, "settled", res.Settled, "stale_removed", res.StaleRemoved)
 	return res, nil
 }
 

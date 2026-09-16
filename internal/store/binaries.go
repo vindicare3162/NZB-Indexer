@@ -356,3 +356,35 @@ func (s *Store) MarkBinariesReleased(ctx context.Context, ids []int64) error {
 	}
 	return nil
 }
+
+// SettleQuietCollections completes collections whose file count was never
+// declared (#178 follow-up). Many posters omit any "[n/total]" file counter,
+// so such a post is grouped by its shared archive base name but has no
+// collection_files to measure completeness against — left alone it would
+// accumulate parts forever and never release.
+//
+// Every fold bumps updated_at, so a binary untouched for quietFor has stopped
+// receiving parts and is taken as complete. quietFor must comfortably exceed
+// the scan interval: a post's articles are adjacent, so they arrive within one
+// or two passes, and settling sooner than that risks releasing a post while
+// its remaining files are still being scanned.
+func (s *Store) SettleQuietCollections(ctx context.Context, quietFor time.Duration, limit int) (int64, error) {
+	if limit <= 0 {
+		limit = 5000
+	}
+	cutoff := time.Now().Add(-quietFor)
+	ct, err := s.pool.Exec(ctx, `
+UPDATE binaries SET complete = TRUE, updated_at = now()
+WHERE id IN (
+    SELECT id FROM binaries
+    WHERE complete = FALSE AND released = FALSE
+      AND collection_key <> '' AND collection_files = 0
+      AND collected_parts > 0
+      AND updated_at < $1
+    LIMIT $2
+)`, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("settle quiet collections: %w", err)
+	}
+	return ct.RowsAffected(), nil
+}

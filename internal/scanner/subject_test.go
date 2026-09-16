@@ -320,3 +320,39 @@ func TestParseCollectionGroupsWholePost(t *testing.T) {
 	}
 	t.Logf("shared collection key: %s", key)
 }
+
+// TestParseCollectionNoCounter covers multi-file posts that carry no file
+// counter at all. Their filenames still reduce to a shared archive base, which
+// groups the post; the file count is unknowable from the Subject, so
+// CollectionFiles stays 0 and completeness is settled on quiet time instead.
+func TestParseCollectionNoCounter(t *testing.T) {
+	post := []string{
+		`(0133) "212acs5126.par2" - HDTV - EPZ yEnc (1/1)`,
+		`(2733) "212acs5126.vol01+01.PAR2" - HDTV - EPZ yEnc (1/4)`,
+		`(2733) "212acs5126.part02.rar" - HDTV - EPZ yEnc (1/20)`,
+	}
+	var key string
+	for i, subj := range post {
+		got := ParseSubject(subj)
+		if got.CollectionKey == "" {
+			t.Fatalf("file %d: no collection key, post would split per file", i)
+		}
+		if got.CollectionFiles != 0 {
+			t.Errorf("file %d: CollectionFiles = %d, want 0 (count is unknown)", i, got.CollectionFiles)
+		}
+		if i == 0 {
+			key = got.CollectionKey
+			continue
+		}
+		if got.CollectionKey != key {
+			t.Errorf("file %d key = %q, want %q", i, got.CollectionKey, key)
+		}
+	}
+	t.Logf("shared key: %s", key)
+
+	// A plain single file with no archive extension must stay ungrouped rather
+	// than collide with unrelated posts on a generic base name.
+	if got := ParseSubject(`"holiday.jpg" yEnc (1/1)`); got.CollectionKey != "" {
+		t.Errorf("non-archive single file grouped: %q", got.CollectionKey)
+	}
+}
