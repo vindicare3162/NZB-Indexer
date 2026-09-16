@@ -115,6 +115,11 @@ type MaintenanceConfig struct {
 	JobRetention time.Duration `yaml:"job_retention"`
 	// BackupVerify runs a read-only backup-readiness check.
 	BackupVerify MaintenanceTaskConfig `yaml:"backup_verify"`
+	// Reassemble re-parses stored subjects and rebuilds mis-grouped binaries
+	// (#196). Disabled by default and deliberately so: it rewrites hundreds of
+	// millions of rows and removes releases, which is an operator decision
+	// rather than something an upgrade should start on its own.
+	Reassemble MaintenanceTaskConfig `yaml:"reassemble"`
 }
 
 // MaintenanceTaskConfig is the enablement + cadence for one maintenance task.
@@ -477,6 +482,8 @@ func applyEnv(cfg *Config) {
 	envInt("GOINDEX_HEALTH_FAILURES_WARN", &cfg.Health.FailuresWarn)
 	envInt("GOINDEX_HEALTH_FAILURES_ERROR", &cfg.Health.FailuresError)
 
+	envBool("GOINDEX_MAINTENANCE_REASSEMBLE_ENABLED", &cfg.Maintenance.Reassemble.Enabled)
+	envDur("GOINDEX_MAINTENANCE_REASSEMBLE_INTERVAL", &cfg.Maintenance.Reassemble.Interval)
 	envBool("GOINDEX_MAINTENANCE_RETRY_FAILED_ENABLED", &cfg.Maintenance.RetryFailed.Enabled)
 	envDur("GOINDEX_MAINTENANCE_RETRY_FAILED_INTERVAL", &cfg.Maintenance.RetryFailed.Interval)
 	envBool("GOINDEX_MAINTENANCE_ANALYZE_ENABLED", &cfg.Maintenance.Analyze.Enabled)

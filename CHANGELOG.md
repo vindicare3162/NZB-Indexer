@@ -73,6 +73,19 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   while at least one release carries an identifier, so the indexer reports
   itself as text-only rather than advertising a search that returns nothing.
 
+### Added
+- Re-assembly of mis-grouped parts (#196), off by default. Subjects are parsed
+  once at ingest, so parts stored before the parser fix keep their original
+  grouping permanently; ~31.6% gain a collection key when re-parsed, and nearly
+  all are already assembled, so one post can exist as dozens of ~10MB fragment
+  releases. The task re-parses stored subjects, detaches the parts whose
+  grouping changed, and deletes the binary and releases built from them, letting
+  the normal assembler rebuild them correctly — assembly itself is not
+  reimplemented. Binaries backing a release that has already been
+  post-processed are skipped entirely, so nothing a client has grabbed changes
+  identity. Progress is a persisted keyset cursor, and a failed batch does not
+  advance it.
+
 ### Documentation
 - Added `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `docs/RUNBOOK.md`,
   `docs/API.md`, `docs/CONFIGURATION.md`, `docs/HANDOVER.md`, and

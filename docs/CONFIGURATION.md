@@ -36,6 +36,23 @@ finite NNTP connection budget.
 | `metadata.enabled` | `GOINDEX_METADATA_ENABLED` | **false** | While false there is no season/episode metadata and no external ID enrichment. Contributes to #194. |
 | `retention.enabled` | `GOINDEX_RETENTION_ENABLED` | **false** | Opt-in. With the "index everything, keep forever" target this stays false, which is why `parts` grows without bound — see #182. |
 
+## Re-assembly (#196)
+
+| Key | Env | Default | Blast radius |
+|---|---|---|---|
+| `maintenance.reassemble.enabled` | `GOINDEX_MAINTENANCE_REASSEMBLE_ENABLED` | **false** | Rewrites parts, deletes binaries, and removes the releases built from them. Off by default on purpose — an upgrade must never start this on its own. Releases with `pp_status='done'` are protected. |
+| `maintenance.reassemble.interval` | `GOINDEX_MAINTENANCE_REASSEMBLE_INTERVAL` | 1m | Cadence between passes. Each pass is bounded by batch count and run time, so it yields to the rest of the pipeline. |
+
+## Scheduling internals
+
+`scan.adaptive_min_interval` (`GOINDEX_SCAN_ADAPTIVE_MIN_INTERVAL`, default 30s)
+is backlog-aware scheduling: while a downstream loop reports more work pending,
+its next pass is scheduled after **the smaller of** this value and the loop's
+configured interval. That means a loop's configured interval does **not** bound
+it while it is busy — raising `build_interval` alone will not pause the builder.
+See `docs/OPERATIONS.md` for the correct way to pause one loop without slowing
+the others.
+
 ## Auth
 
 | Key | Env | Default | Blast radius |

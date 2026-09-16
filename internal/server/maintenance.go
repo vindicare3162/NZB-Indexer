@@ -8,6 +8,7 @@ import (
 
 	"github.com/vindicare/goindex/internal/config"
 	"github.com/vindicare/goindex/internal/maintenance"
+	"github.com/vindicare/goindex/internal/reassemble"
 	"github.com/vindicare/goindex/internal/store"
 	"github.com/vindicare/goindex/internal/yencverify"
 )
@@ -104,6 +105,34 @@ func buildMaintenanceTasks(st *store.Store, cfg config.Config, fetch yencverify.
 					return "", err
 				}
 				return fmt.Sprintf("pruned %d raw parts older than %d days", deleted, cfg.Retention.Days), nil
+			},
+		})
+	}
+
+	// Re-assembly of pre-fix parts (#196). Off unless explicitly enabled: it
+	// rewrites parts, deletes binaries, and removes the releases built from
+	// them. Releases that have already been post-processed are protected inside
+	// the store layer, so a client cannot lose something it has grabbed.
+	if m.Reassemble.Enabled {
+		interval := m.Reassemble.Interval
+		if interval <= 0 {
+			interval = time.Minute
+		}
+		ra := reassemble.New(st, log, reassemble.Options{})
+		tasks = append(tasks, maintenance.Task{
+			Name: "reassemble", Interval: interval, Enabled: true,
+			Run: func(ctx context.Context) (string, error) {
+				r, err := ra.Run(ctx)
+				if err != nil {
+					return "", err
+				}
+				if r.Done {
+					return fmt.Sprintf("re-parse complete at cursor %d; nothing left to scan", r.Cursor), nil
+				}
+				return fmt.Sprintf(
+					"scanned %d parts in %d batches: %d regrouped, %d binaries rebuilt, %d releases removed, %d protected (cursor %d)",
+					r.PartsScanned, r.BatchesRun, r.PartsUpdated, r.BinariesDeleted,
+					r.ReleasesDeleted, r.BinariesProtected, r.Cursor), nil
 			},
 		})
 	}

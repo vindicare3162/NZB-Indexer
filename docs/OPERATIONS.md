@@ -68,6 +68,63 @@ connection demand, which has previously exhausted the provider's limit.
 
 Detail: `docs/maintenance.md`.
 
+## Re-assembly of mis-grouped parts (#196)
+
+Subjects are parsed once, at ingest, so parts stored before the parser fix keep
+their original grouping forever. Roughly 31.6% of parts gain a collection key
+when re-parsed, and nearly all of them are already assembled — so the binaries
+and the releases built from them have to be rebuilt too.
+
+**Off by default.** Enable deliberately:
+
+```
+GOINDEX_MAINTENANCE_REASSEMBLE_ENABLED=true
+GOINDEX_MAINTENANCE_REASSEMBLE_INTERVAL=1m
+```
+
+### What it does
+Per batch, in one transaction: re-parse each part's stored subject, rewrite the
+grouping fields that changed, detach those parts from their binary, delete the
+releases built from it, then delete the binary. The normal assembler picks the
+detached parts up on its next pass and groups them correctly. Assembly is not
+reimplemented — only its inputs are repaired.
+
+### What it will not touch
+A binary backing a release with `pp_status = 'done'` is skipped entirely, parts
+included. Those releases may already have been grabbed, and their GUIDs must not
+change. The pass reports how many it protected.
+
+### Before starting
+**Pause the release builder**, or it converts mis-grouped binaries into releases
+faster than re-assembly removes them. The builder is not paused by
+`build_interval` alone — backlog-aware scheduling overrides it with
+`AdaptiveMinInterval` whenever the loop is busy. Pause it by raising both, and
+pin the other loops so only the builder stops:
+
+```sql
+INSERT INTO settings (key,value) VALUES
+  ('schedule.build_interval','8760h'),
+  ('schedule.postprocess_interval','30s'),
+  ('schedule.downstream_interval','30s')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now();
+```
+plus `GOINDEX_SCAN_ADAPTIVE_MIN_INTERVAL=8760h` in `.env`, then recreate the
+container. `nextInterval` returns the configured value when the adaptive minimum
+is not smaller, so pinning post-processing and assembly to 30s keeps them at
+their current busy cadence while the builder stops.
+
+Verify with a 5-minute window: release count delta should be 0 and no
+`release build pass complete` lines should appear, while `assembly pass complete`
+and `post-processing pass complete` continue.
+
+### Monitoring and stopping
+Progress is the `reassemble.parts_cursor` setting. Stopping is safe at any batch
+boundary — set `GOINDEX_MAINTENANCE_REASSEMBLE_ENABLED=false` and restart; the
+cursor persists and the next run resumes from it. A failed batch does not
+advance the cursor, so nothing is skipped silently.
+
+**There is no undo for a merge.** Re-grouped releases get new GUIDs.
+
 ## Capacity
 
 `parts` is unpartitioned at 1283 GB with an "index everything, keep forever"
