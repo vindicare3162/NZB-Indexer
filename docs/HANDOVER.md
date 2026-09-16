@@ -87,20 +87,31 @@ Two separate "outage" investigations turned out to be these artefacts. **Measure
 group liveness by backfill cursor movement (`groups.backfill_low` decreasing),
 not by timestamps.** Issue #198.
 
-### 3.5 Postgres and btrfs space behaviour
+### 3.5 Features that look built but are unreachable
+
+Several capabilities are fully implemented, tested, and never called. The
+symptom is always an empty result rather than an error, so they pass health
+checks and look fine. Known: external id search (#194), `t=details` file lists
+(#209), `parts` partition management (#182), and password reset / user
+deactivation (#204).
+
+Before trusting that a feature works, check that something actually calls it.
+`docs/ARCHITECTURE.md` §5 has the audit command.
+
+### 3.6 Postgres and btrfs space behaviour
 
 `DELETE` marks space reusable but does not shrink files. On this deployment the
 underlying btrfs pool reclaimed physical space anyway, so free space recovered
 without a `VACUUM FULL`. Do not generalise this to other filesystems.
 
-### 3.6 Index operations on `parts` are dangerous
+### 3.7 Index operations on `parts` are dangerous
 
 `CREATE INDEX CONCURRENTLY` on a 1.8B-row table takes hours. **Two `CONCURRENTLY`
 operations on the same table deadlock** — during one incident Postgres killed a
 build at 91% of validation, losing ~2.5 hours. Run them strictly one at a time.
 Issue #203.
 
-### 3.7 Shell hazards that have already bitten
+### 3.8 Shell hazards that have already bitten
 
 - Usenet message-ids contain `$`. Unquoted, the shell mangles them and working
   articles appear to be 430 "no such article". Use `set -f` and quote.

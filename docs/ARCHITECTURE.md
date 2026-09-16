@@ -104,7 +104,49 @@ Preferred alternatives already used in this codebase:
 - partial indexes with an **explicit literal predicate** — the planner cannot
   prove a correlated lateral parameter satisfies a partial index predicate.
 
-## 5. Component boundaries
+## 5. The "wired path, no producer" failure class
+
+This codebase has a recurring defect shape, distinct from the `ORDER BY … LIMIT`
+one in §4 and just as hard to notice:
+
+> a read path exists, a write path exists and is tested, and **nothing in the
+> pipeline ever calls the writer**.
+
+It hides because the symptom is an empty result rather than an error. Nothing
+logs, nothing fails, and a health check passes. Confirmed instances:
+
+| Where | Effect |
+|---|---|
+| `release_identifiers` | every tvdbid/imdbid search returned an empty 200 (#194) |
+| `release_files` | `t=details` returns no file list; `res.Files` is never assigned (#209) |
+| `partitions.go` | six partition-management functions, no callers — converting `parts` per the rollout doc would break inserts at the next month boundary (#182) |
+| user management | `UpdateUserPassword`, `SetUserActive` unreachable — access can only be revoked destructively (#204) |
+
+### How to audit for it
+
+List every exported `Store` method with no caller outside the store package and
+outside tests:
+
+```bash
+for m in $(grep -rhoP '^func \(s \*Store\) \K\w+' internal/store/*.go | sort -u); do
+  n=$(grep -rn "\.$m(" --include=*.go internal/ cmd/ | grep -v _test.go | grep -v '^internal/store/' | wc -l)
+  [ "$n" -eq 0 ] && echo "$m"
+done
+```
+
+Unexported helpers and methods called only through an interface need checking by
+hand — the point is to produce a short list to reason about, not a verdict.
+
+The mirror image is a struct field the store writes but no producer ever
+assigns; `ReleasePPResult.Files` was found that way, by reading the producer
+rather than by grep. Both are worth a pass whenever a feature "works" but
+returns nothing.
+
+Not every zero-caller function is a bug: the partitioning module is deliberately
+operator-facing. The question to ask is whether *something* was supposed to call
+it and does not.
+
+## 6. Component boundaries
 
 - `internal/scanner` — NNTP → parts. Owns subject parsing.
 - `internal/assembler` — parts → binaries. No NNTP access.
