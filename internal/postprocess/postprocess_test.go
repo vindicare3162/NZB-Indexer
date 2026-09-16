@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/textproto"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -719,5 +720,29 @@ func TestPostProcessRunsReleasesConcurrently(t *testing.T) {
 	// (n releases * 2 fetches * delay = 3.2s); generous margin for slow CI/DB.
 	if seq := time.Duration(n) * 2 * delay; elapsed >= seq {
 		t.Errorf("elapsed %v >= sequential time %v: no speedup from concurrency", elapsed, seq)
+	}
+}
+
+// TestRecoveredNameRejectsRunawayParse covers a production failure: a PAR2
+// parse returned a 39,496-byte "name", and writing it aborted the whole
+// post-processing transaction against the btree index on search_name
+// (SQLSTATE 54000). The release stayed pending and retried, spending article
+// fetches from an already-saturated connection budget on every attempt.
+func TestRecoveredNameRejectsRunawayParse(t *testing.T) {
+	// Deliberately built from real words: a run of random characters is
+	// rejected earlier by the obfuscation check, so it would not exercise the
+	// length bound at all.
+	runaway := strings.Repeat("The.Matrix.Reloaded.1080p.BluRay.", 1200)
+	if len(runaway) <= maxRecoveredNameBytes {
+		t.Fatalf("fixture is only %d bytes; it must exceed the %d-byte bound to test it",
+			len(runaway), maxRecoveredNameBytes)
+	}
+	if got := recoveredName(buildFileDescPacket(runaway)); got != "" {
+		t.Errorf("runaway name accepted (%d bytes); it would abort the pp transaction", len(got))
+	}
+	// A plausible name must still be recovered.
+	const ok = "Some.Show.S01E01.1080p.WEB-DL.x264-GROUP"
+	if got := recoveredName(buildFileDescPacket(ok + ".rar")); got != ok {
+		t.Errorf("recoveredName(%q) = %q, want it recovered", ok, got)
 	}
 }

@@ -343,6 +343,11 @@ func namefromPar2(decoded []byte) string {
 	return bestReleaseName(names)
 }
 
+// maxRecoveredNameBytes bounds a PAR2-recovered name. Real release names sit
+// well inside a filesystem's 255-byte name limit; the cap is set above that so
+// a legitimately long name is never rejected, while a runaway parse is.
+const maxRecoveredNameBytes = 512
+
 // recoveredName returns a PAR2-recovered release name only when it is an actual
 // improvement: a real, readable name. Some obfuscated posts carry PAR2 sets
 // whose internal filenames are themselves random hex/base64 (e.g.
@@ -353,6 +358,20 @@ func namefromPar2(decoded []byte) string {
 func recoveredName(decoded []byte) string {
 	best := namefromPar2(decoded)
 	if best == "" || release.IsObfuscated(best) {
+		return ""
+	}
+	if len(best) > maxRecoveredNameBytes {
+		// A name this long is not a filename, it is a failed parse that ran off
+		// the end of a PAR2 packet and returned arbitrary bytes. Writing it
+		// fails the whole transaction against the btree index on search_name
+		// (SQLSTATE 54000, "index row requires 39496 bytes, maximum size is
+		// 8191"), which leaves the release pending and retrying — and each
+		// retry spends article fetches from a connection budget that is already
+		// the system's throughput ceiling.
+		//
+		// Reject rather than truncate: the leading bytes of a bad parse are not
+		// a better name than the one the release already has, and truncating
+		// would clear the obfuscated flag on the strength of garbage.
 		return ""
 	}
 	return best
