@@ -356,3 +356,85 @@ func TestParseCollectionNoCounter(t *testing.T) {
 		t.Errorf("non-archive single file grouped: %q", got.CollectionKey)
 	}
 }
+
+// TestParseCollectionQuotedTitleBeforeFilename covers subjects that quote a
+// release title as well as a filename. The title always comes first, so taking
+// the first quoted token picked up the title: FileName was wrong, and because
+// the file-counter search is anchored just before the filename, the anchor
+// landed ahead of the counter and no counter was found at all — every file of
+// the post then became its own binary and its own release.
+func TestParseCollectionQuotedTitleBeforeFilename(t *testing.T) {
+	cases := []struct {
+		name     string
+		subject  string
+		wantName string
+		wantFile int
+		wantOf   int
+	}{
+		{
+			name:     "quoted title then quoted filename",
+			subject:  `"La Femme Nikita S01E06 Love (1997)" [03/18] - "la.femme.nikita.s01e06.part1.rar" yEnc (139/206)`,
+			wantName: "la.femme.nikita.s01e06.part1.rar",
+			wantFile: 3, wantOf: 18,
+		},
+		{
+			name:     "title itself ends in a dotted token",
+			subject:  `Brothers-of-Usenet.org "Two.and.a.Half.Men.S06DVD1.DVDR.German.DL.BoU"[019/141] - "BoU-TAAHM-S6D1.part017.rar" yEnc (94/137)`,
+			wantName: "BoU-TAAHM-S6D1.part017.rar",
+			wantFile: 19, wantOf: 141,
+		},
+		{
+			name:     "obfuscated name quoted twice",
+			subject:  `"82417MSTOXL42"     [071/211] - "82417MSTOXL42.part070.rar" yEnc (0520/1261)`,
+			wantName: "82417MSTOXL42.part070.rar",
+			wantFile: 71, wantOf: 211,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseSubject(tc.subject)
+			if got.FileName != tc.wantName {
+				t.Errorf("FileName = %q, want %q", got.FileName, tc.wantName)
+			}
+			if got.CollectionKey == "" {
+				t.Fatalf("no collection key; every file of this post would become its own release")
+			}
+			if got.FileNumber != tc.wantFile || got.CollectionFiles != tc.wantOf {
+				t.Errorf("file counter = %d/%d, want %d/%d",
+					got.FileNumber, got.CollectionFiles, tc.wantFile, tc.wantOf)
+			}
+		})
+	}
+}
+
+// TestParseCollectionCounterBehindBanner covers site-tagged posts, which wedge
+// a banner between the file counter and the filename. The counter is still the
+// post's file counter, so the gap bound has to clear the banner.
+func TestParseCollectionCounterBehindBanner(t *testing.T) {
+	got := ParseSubject(`~~ www.example.nl ~~ [38/96] ~~ www.other.nl ~~ nieuwsgroepen~~ post: "nmrcncrmpal.r36" yEnc (098/131)`)
+	if got.CollectionKey == "" {
+		t.Fatalf("no collection key; every file of this post would become its own release")
+	}
+	if got.FileNumber != 38 || got.CollectionFiles != 96 {
+		t.Errorf("file counter = %d/%d, want 38/96", got.FileNumber, got.CollectionFiles)
+	}
+}
+
+// TestParseCollectionDuplicateCounter covers the same counter written twice,
+// which is one file in many segments rather than many files. Declaring a file
+// count the post can never reach leaves the binary permanently incomplete.
+func TestParseCollectionDuplicateCounter(t *testing.T) {
+	// Obfuscated name, no other evidence of a collection: not a collection.
+	got := ParseSubject(`[2256/2574] - "7e808f5e537ffc3c" yEnc (2256/2574) 882223104`)
+	if got.CollectionKey != "" {
+		t.Errorf("duplicated segment counter read as a collection: key=%q files=%d",
+			got.CollectionKey, got.CollectionFiles)
+	}
+
+	// An archive extension is independent evidence of a real set, so coinciding
+	// counts must not stop it grouping by volume base.
+	got = ParseSubject(`[13/62] "gMP0zQ8BE47EzPwVQdPwUl.part12.rar" (13/62)`)
+	if got.CollectionKey == "" {
+		t.Errorf("archive set left ungrouped because its counts coincide")
+	}
+}

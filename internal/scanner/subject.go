@@ -48,16 +48,34 @@ var (
 	// A quoted filename, e.g. "Some.Release.mkv".
 	reQuotedName = regexp.MustCompile(`"([^"]+)"`)
 
+	// reFileNameish recognises a quoted token that reads as a real filename
+	// (a short trailing extension) rather than a release title. Subjects that
+	// quote both — `"Show S01E06 Love (1997)" [03/18] - "show.part1.rar"` — put
+	// the title first, so taking the first quote picked up the title, left
+	// FileName wrong, and anchored the file-counter search ahead of the counter
+	// so no counter was found at all (see quotedName).
+	reFileNameish = regexp.MustCompile(`\.[A-Za-z0-9]{1,8}$`)
+
 	// yEnc marker and trailing size annotations to strip during normalization.
 	reYencMarker = regexp.MustCompile(`(?i)\byenc\b`)
 	reWhitespace = regexp.MustCompile(`\s+`)
 
 	// maxCounterToNameGap bounds how far a file counter may sit from the quoted
-	// filename it enumerates. Every posting style places them adjacent, give or
-	// take a short separator like " - ", so a small gap is what separates a real
-	// file counter from an unrelated "n/m"-shaped token earlier in the subject
-	// (a year range such as "[2009/2010]", say).
-	maxCounterToNameGap = 8
+	// filename it enumerates. Most styles place them adjacent, give or take a
+	// separator like " - ", but site-tagged posts wedge a banner between them:
+	//
+	//	~~ www.example.nl ~~ [38/96] ~~ www.other.nl ~~ post: "file.r36" yEnc (98/131)
+	//
+	// so the bound has to clear a banner. It is not what keeps an unrelated
+	// "n/m"-shaped token (a year range such as "[2009/2010]") from being read
+	// as a counter — reYearRange does that, and fileCounter prefers the
+	// candidate nearest the filename regardless.
+	maxCounterToNameGap = 64
+
+	// reYearRange matches a bracketed span of two adjacent years, the one
+	// "n/m"-shaped token that regularly appears in subjects without being a
+	// counter.
+	reYearRange = regexp.MustCompile(`^[\(\[](19|20)\d{2}\s*/\s*(19|20)\d{2}[\)\]]$`)
 
 	// Trailing archive/volume/parity extensions used to reduce a per-file name
 	// to the collection base name (so all volumes of a set share one key).
@@ -76,7 +94,7 @@ func ParseSubject(subject string) ParsedSubject {
 	// Extract a quoted filename if present. Its position also anchors the file
 	// counter search below (see fileCounter).
 	nameLo := -1
-	if m := reQuotedName.FindStringSubmatchIndex(subject); m != nil {
+	if m := quotedName(subject); m != nil {
 		res.FileName = strings.TrimSpace(subject[m[2]:m[3]])
 		nameLo = m[0]
 	}
@@ -135,11 +153,37 @@ func ParseSubject(subject string) ParsedSubject {
 // segment counter follows it. Select on that ordering rather than on bracket
 // style or index, and take the counter closest to the filename when several
 // qualify.
+// quotedName picks the quoted token that is the article's filename. A subject
+// may quote a release title as well, always ahead of the filename:
+//
+//	"La Femme Nikita S01E06 Love (1997)" [03/18] - "la.femme.nikita.s01e06.part1.rar" yEnc (139/206)
+//
+// so the LAST quoted token that ends in a short extension is the filename, and
+// the last quoted token generally is when none of them looks like one. Taking
+// the first instead mis-set FileName and, because the file-counter search is
+// anchored just before the filename, pushed the anchor ahead of the counter so
+// every file of such a post became its own binary and its own release.
+func quotedName(subject string) []int {
+	all := reQuotedName.FindAllStringSubmatchIndex(subject, -1)
+	if len(all) == 0 {
+		return nil
+	}
+	for i := len(all) - 1; i >= 0; i-- {
+		if reFileNameish.MatchString(strings.TrimSpace(subject[all[i][2]:all[i][3]])) {
+			return all[i]
+		}
+	}
+	return all[len(all)-1]
+}
+
 func fileCounter(subject string, segLo, segHi, nameLo int) []int {
 	var best []int
 	for _, m := range reParenParts.FindAllStringSubmatchIndex(subject, -1) {
 		if m[0] == segLo && m[1] == segHi {
 			continue // the yEnc segment counter, not a file counter
+		}
+		if reYearRange.MatchString(subject[m[0]:m[1]]) {
+			continue // "[2009/2010]" and friends are not counters
 		}
 		if nameLo >= 0 {
 			// Anything at or past the filename is a segment counter or noise;
@@ -182,6 +226,14 @@ func parseCollection(subject string, segLo, segHi, nameLo int, res *ParsedSubjec
 	if segLo == brLo && segHi == brHi {
 		return
 	}
+	// dupCounter reports the same counter written twice — `[2256/2574] - "blob"
+	// yEnc (2256/2574)`, one file in 2574 segments rather than 2574 files. The
+	// span check above only catches a single counter read twice; matching values
+	// catch the duplicate. It is consulted only by the obfuscated fallback
+	// below: a title or an archive extension is independent evidence of a real
+	// collection, and an archive set whose file and segment counts coincide is
+	// still an archive set.
+	dupCounter := res.TotalParts > 0 && fileNum == res.PartNumber && total == res.TotalParts
 	// Derive the collection key. Two cases:
 	//
 	//  (a) Title-prefixed post: a release title precedes the "[n/total]" file
@@ -217,15 +269,7 @@ func parseCollection(subject string, segLo, segHi, nameLo int, res *ParsedSubjec
 	// together into one release. This is false-merge-safe because two unrelated
 	// obfuscated posts would need to share the same random hex string and file
 	// count, which is effectively impossible.
-	// Guard: if the file counter values match the segment counter values
-	// (fileNum=1, total=TotalParts), it's a single multi-segment file, not a
-	// collection. The positional guard above only catches when the bracket
-	// types match; this catches [1/445] ... yEnc (1/445) where bracket types
-	// differ.
-	if fileNum == 1 && total > 0 && total == res.TotalParts && res.TotalParts > 0 {
-		return
-	}
-	if res.FileName != "" && total >= 2 {
+	if res.FileName != "" && total >= 2 && !dupCounter {
 		res.FileNumber = fileNum
 		res.CollectionFiles = total
 		res.CollectionKey = res.FileName + "/" + strconv.Itoa(total)
