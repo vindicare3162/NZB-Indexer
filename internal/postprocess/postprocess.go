@@ -309,6 +309,9 @@ func (p *Processor) processOne(ctx context.Context, pr store.PendingRelease) (st
 		}
 		if text := sanitizeNFO(decoded); text != "" {
 			res.NFO = &text
+			// The NFO is the cheapest source of external ids we have: it is
+			// already fetched, and scene NFOs routinely cite IMDb (#194).
+			res.Identifiers = ExtractIdentifiers(text)
 			break
 		}
 	}

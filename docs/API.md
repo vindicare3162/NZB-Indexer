@@ -28,9 +28,15 @@ The practical effect is that any ID-based query returns an empty, successful
 response. Sonarr and Radarr search by ID by preference, so the primary
 integration path yields nothing while appearing healthy.
 
-Tracked in **#194**, which both wires the write path and makes `caps` stop
-advertising ID search while the table is empty — failing honestly rather than
-silently.
+**Status:** the producer and the caps gate are implemented (not yet deployed).
+Post-processing now extracts IMDb/TVDB/TMDB ids from NFO text and writes them in
+the same transaction as the NFO, and `caps` advertises `imdbid`/`tvdbid`/
+`tmdbid` only while at least one identifier exists — so an empty table makes the
+indexer honestly text-only rather than silently empty. Tracked in **#194**,
+which stays open until this is verified end to end against production.
+
+Coverage is retroactive only as far as post-processing reaches, and 2.12M
+releases are still `pending`, so ID search will switch on gradually.
 
 ## Category assignment
 

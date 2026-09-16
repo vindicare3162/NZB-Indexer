@@ -320,6 +320,10 @@ type ReleasePPResult struct {
 	NFO *string
 	// Files, when non-empty, are stored as release_files.
 	Files []ReleaseFileInput
+	// Identifiers, when non-empty, are external ids (IMDb/TVDB/TMDB) recovered
+	// during post-processing. They are what makes a release findable by the
+	// id-based searches Sonarr and Radarr issue by preference (#194).
+	Identifiers []ReleaseIdentifier
 }
 
 // ReleaseFileInput describes a file recovered during post-processing.
@@ -373,6 +377,21 @@ func (s *Store) ApplyPostProcessing(ctx context.Context, id int64, res ReleasePP
              VALUES ($1, $2, $3, $4)`,
 			id, sanitizeText(f.FileName), f.SizeBytes, segJSON); err != nil {
 			return fmt.Errorf("insert release file: %w", err)
+		}
+	}
+	for _, ident := range res.Identifiers {
+		// Already normalised by the caller; re-normalise so a bad id cannot be
+		// written by a future caller that forgets to.
+		norm, ok := NormalizeIdentifier(ident.Source, ident.Identifier)
+		if !ok {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO release_identifiers (release_id, source, identifier)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (release_id, source, identifier) DO NOTHING`,
+			id, norm.Source, norm.Identifier); err != nil {
+			return fmt.Errorf("insert release identifier: %w", err)
 		}
 	}
 	if _, err := tx.Exec(ctx,

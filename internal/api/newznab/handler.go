@@ -18,6 +18,10 @@ type Repo interface {
 	SearchReleases(ctx context.Context, f store.SearchFilter) ([]store.Release, int, error)
 	GetReleaseByGUID(ctx context.Context, guid string) (store.Release, error)
 	IncrementGrabs(ctx context.Context, id int64) error
+	// HasReleaseIdentifiers reports whether any release carries an external
+	// identifier. Caps is gated on it so we never advertise id-based search
+	// while it would return nothing (#194).
+	HasReleaseIdentifiers(ctx context.Context) (bool, error)
 }
 
 // NZBGenerator builds an NZB document for a release GUID.
@@ -86,6 +90,19 @@ func (h *Handler) handleCaps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A failure here must not fail caps: fall back to not advertising id search,
+	// which is the safe direction (a client that cannot use ids still works).
+	hasIDs, err := h.repo.HasReleaseIdentifiers(r.Context())
+	if err != nil {
+		hasIDs = false
+	}
+	tvParams := "q,cat,season,ep,limit,offset"
+	movieParams := "q,cat,limit,offset"
+	if hasIDs {
+		tvParams = "q,cat,season,ep,imdbid,tvdbid,tmdbid,limit,offset"
+		movieParams = "q,cat,imdbid,tmdbid,limit,offset"
+	}
+
 	c := caps{
 		Server: capsServer{
 			Version:   "1.0",
@@ -94,15 +111,16 @@ func (h *Handler) handleCaps(w http.ResponseWriter, r *http.Request) {
 			URL:       h.baseURL,
 		},
 		Limits: capsLimits{Max: h.maxLim, Default: h.defLim},
-		// Advertise the params the handler actually resolves. External
-		// identifiers (imdbid/tvdbid/tmdbid) are now matched against stored,
-		// normalized release identifiers, so they are advertised on the relevant
-		// search types. They only return results for releases that carry the
-		// corresponding identifier (populated by metadata enrichment).
+		// Advertise only the params that can actually return results. External
+		// identifiers are matched against stored release identifiers, so while
+		// no release carries one, advertising imdbid/tvdbid/tmdbid makes every
+		// id search return an empty, successful response — indistinguishable to
+		// a client from "this indexer has nothing". Failing honestly lets
+		// Sonarr/Radarr fall back to text search instead (#194).
 		Searching: capsSearching{
 			Search:      capsSearch{Available: "yes", SupportedParams: "q,cat,limit,offset"},
-			TVSearch:    capsSearch{Available: "yes", SupportedParams: "q,cat,season,ep,imdbid,tvdbid,tmdbid,limit,offset"},
-			MovieSearch: capsSearch{Available: "yes", SupportedParams: "q,cat,imdbid,tmdbid,limit,offset"},
+			TVSearch:    capsSearch{Available: "yes", SupportedParams: tvParams},
+			MovieSearch: capsSearch{Available: "yes", SupportedParams: movieParams},
 			AudioSearch: capsSearch{Available: "yes", SupportedParams: "q,cat,limit,offset"},
 			BookSearch:  capsSearch{Available: "yes", SupportedParams: "q,cat,limit,offset"},
 		},

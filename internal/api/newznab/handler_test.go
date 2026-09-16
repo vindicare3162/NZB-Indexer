@@ -19,6 +19,14 @@ type mockRepo struct {
 	total    int
 	lastFilt store.SearchFilter
 	grabs    int
+	// noIDs makes HasReleaseIdentifiers report false, so caps stops advertising
+	// id-based search (#194). Default (false) means identifiers exist, which is
+	// the state the existing contract tests assert.
+	noIDs bool
+}
+
+func (m *mockRepo) HasReleaseIdentifiers(context.Context) (bool, error) {
+	return !m.noIDs, nil
 }
 
 func (m *mockRepo) ListCategories(context.Context) ([]store.Category, error) {
@@ -337,5 +345,41 @@ func TestBareBrowseSearchStillReturnsResults(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Recent.Release") {
 		t.Error("bare browse search should return recent releases")
+	}
+}
+
+// TestCapsHidesIDSearchWhenNoIdentifiers is the falsifying test for #194's
+// honesty half. While release_identifiers is empty, advertising imdbid/tvdbid/
+// tmdbid makes every id search return an empty, successful response — which a
+// client cannot distinguish from "this indexer genuinely has nothing". In
+// production this table held zero rows against ~2.55M releases, so every id
+// search Sonarr and Radarr issued returned nothing, silently.
+func TestCapsHidesIDSearchWhenNoIdentifiers(t *testing.T) {
+	repo := &mockRepo{cats: []store.Category{{ID: 5000, Name: "TV"}}, noIDs: true}
+	h := newTestHandler(repo, &mockNZB{})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?t=caps", nil))
+
+	var c caps
+	if err := xml.Unmarshal(rec.Body.Bytes(), &c); err != nil {
+		t.Fatalf("unmarshal caps: %v", err)
+	}
+	for _, tc := range []struct{ name, params string }{
+		{"tv-search", c.Searching.TVSearch.SupportedParams},
+		{"movie-search", c.Searching.MovieSearch.SupportedParams},
+	} {
+		for _, id := range []string{"imdbid", "tvdbid", "tmdbid"} {
+			if strings.Contains(tc.params, id) {
+				t.Errorf("%s advertises %s with no identifiers stored: %q", tc.name, id, tc.params)
+			}
+		}
+		// The search type itself must stay available — text search still works.
+		if !strings.Contains(tc.params, "q,cat") {
+			t.Errorf("%s dropped text search: %q", tc.name, tc.params)
+		}
+	}
+	if c.Searching.TVSearch.Available != "yes" {
+		t.Errorf("tv-search should remain available for text queries")
 	}
 }

@@ -107,3 +107,18 @@ func (s *Store) GetReleaseIdentifiers(ctx context.Context, releaseID int64) ([]R
 	}
 	return out, rows.Err()
 }
+
+// HasReleaseIdentifiers reports whether any release carries an external
+// identifier. The Newznab caps response is gated on this so id-based search is
+// only advertised when it can return something (#194).
+//
+// EXISTS with LIMIT 1 rather than a count: this runs on every caps request and
+// the answer only needs to be a boolean.
+func (s *Store) HasReleaseIdentifiers(ctx context.Context) (bool, error) {
+	var ok bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM release_identifiers LIMIT 1)`).Scan(&ok); err != nil {
+		return false, fmt.Errorf("check release identifiers: %w", err)
+	}
+	return ok, nil
+}

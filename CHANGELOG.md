@@ -59,6 +59,20 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   text with no sanitising at all. Both paths now strip NULs and replace invalid
   sequences.
 
+### Added
+- Post-processing now extracts IMDb, TVDB and TMDB ids from NFO text and stores
+  them as release identifiers (#194). `release_identifiers` had never contained
+  a row: the read path and `AddReleaseIdentifier` both existed, but no pipeline
+  stage ever called a writer, so every id-based search Sonarr and Radarr issued
+  returned an empty — but successful — response, indistinguishable from this
+  indexer genuinely having nothing. Ids are taken only from an unambiguous
+  context (a `tt`-prefixed IMDb id, or a TVDB/TMDB id inside a URL naming the
+  site) so the bitrates, runtimes and dates an NFO is full of cannot be
+  mistaken for identifiers.
+- The Newznab `caps` response now advertises `imdbid`/`tvdbid`/`tmdbid` only
+  while at least one release carries an identifier, so the indexer reports
+  itself as text-only rather than advertising a search that returns nothing.
+
 ### Documentation
 - Added `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `docs/RUNBOOK.md`,
   `docs/API.md`, `docs/CONFIGURATION.md`, `docs/HANDOVER.md`, and
