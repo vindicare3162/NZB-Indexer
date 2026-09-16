@@ -45,7 +45,7 @@ indexed.
 
 ## Paging
 
-Offset-based. At depth over 3.26M releases this is O(n); keyset paging is in the
+Offset-based. At depth over ~2.55M releases this is O(n); keyset paging is in the
 S3 backlog (#208).
 
 ## Rate limiting

@@ -16,7 +16,7 @@ parts                    — one row per article. 1.8B rows / 1283 GB.
 binaries                 — one row per posted file-set. 50.8M rows.
   │   internal/release   — build a release once a binary is complete
   ▼
-releases                 — one row per indexed release. 3.26M rows.
+releases                 — one row per indexed release. ~2.55M rows.
   │   internal/postprocess — resolve names, fetch NFO, categorise
   ▼
 Newznab API (internal/api/newznab) + generated .nzb (internal/nzb)

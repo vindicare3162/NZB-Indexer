@@ -25,7 +25,7 @@ Measured 2026-09-17 on `192.168.1.51`.
 |---|---|
 | `parts` | 1.8B rows, 1283 GB (996 GB heap + 287 GB indexes), **unpartitioned** |
 | `binaries` | 50.8M rows, 24 GB |
-| `releases` | 3.26M rows, 35 GB |
+| `releases` | ~2.55M rows, 35 GB |
 | Free space | ~865 GB on the btrfs cache pool |
 | Active groups | 8 of 9 (`alt.binaries.boneless` deliberately paused) |
 | Ingest rate | ~5.9M articles/hour |
