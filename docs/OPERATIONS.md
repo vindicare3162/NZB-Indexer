@@ -1,0 +1,86 @@
+# Operations
+
+Entry point for running goindex. Detailed procedures live in the documents
+linked from each section. For diagnosis see `docs/RUNBOOK.md`.
+
+## Deploy
+
+The image is built outside the server and loaded as `goindex:latest`; there is
+no source tree on the Unraid host. Compose lives at
+`/mnt/user/appdata/goindex/docker-compose.yml`.
+
+**Before deploying, confirm what you are deploying.** The running version string
+is currently hand-written (`lb-20260916-2135`) and does not identify a commit.
+At the time of writing three commits are unpushed and one of them —
+`fd0723d` — was made five minutes *after* the running image was built and has
+never executed in production.
+
+```bash
+git log origin/main..HEAD          # must be empty before you claim a fix is live
+docker ps --filter name=goindex --format '{{.Image}} {{.Status}}'
+docker inspect goindex --format '{{.Created}}'
+```
+
+Issue #195 replaces the hand-written string with the git SHA and exposes it on
+`/api/v1/health`. Until it lands, the check above is the only reliable method.
+
+Unraid specifics: `docs/deployment-unraid.md`.
+
+## Migrations and index builds
+
+Schema migrations run at application boot via `golang-migrate`. This is fine for
+DDL that is fast, and dangerous for DDL that is not — `parts` is 1.8B rows and
+1283 GB.
+
+**Rules:**
+- Only one `CREATE INDEX CONCURRENTLY` per table at a time. Two on `parts`
+  deadlock; one incident lost ~2.5 hours when Postgres killed a build at 91% of
+  validation.
+- `CREATE INDEX CONCURRENTLY` cannot run inside a transaction.
+- Build large indexes as an explicit operator step, not at boot. Tracked in #203.
+
+## Backfill
+
+Backfill is enabled globally by `scan.backfill_days` or
+`scan.backfill_max_articles`, or per group by a backfill target. It walks
+backwards from `groups.backfill_low` toward the server low.
+
+Forward scans take strict priority and preempt backfill between groups, so a
+large historical backfill cannot starve indexing of new posts.
+
+**Judging progress:** watch `groups.backfill_low` decrease. Do not use
+`last_scan_at` or `last_backfill_at` — see `docs/RUNBOOK.md` §2.
+
+Bringing a new group online: add it paused, then enable one at a time.
+`alt.binaries.boneless` is ~85.6 billion articles behind and must be brought up
+alone.
+
+## Maintenance tasks
+
+Scheduled in `internal/server/maintenance.go`: `yenc-repair` (1m),
+`yenc-verify` (2m), `retention`, `retry-failed`, `analyze`, `job-cleanup`,
+`backup-verify`. Sizing rationale is in the source comments — the two yEnc
+passes deliberately get unequal shares of the NNTP budget.
+
+The scheduler does **not** skip an overlapping run. Tasks are sized to finish
+inside their interval for that reason; overlapping passes multiply NNTP
+connection demand, which has previously exhausted the provider's limit.
+
+Detail: `docs/maintenance.md`.
+
+## Capacity
+
+`parts` is unpartitioned at 1283 GB with an "index everything, keep forever"
+target, so it grows without bound. Partitioning and retention options are
+tracked in **#182**; the design sketch is `docs/parts-partitioning.md`.
+
+Do not run the re-assembly task (#196) and the partitioning work concurrently —
+the same rows would be rewritten twice.
+
+Disk pressure procedure: `docs/RUNBOOK.md` §3.
+
+## Credentials
+
+Rotating the NNTP credential means updating the compose environment and
+restarting. The application masks passwords in its own logs; surrounding
+tooling has leaked one at least once. See #207.

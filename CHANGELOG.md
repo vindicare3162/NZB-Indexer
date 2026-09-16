@@ -7,6 +7,22 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
 ## [Unreleased]
 
 ### Fixed
+- Subjects that quote a release title as well as a filename now parse the
+  filename rather than the title (#195 deploy, commit `4d6832b`). The title is
+  always quoted first, so taking the first quoted token set `FileName` to the
+  title and — because the file-counter search is anchored just before the
+  filename — pushed the anchor ahead of the `[n/m]` counter, so no file counter
+  was found and every file of the post became its own binary and its own
+  release. Measured over a 36,351-article sample of production subjects, 2.4%
+  of parts that previously grouped had regressed this way; the fix leaves 1.
+- A file counter separated from the filename by a site banner
+  (`~~ site ~~ [38/96] ~~ site ~~ post: "file.r36"`) is now recognised; the
+  gap bound was 8 characters and could not clear a banner. Year ranges are
+  excluded by an explicit pattern instead of by distance.
+- The same counter written twice — `[2256/2574] - "blob" yEnc (2256/2574)` — is
+  one file in 2574 segments, not 2574 files. It previously declared a file count
+  the post could never reach, leaving those binaries permanently incomplete.
+
 - Single-segment fragments are no longer released as if they were complete
   files (#178). Posts whose Subject carries no `(n/m)` segment counter — a
   common anti-indexing tactic — left `total_parts = 0`, and the assembler
@@ -42,6 +58,12 @@ via [GitHub Issues](https://github.com/vindicare3162/NZB-Indexer/issues).
   overview sanitising missed them; post-processing wrote recovered names and NFO
   text with no sanitising at all. Both paths now strip NULs and replace invalid
   sequences.
+
+### Documentation
+- Added `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `docs/RUNBOOK.md`,
+  `docs/API.md`, `docs/CONFIGURATION.md`, `docs/HANDOVER.md`, and
+  `docs/DECISIONS/ADR-001`/`ADR-002`, so the system can be operated and extended
+  without the original author.
 
 ### Changed
 - Admin action feedback and confirmation flows overhauled (#122). Every admin
