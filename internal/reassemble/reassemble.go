@@ -5,13 +5,10 @@ package reassemble
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/vindicare/goindex/internal/scanner"
 	"github.com/vindicare/goindex/internal/store"
@@ -191,7 +188,7 @@ func (r *Reassembler) applyWithRetry(ctx context.Context, updates []store.PartRe
 		if err == nil {
 			return stats, nil
 		}
-		if !isDeadlock(err) {
+		if !store.IsDeadlock(err) {
 			return stats, err
 		}
 		last = err
@@ -208,12 +205,6 @@ func (r *Reassembler) applyWithRetry(ctx context.Context, updates []store.PartRe
 		r.log.Debug("retrying reassembly batch after deadlock", "attempt", attempt+1)
 	}
 	return store.ReassembleStats{}, fmt.Errorf("batch still deadlocking after %d retries: %w", maxDeadlockRetries, last)
-}
-
-// isDeadlock reports whether err is PostgreSQL's deadlock_detected (40P01).
-func isDeadlock(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
 }
 
 func (r *Reassembler) cursor(ctx context.Context) (int64, error) {

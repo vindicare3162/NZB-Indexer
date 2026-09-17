@@ -2,10 +2,13 @@ package assembler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/vindicare/goindex/internal/store"
 )
@@ -479,4 +482,61 @@ func TestAssembleSetBasedBatchFoldsManyGroupings(t *testing.T) {
 	if segs != 6 {
 		t.Errorf("segments under Coll00 binary = %d, want 6", segs)
 	}
+}
+
+// --- deadlock retry (#212) ---
+
+type deadlockAssembleRepo struct {
+	Repo
+	failTimes int
+	attempts  int
+}
+
+func (d *deadlockAssembleRepo) AssembleBinaries(context.Context, int) (int, error) {
+	d.attempts++
+	if d.attempts <= d.failTimes {
+		return 0, &pgconn.PgError{Code: "40P01", Message: "deadlock detected"}
+	}
+	return 0, nil // 0 touched ends the loop
+}
+
+// While re-assembly runs, both it and the assembler write `parts`, so
+// PostgreSQL picks one as the deadlock victim. Measured in production at 14
+// failures across 27 passes — a batch error aborted the whole pass, discarding
+// more than half the assembler's work. A deadlock is transient, so the batch
+// must be retried.
+func TestAssembleRetriesOnDeadlock(t *testing.T) {
+	d := &deadlockAssembleRepo{failTimes: 2}
+	a := New(d, nil, Options{BatchLimit: 10, MaxBatchesPerRun: 5})
+
+	if _, err := a.Assemble(context.Background()); err != nil {
+		t.Fatalf("pass should have survived a transient deadlock: %v", err)
+	}
+	if d.attempts != 3 {
+		t.Errorf("attempts = %d, want 3 (two deadlocks then success)", d.attempts)
+	}
+}
+
+// A non-deadlock error must abort immediately rather than being retried.
+func TestAssembleDoesNotRetryOtherErrors(t *testing.T) {
+	d := &errAssembleRepo{err: errors.New("permission denied")}
+	a := New(d, nil, Options{BatchLimit: 10, MaxBatchesPerRun: 5})
+
+	if _, err := a.Assemble(context.Background()); err == nil {
+		t.Fatal("expected a non-deadlock error to surface")
+	}
+	if d.attempts != 1 {
+		t.Errorf("attempts = %d, want 1 — a non-deadlock error was retried", d.attempts)
+	}
+}
+
+type errAssembleRepo struct {
+	Repo
+	err      error
+	attempts int
+}
+
+func (e *errAssembleRepo) AssembleBinaries(context.Context, int) (int, error) {
+	e.attempts++
+	return 0, e.err
 }

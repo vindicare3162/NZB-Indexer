@@ -90,7 +90,7 @@ func (a *Assembler) Assemble(ctx context.Context) (Result, error) {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
-		touched, err := a.repo.AssembleBinaries(ctx, a.opts.BatchLimit)
+		touched, err := a.assembleBatchWithRetry(ctx)
 		if err != nil {
 			return res, fmt.Errorf("assemble binaries: %w", err)
 		}
@@ -145,4 +145,36 @@ func IsComplete(collected, declaredTotal int) bool {
 		return collected >= declaredTotal
 	}
 	return collected >= 1
+}
+
+// maxDeadlockRetries bounds how often one batch is retried after losing a
+// deadlock.
+const maxDeadlockRetries = 3
+
+// assembleBatchWithRetry runs one assembly batch, retrying if it is chosen as a
+// deadlock victim.
+//
+// While re-assembly (#196) is running, both it and this loop write `parts`, and
+// PostgreSQL picks one to abort. Measured against production that was 14
+// failures across 27 assembly passes — more than half the assembler's work
+// discarded, because a batch error aborts the whole pass. A deadlock is
+// transient, so retry the batch instead of losing the pass.
+func (a *Assembler) assembleBatchWithRetry(ctx context.Context) (int, error) {
+	var last error
+	for attempt := 0; attempt <= maxDeadlockRetries; attempt++ {
+		touched, err := a.repo.AssembleBinaries(ctx, a.opts.BatchLimit)
+		if err == nil {
+			return touched, nil
+		}
+		if !store.IsDeadlock(err) {
+			return 0, err
+		}
+		last = err
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 250 * time.Millisecond):
+		}
+	}
+	return 0, last
 }
