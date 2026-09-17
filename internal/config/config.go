@@ -120,6 +120,14 @@ type MaintenanceConfig struct {
 	// millions of rows and removes releases, which is an operator decision
 	// rather than something an upgrade should start on its own.
 	Reassemble MaintenanceTaskConfig `yaml:"reassemble"`
+	// ReassembleBatchSize is how many parts are read and re-parsed per batch,
+	// and ReassembleBatchesPerRun how many batches one pass runs. Together they
+	// set rows-per-pass, which is what actually bounds throughput: a pass does a
+	// fixed amount of work, so the rate is passes-per-minute times this product.
+	// Tunable because the repair blocks the release builder for its duration.
+	ReassembleBatchSize     int           `yaml:"reassemble_batch_size"`
+	ReassembleBatchesPerRun int           `yaml:"reassemble_batches_per_run"`
+	ReassembleMaxRunTime    time.Duration `yaml:"reassemble_max_run_time"`
 }
 
 // MaintenanceTaskConfig is the enablement + cadence for one maintenance task.
@@ -483,6 +491,9 @@ func applyEnv(cfg *Config) {
 	envInt("GOINDEX_HEALTH_FAILURES_ERROR", &cfg.Health.FailuresError)
 
 	envBool("GOINDEX_MAINTENANCE_REASSEMBLE_ENABLED", &cfg.Maintenance.Reassemble.Enabled)
+	envInt("GOINDEX_MAINTENANCE_REASSEMBLE_BATCH_SIZE", &cfg.Maintenance.ReassembleBatchSize)
+	envInt("GOINDEX_MAINTENANCE_REASSEMBLE_BATCHES_PER_RUN", &cfg.Maintenance.ReassembleBatchesPerRun)
+	envDur("GOINDEX_MAINTENANCE_REASSEMBLE_MAX_RUN_TIME", &cfg.Maintenance.ReassembleMaxRunTime)
 	envDur("GOINDEX_MAINTENANCE_REASSEMBLE_INTERVAL", &cfg.Maintenance.Reassemble.Interval)
 	envBool("GOINDEX_MAINTENANCE_RETRY_FAILED_ENABLED", &cfg.Maintenance.RetryFailed.Enabled)
 	envDur("GOINDEX_MAINTENANCE_RETRY_FAILED_INTERVAL", &cfg.Maintenance.RetryFailed.Interval)

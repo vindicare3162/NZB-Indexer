@@ -118,7 +118,11 @@ func buildMaintenanceTasks(st *store.Store, cfg config.Config, fetch yencverify.
 		if interval <= 0 {
 			interval = time.Minute
 		}
-		ra := reassemble.New(st, log, reassemble.Options{})
+		ra := reassemble.New(st, log, reassemble.Options{
+			BatchSize:        m.ReassembleBatchSize,
+			MaxBatchesPerRun: m.ReassembleBatchesPerRun,
+			MaxRunTime:       m.ReassembleMaxRunTime,
+		})
 		tasks = append(tasks, maintenance.Task{
 			Name: "reassemble", Interval: interval, Enabled: true,
 			Run: func(ctx context.Context) (string, error) {

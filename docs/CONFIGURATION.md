@@ -42,6 +42,15 @@ finite NNTP connection budget.
 |---|---|---|---|
 | `maintenance.reassemble.enabled` | `GOINDEX_MAINTENANCE_REASSEMBLE_ENABLED` | **false** | Rewrites parts, deletes binaries, and removes the releases built from them. Off by default on purpose — an upgrade must never start this on its own. Releases with `pp_status='done'` are protected. |
 | `maintenance.reassemble.interval` | `GOINDEX_MAINTENANCE_REASSEMBLE_INTERVAL` | 1m | Cadence between passes. Each pass is bounded by batch count and run time, so it yields to the rest of the pipeline. |
+| `maintenance.reassemble_batch_size` | `GOINDEX_MAINTENANCE_REASSEMBLE_BATCH_SIZE` | 5000 | Parts read and re-parsed per batch. |
+| `maintenance.reassemble_batches_per_run` | `GOINDEX_MAINTENANCE_REASSEMBLE_BATCHES_PER_RUN` | 20 | Batches per pass. **This and batch size set rows-per-pass, which is what bounds throughput** — a pass does a fixed amount of work, so the rate is passes/min × (batch size × batches per run). Raising the interval or speeding up a pass does nothing on its own. |
+| `maintenance.reassemble_max_run_time` | `GOINDEX_MAINTENANCE_REASSEMBLE_MAX_RUN_TIME` | 2m | Hard stop for one pass, so a pass cannot overrun its schedule. Must exceed the time the batch count needs, or it silently truncates the pass. |
+
+Measuring progress: use **rows scanned** (`parts_scanned` in the pass log), not
+movement of `reassemble.parts_cursor`. The cursor is a keyset over `parts.id` and
+the purge left large id gaps the scan crosses for free, so cursor movement
+overstates progress wherever ids are sparse — an ETA derived from it was out by
+roughly 2.5x.
 
 ## Scheduling internals
 
