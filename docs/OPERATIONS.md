@@ -117,6 +117,26 @@ Verify with a 5-minute window: release count delta should be 0 and no
 `release build pass complete` lines should appear, while `assembly pass complete`
 and `post-processing pass complete` continue.
 
+### Throughput and what actually bounds it
+
+Measured on this deployment: **250,000 rows/min at 1M rows per pass** — about
+127 hours (5.3 days) over 1.9B parts.
+
+That is the database's ceiling, not a scheduling one. At the 100k-per-pass
+default the limit was passes-per-minute (150,000 rows/min); at 1M per pass each
+pass takes ~4 minutes doing real work, so raising
+`GOINDEX_MAINTENANCE_REASSEMBLE_BATCHES_PER_RUN` further only lengthens each
+pass. Do not expect more from tuning.
+
+**Measure progress with `parts_scanned` from the pass log, never the cursor.**
+The cursor is a keyset over `parts.id`, and the purge left large id gaps the scan
+crosses for free, so cursor velocity overstates progress wherever ids are sparse
+— an ETA taken from it was out by roughly 2.5x.
+
+A long pass logs nothing until it completes, so "no pass in the last 5 minutes"
+does **not** mean stalled. Distinguish the two by sampling
+`reassemble.parts_cursor` twice a minute apart.
+
 ### Monitoring and stopping
 Progress is the `reassemble.parts_cursor` setting. Stopping is safe at any batch
 boundary — set `GOINDEX_MAINTENANCE_REASSEMBLE_ENABLED=false` and restart; the
