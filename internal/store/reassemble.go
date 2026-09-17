@@ -140,16 +140,39 @@ func (s *Store) ApplyReparse(ctx context.Context, updates []PartReparse, dirty [
 	}
 
 	// Apply grouping updates, skipping parts belonging to a protected binary.
-	for _, u := range updates {
+	//
+	// One set-based statement rather than a statement per row. A batch commonly
+	// rewrites 20-35k parts, and issuing that many sequential round-trips made
+	// the round-trips — not the scan or the parsing — the throughput ceiling for
+	// the whole repair.
+	if len(updates) > 0 {
+		ids := make([]int64, len(updates))
+		keys := make([]string, len(updates))
+		fileNums := make([]int32, len(updates))
+		fileTotals := make([]int32, len(updates))
+		norms := make([]string, len(updates))
+		for i, u := range updates {
+			ids[i] = u.ID
+			keys[i] = u.CollectionKey
+			fileNums[i] = int32(u.FileNumber)
+			fileTotals[i] = int32(u.CollectionFiles)
+			norms[i] = u.NormSubject
+		}
 		ct, err := tx.Exec(ctx, `
-UPDATE parts SET collection_key = $2, file_number = $3, collection_files = $4, norm_subject = $5
-WHERE id = $1
-  AND (binary_id IS NULL OR binary_id <> ALL($6))`,
-			u.ID, u.CollectionKey, u.FileNumber, u.CollectionFiles, u.NormSubject, protected)
+UPDATE parts p SET
+    collection_key   = u.collection_key,
+    file_number      = u.file_number,
+    collection_files = u.collection_files,
+    norm_subject     = u.norm_subject
+FROM unnest($1::bigint[], $2::text[], $3::int[], $4::int[], $5::text[])
+     AS u(id, collection_key, file_number, collection_files, norm_subject)
+WHERE p.id = u.id
+  AND (p.binary_id IS NULL OR p.binary_id <> ALL($6))`,
+			ids, keys, fileNums, fileTotals, norms, protected)
 		if err != nil {
 			return st, fmt.Errorf("update part grouping: %w", err)
 		}
-		st.PartsUpdated += ct.RowsAffected()
+		st.PartsUpdated = ct.RowsAffected()
 	}
 
 	var teardown []int64
