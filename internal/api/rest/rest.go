@@ -190,16 +190,21 @@ type Authenticator interface {
 
 // API bundles the REST handler dependencies.
 type API struct {
-	store   Store
-	nzb     NZBGenerator
-	authn   Authenticator
-	jobs      JobController
-	servers   ServerManager
-	logs      LogSource
+	store      Store
+	nzb        NZBGenerator
+	authn      Authenticator
+	jobs       JobController
+	servers    ServerManager
+	logs       LogSource
 	discoverer Discoverer
-	session   *auth.Service
-	probe     SystemProbe
-	logStream LogStreamer
+	session    *auth.Service
+	probe      SystemProbe
+	logStream  LogStreamer
+
+	// version is the build identifier reported by the health endpoint, so the
+	// commit a running container was built from can be read off the system
+	// rather than inferred (#195). Empty until SetVersion is called.
+	version string
 
 	// Retention window/batch defaults for the admin retention endpoints (#118).
 	retentionDays       int
@@ -317,6 +322,11 @@ func New(st Store, nzb NZBGenerator, authn Authenticator, session *auth.Service,
 	}
 	return &API{store: st, nzb: nzb, authn: authn, jobs: jobs, servers: servers, logs: logs, discoverer: discoverer, session: session, healthThresholds: store.DefaultGroupHealthThresholds(), log: log}
 }
+
+// SetVersion records the build identifier for the health endpoint. It is a
+// setter rather than another constructor parameter because New already takes
+// nine, and the version is not needed to construct anything.
+func (a *API) SetVersion(v string) { a.version = v }
 
 // Routes returns the REST API mux mounted under /api/v1.
 func (a *API) Routes() http.Handler {

@@ -19,9 +19,9 @@ import (
 	"github.com/vindicare/goindex/internal/logbuf"
 	"github.com/vindicare/goindex/internal/metrics"
 	"github.com/vindicare/goindex/internal/nntp"
+	"github.com/vindicare/goindex/internal/nzb"
 	"github.com/vindicare/goindex/internal/postprocess"
 	"github.com/vindicare/goindex/internal/release"
-	"github.com/vindicare/goindex/internal/nzb"
 	"github.com/vindicare/goindex/internal/scanner"
 	"github.com/vindicare/goindex/internal/store"
 	"github.com/vindicare/goindex/internal/worker"
@@ -30,7 +30,7 @@ import (
 
 // Run builds and runs the full server until ctx is cancelled, then shuts down
 // gracefully. It applies migrations on startup.
-func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logbuf.Buffer) error {
+func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logbuf.Buffer, version string) error {
 	// 1. Database: migrate then open a pool.
 	dsn := cfg.Database.DSNString()
 	logger.Info("applying database migrations")
@@ -203,6 +203,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 	srvMgr := &serverManager{store: st, pool: pool, cfg: cfg, connectTimeout: cfg.NNTP.ConnectTimeout, log: logger}
 	discovery := newDiscoveryService(pool, time.Hour)
 	restAPI := rest.New(st, nzbGen, authSvc, authSvc, scheduleAdapter{wrk}, srvMgr, logs, discovery, logger)
+	restAPI.SetVersion(version)
 	restAPI.SetSystemProbe(systemProbe{
 		pool: pool, store: st, jwtSecret: cfg.Auth.JWTSecret,
 		nntpMaxConns: budget.NNTPMaxConns,

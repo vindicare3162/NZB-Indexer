@@ -1246,3 +1246,40 @@ func TestSearchRoutesThroughBackendWhenSet(t *testing.T) {
 		t.Errorf("resp = %+v, want the backend result", resp)
 	}
 }
+
+// TestHealthReportsVersion covers #195: a running container must say which
+// build it is. Without this the only way to tell what was deployed was to infer
+// it from timestamps, which during one incident led to a fix being believed live
+// when the commit post-dated the image by five minutes.
+func TestHealthReportsVersion(t *testing.T) {
+	a := &API{}
+	a.SetVersion("abc1234")
+
+	rec := httptest.NewRecorder()
+	a.handleHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Errorf("status = %q, want ok", body["status"])
+	}
+	if body["version"] != "abc1234" {
+		t.Errorf("version = %q, want abc1234", body["version"])
+	}
+
+	// An unstamped build must omit the field rather than claim a false version.
+	// Decode into a fresh map: json.Unmarshal merges into an existing one, so
+	// reusing it would carry the previous key over and hide a regression.
+	plain := &API{}
+	rec = httptest.NewRecorder()
+	plain.handleHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	var unstamped map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &unstamped); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	if _, ok := unstamped["version"]; ok {
+		t.Errorf("unstamped build reported a version: %v", unstamped)
+	}
+}

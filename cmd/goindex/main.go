@@ -107,7 +107,7 @@ func runServe(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return server.Run(ctx, cfg, logger, logs)
+	return server.Run(ctx, cfg, logger, logs, version)
 }
 
 // newLogger builds a slog logger at the configured level, writing text to

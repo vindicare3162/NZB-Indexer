@@ -17,7 +17,11 @@ import (
 // handleHealth is the liveness probe: it reports only that the process is up
 // and serving, without touching any dependency. Always 200.
 func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	out := map[string]string{"status": "ok"}
+	if a.version != "" {
+		out["version"] = a.version
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleReady is the readiness probe: it verifies the database is reachable so
@@ -272,7 +276,9 @@ func (a *API) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {
 	// Include related releases with similar name (best-effort, top 5).
 	if rel.SearchName != "" {
 		parts := strings.Fields(rel.SearchName)
-		if len(parts) > 3 { parts = parts[:3] }
+		if len(parts) > 3 {
+			parts = parts[:3]
+		}
 		query := strings.Join(parts, " ")
 		related, _, err := a.store.SearchReleases(r.Context(), store.SearchFilter{
 			Query: query,
@@ -281,9 +287,13 @@ func (a *API) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			filtered := make([]store.Release, 0, len(related))
 			for _, r2 := range related {
-				if r2.ID != rel.ID { filtered = append(filtered, r2) }
+				if r2.ID != rel.ID {
+					filtered = append(filtered, r2)
+				}
 			}
-			if len(filtered) > 5 { filtered = filtered[:5] }
+			if len(filtered) > 5 {
+				filtered = filtered[:5]
+			}
 			resp["related"] = filtered
 		}
 	}
