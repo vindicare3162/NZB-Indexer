@@ -5,10 +5,13 @@ package reassemble
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/vindicare/goindex/internal/scanner"
 	"github.com/vindicare/goindex/internal/store"
@@ -107,7 +110,7 @@ func (r *Reassembler) Run(ctx context.Context) (Result, error) {
 		}
 
 		updates, dirty := Plan(parts)
-		stats, err := r.repo.ApplyReparse(ctx, updates, dirty)
+		stats, err := r.applyWithRetry(ctx, updates, dirty)
 		if err != nil {
 			return res, err
 		}
@@ -163,6 +166,54 @@ func Plan(parts []store.PartForReparse) (updates []store.PartReparse, dirty []in
 		}
 	}
 	return updates, dirty
+}
+
+// maxDeadlockRetries bounds how often one batch is retried after a deadlock.
+// Three is enough for contention that clears on its own without masking a
+// genuine, persistent conflict.
+const maxDeadlockRetries = 3
+
+// applyWithRetry retries a batch that lost a deadlock.
+//
+// This task and the assembler both write `parts` — this one detaching parts and
+// rewriting their grouping, the assembler claiming unassembled parts into
+// binaries — so under load PostgreSQL picks one as the deadlock victim
+// (SQLSTATE 40P01). Observed at roughly 2 failures per 30 passes in production.
+//
+// Losing is safe: the batch is one transaction, so it rolls back whole, and the
+// cursor only advances after a successful apply, so no range is skipped. But an
+// unretried batch wastes the scan that produced it and logs a task failure that
+// looks like a fault. A deadlock is by definition transient, so retry it.
+func (r *Reassembler) applyWithRetry(ctx context.Context, updates []store.PartReparse, dirty []int64) (store.ReassembleStats, error) {
+	var last error
+	for attempt := 0; attempt <= maxDeadlockRetries; attempt++ {
+		stats, err := r.repo.ApplyReparse(ctx, updates, dirty)
+		if err == nil {
+			return stats, nil
+		}
+		if !isDeadlock(err) {
+			return stats, err
+		}
+		last = err
+		if ctx.Err() != nil {
+			return stats, ctx.Err()
+		}
+		// Brief, growing backoff so the retry does not collide with the same
+		// assembler batch that just won.
+		select {
+		case <-ctx.Done():
+			return stats, ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 250 * time.Millisecond):
+		}
+		r.log.Debug("retrying reassembly batch after deadlock", "attempt", attempt+1)
+	}
+	return store.ReassembleStats{}, fmt.Errorf("batch still deadlocking after %d retries: %w", maxDeadlockRetries, last)
+}
+
+// isDeadlock reports whether err is PostgreSQL's deadlock_detected (40P01).
+func isDeadlock(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
 }
 
 func (r *Reassembler) cursor(ctx context.Context) (int64, error) {

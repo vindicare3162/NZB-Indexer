@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/vindicare/goindex/internal/store"
 )
 
@@ -185,5 +186,89 @@ func TestRunDoesNotAdvanceCursorOnFailure(t *testing.T) {
 	}
 	if v, ok := f.settings[cursorKey]; ok {
 		t.Errorf("cursor advanced to %q despite a failed batch", v)
+	}
+}
+
+// --- deadlock retry ---
+
+type deadlockRepo struct {
+	*fakeRepo
+	failTimes int // deadlock this many times before succeeding
+	attempts  int
+}
+
+func (d *deadlockRepo) ApplyReparse(context.Context, []store.PartReparse, []int64) (store.ReassembleStats, error) {
+	d.attempts++
+	if d.attempts <= d.failTimes {
+		return store.ReassembleStats{}, &pgconn.PgError{Code: "40P01", Message: "deadlock detected"}
+	}
+	return store.ReassembleStats{PartsUpdated: 1}, nil
+}
+
+// This task and the assembler both write `parts`, so PostgreSQL picks one as the
+// deadlock victim under load — observed at ~2 failures per 30 passes in
+// production. A deadlock is transient by definition, so the batch must be
+// retried rather than surfaced as a task failure.
+func TestApplyRetriesOnDeadlock(t *testing.T) {
+	d := &deadlockRepo{
+		fakeRepo: &fakeRepo{
+			settings: map[string]string{},
+			batches: [][]store.PartForReparse{
+				{{ID: 10, Subject: `"T" [01/18] - "a.part1.rar" yEnc (1/9)`}},
+			},
+		},
+		failTimes: 2,
+	}
+	r := New(d, nil, Options{})
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatalf("run should have survived a transient deadlock: %v", err)
+	}
+	if d.attempts != 3 {
+		t.Errorf("attempts = %d, want 3 (two deadlocks then success)", d.attempts)
+	}
+	if got := d.settings[cursorKey]; got != "10" {
+		t.Errorf("cursor = %q, want \"10\" after the retry succeeded", got)
+	}
+}
+
+// A batch that deadlocks persistently must give up rather than spin, and must
+// not advance the cursor — otherwise the range is skipped silently.
+func TestApplyGivesUpOnPersistentDeadlock(t *testing.T) {
+	d := &deadlockRepo{
+		fakeRepo: &fakeRepo{
+			settings: map[string]string{},
+			batches: [][]store.PartForReparse{
+				{{ID: 10, Subject: `"T" [01/18] - "a.part1.rar" yEnc (1/9)`}},
+			},
+		},
+		failTimes: 99,
+	}
+	r := New(d, nil, Options{})
+	if _, err := r.Run(context.Background()); err == nil {
+		t.Fatal("expected a persistent deadlock to surface")
+	}
+	if d.attempts != maxDeadlockRetries+1 {
+		t.Errorf("attempts = %d, want %d", d.attempts, maxDeadlockRetries+1)
+	}
+	if v, ok := d.settings[cursorKey]; ok {
+		t.Errorf("cursor advanced to %q despite a persistent deadlock", v)
+	}
+}
+
+// A non-deadlock error must surface immediately rather than being retried.
+func TestApplyDoesNotRetryOtherErrors(t *testing.T) {
+	f := &fakeRepo{
+		settings: map[string]string{},
+		failNext: true,
+		batches: [][]store.PartForReparse{
+			{{ID: 10, Subject: `"T" [01/18] - "a.part1.rar" yEnc (1/9)`}},
+		},
+	}
+	r := New(f, nil, Options{})
+	if _, err := r.Run(context.Background()); err == nil {
+		t.Fatal("expected a non-deadlock error to surface")
+	}
+	if f.applied != 0 {
+		t.Errorf("non-deadlock error was retried: %d applies", f.applied)
 	}
 }
