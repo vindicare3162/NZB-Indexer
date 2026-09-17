@@ -70,7 +70,7 @@ that name is often a fragment or an obfuscated hash, 36% of rows land in 8000
 
 ## 3. Index rationale
 
-`parts` carries 287 GB of indexes. The ones that earn it:
+`parts` carries 287 GB of indexes (logical — see HANDOVER §3.6; ZFS compression means physical use is roughly a third). The ones that earn it:
 
 | Index | Size | Scans | Why |
 |---|---|---|---|

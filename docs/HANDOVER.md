@@ -23,10 +23,10 @@ Measured 2026-09-17 on `192.168.1.51`.
 
 | Thing | Value |
 |---|---|
-| `parts` | 1.8B rows, 1283 GB (996 GB heap + 287 GB indexes), **unpartitioned** |
+| `parts` | 1.8B rows, 1283 GB **logical** (996 GB heap + 287 GB indexes), **unpartitioned** |
 | `binaries` | 50.8M rows, 24 GB |
 | `releases` | ~2.55M rows, 35 GB |
-| Free space | ~865 GB on the btrfs cache pool |
+| Storage | ZFS pool `cache`: 1.81T total, 826G allocated, **1.01T free**; Postgres dataset 405G physical at ~3.4x compression (see §3.6) |
 | Active groups | 8 of 9 (`alt.binaries.boneless` deliberately paused) |
 | Ingest rate | ~5.9M articles/hour |
 | Users / API keys | **1 / 1** |
@@ -98,11 +98,31 @@ deactivation (#204).
 Before trusting that a feature works, check that something actually calls it.
 `docs/ARCHITECTURE.md` §5 has the audit command.
 
-### 3.6 Postgres and btrfs space behaviour
+### 3.6 Storage is ZFS, and logical size is not physical size
 
-`DELETE` marks space reusable but does not shrink files. On this deployment the
-underlying btrfs pool reclaimed physical space anyway, so free space recovered
-without a `VACUUM FULL`. Do not generalise this to other filesystems.
+The cache pool is **ZFS**, not btrfs. Postgres lives on the
+`cache/App_Subvol/NZB_Postgres` dataset.
+
+Compression is on and running at about **3.4x**, so the numbers Postgres reports
+and the space actually consumed are very different things:
+
+| Measure | Value (2026-09-17) |
+|---|---|
+| `parts` total relation size (logical) | ~1291 GB |
+| `NZB_Postgres` dataset (physical) | ~405 G |
+| Pool `cache` | 1.81T total, 826G allocated, 1.01T free |
+
+Consequences that have already caused mistakes:
+
+- **`df` on ZFS is not a reliable free-space number.** It estimates available
+  space from the current compression ratio, so it moves on its own. Free space
+  was observed jumping 854G to 973G with nothing deleted. Use
+  `zpool list` and `zfs list -o name,used,avail,compressratio` instead.
+- Any capacity figure quoted from `pg_total_relation_size` is **logical**.
+  Divide by the compression ratio for a physical estimate, and do not plan
+  headroom from the logical number.
+- `DELETE` marks space reusable but does not shrink Postgres files; whether the
+  filesystem gives space back is a ZFS question, not a Postgres one.
 
 ### 3.7 Index operations on `parts` are dangerous
 

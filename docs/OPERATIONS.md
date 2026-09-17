@@ -136,6 +136,11 @@ the same rows would be rewritten twice.
 
 Disk pressure procedure: `docs/RUNBOOK.md` §3.
 
+Storage is ZFS with ~3.4x compression. Sizes reported by Postgres are logical
+and do not match disk usage; `df` free space on ZFS drifts with the compression
+ratio and is not a dependable planning number. Use `zpool list` and
+`zfs list -o name,used,avail,compressratio`. See HANDOVER §3.6.
+
 ## Credentials
 
 Rotating the NNTP credential means updating the compose environment and

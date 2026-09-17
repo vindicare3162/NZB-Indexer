@@ -57,6 +57,14 @@ Known false positives, both of which have triggered unnecessary investigations:
 
 The cache pool holds a 1283 GB `parts` table. If free space falls below ~200 G:
 
+**First, get a real number.** The pool is ZFS and `df` free space drifts with the
+compression ratio — a 119G swing was observed with nothing deleted. Use:
+
+```bash
+zpool list
+zfs list -o name,used,avail,refer,compressratio
+```
+
 1. Check for a never-used index before deleting any data:
    ```sql
    SELECT relname, indexrelname, idx_scan, pg_size_pretty(pg_relation_size(indexrelid))
@@ -64,8 +72,8 @@ The cache pool holds a 1283 GB `parts` table. If free space falls below ~200 G:
    ```
    A previous incident was resolved by dropping a 183 GB index with zero scans
    since database creation.
-2. `DELETE` will not shrink files. Space may still be reclaimed by btrfs at the
-   filesystem level; do not assume this on other filesystems.
+2. `DELETE` will not shrink Postgres files. Whether the filesystem returns the
+   space is a ZFS question, not a Postgres one — check `zfs list`, not `df`.
 3. Do not start an index build and a bulk delete at the same time.
 
 ## 4. Index builds
