@@ -69,15 +69,16 @@ func (s *Store) AssembleBinaries(ctx context.Context, limit int) (int, error) {
 // of binaries touched.
 //
 // The CTE pipeline:
-//   agg   — aggregate the selected unassigned single-file groupings.
-//   ups   — bulk upsert into binaries, ON CONFLICT adding the newly collected
-//           parts/bytes to any existing binary, keeping the larger declared
-//           total and earliest posted_at, and recomputing completeness. The
-//           RETURNING clause yields each binary's id alongside its grouping key
-//           so the parts can be linked.
-//   linked — set binary_id on exactly the parts that were aggregated, joining
-//           on (group_id, norm_subject, poster). Only unassigned single-file
-//           parts are touched, matching the original per-group link predicate.
+//
+//	agg   — aggregate the selected unassigned single-file groupings.
+//	ups   — bulk upsert into binaries, ON CONFLICT adding the newly collected
+//	        parts/bytes to any existing binary, keeping the larger declared
+//	        total and earliest posted_at, and recomputing completeness. The
+//	        RETURNING clause yields each binary's id alongside its grouping key
+//	        so the parts can be linked.
+//	linked — set binary_id on exactly the parts that were aggregated, joining
+//	        on (group_id, norm_subject, poster). Only unassigned single-file
+//	        parts are touched, matching the original per-group link predicate.
 func assembleSinglesBatch(ctx context.Context, tx pgx.Tx, limit int) (int, error) {
 	const q = `
 WITH RECURSIVE keys AS (
@@ -310,7 +311,22 @@ LIMIT $1`
 // update is older than olderThan, on the assumption their missing parts will
 // never arrive. The associated parts are deleted too, since an incomplete stale
 // binary is unusable. Returns the number of binaries removed.
-func (s *Store) AgeOutStaleBinaries(ctx context.Context, olderThan time.Duration) (int64, error) {
+//
+// Bounded to limit binaries per call. It was previously unbounded, which was
+// survivable only while few binaries were stale: once re-assembly (#196) left
+// tens of millions of incomplete binaries behind, the parts delete tried to
+// remove rows for all of them in one statement and hit the statement timeout
+// every time (SQLSTATE 57014, ~1 failure per 8 minutes). Nothing aged out, the
+// backlog compounded, and each attempt burned a full timeout of database work
+// competing with the repair.
+//
+// This is the same shape as the ORDER BY ... LIMIT failures documented in
+// docs/ARCHITECTURE.md: fine while the working set is small, catastrophic when
+// it grows, and silent until it is not.
+func (s *Store) AgeOutStaleBinaries(ctx context.Context, olderThan time.Duration, limit int) (int64, error) {
+	if limit <= 0 {
+		limit = 5000
+	}
 	cutoff := time.Now().Add(-olderThan)
 
 	tx, err := s.pool.Begin(ctx)
@@ -319,21 +335,36 @@ func (s *Store) AgeOutStaleBinaries(ctx context.Context, olderThan time.Duration
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	// Remove parts belonging to the stale incomplete binaries first.
-	const delParts = `
-DELETE FROM parts
-WHERE binary_id IN (
-    SELECT id FROM binaries
-    WHERE complete = FALSE AND released = FALSE AND updated_at < $1
-)`
-	if _, err := tx.Exec(ctx, delParts, cutoff); err != nil {
-		return 0, fmt.Errorf("delete stale parts: %w", err)
+	// Pick a bounded set of victims first, so both deletes below touch exactly
+	// this set rather than re-evaluating a predicate over the whole table.
+	rows, err := tx.Query(ctx, `
+SELECT id FROM binaries
+WHERE complete = FALSE AND released = FALSE AND updated_at < $1
+LIMIT $2`, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("select stale binaries: %w", err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan stale binary: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
 	}
 
-	const delBins = `
-DELETE FROM binaries
-WHERE complete = FALSE AND released = FALSE AND updated_at < $1`
-	ct, err := tx.Exec(ctx, delBins, cutoff)
+	if _, err := tx.Exec(ctx, `DELETE FROM parts WHERE binary_id = ANY($1)`, ids); err != nil {
+		return 0, fmt.Errorf("delete stale parts: %w", err)
+	}
+	ct, err := tx.Exec(ctx, `DELETE FROM binaries WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return 0, fmt.Errorf("delete stale binaries: %w", err)
 	}

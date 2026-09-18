@@ -91,6 +91,13 @@ multi-user launch; re-measure after real Sonarr load.
 
 ## 4. Query patterns to avoid
 
+The class is broader than `ORDER BY … LIMIT`: **any unbounded statement whose
+cost scales with a working set that can grow**. A fifth instance surfaced in
+2026-09 — `AgeOutStaleBinaries` deleted parts for every stale binary in one
+statement, which was fine until re-assembly left 48M binaries incomplete, after
+which it hit the statement timeout on every attempt and so never cleaned up
+anything (#213). Bound the work, do not assume the set stays small.
+
 **Never** write `WHERE <filter> ORDER BY <col> LIMIT n` against `parts`,
 `binaries`, or `releases` unless one index covers both the filter and the
 ordering. This pattern has caused four production incidents. It is fast in

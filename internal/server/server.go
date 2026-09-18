@@ -111,6 +111,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, logs *logb
 		// released before its remaining files arrive.
 		SettleQuietAfter: 3 * time.Hour,
 		StaleAfter:       14 * 24 * time.Hour,
+		// Bounded so the age-out cannot grow into a table-wide delete (#196).
+		StaleBatchLimit: 5000,
 	})
 	builder := release.New(st, logger, release.Options{BatchLimit: 1000})
 	pp := postprocess.New(pool, st, logger, postprocess.Options{

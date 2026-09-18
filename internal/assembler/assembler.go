@@ -14,7 +14,7 @@ import (
 // Repo is the subset of the store the assembler needs.
 type Repo interface {
 	AssembleBinaries(ctx context.Context, limit int) (int, error)
-	AgeOutStaleBinaries(ctx context.Context, olderThan time.Duration) (int64, error)
+	AgeOutStaleBinaries(ctx context.Context, olderThan time.Duration, limit int) (int64, error)
 	SettleQuietCollections(ctx context.Context, quietFor time.Duration, limit int) (int64, error)
 	ListCompleteUnreleasedBinaries(ctx context.Context, limit int) ([]store.Binary, error)
 }
@@ -36,6 +36,12 @@ type Options struct {
 	// StaleAfter is how long an incomplete binary may go without new parts
 	// before it is aged out. Zero disables age-out.
 	StaleAfter time.Duration
+	// StaleBatchLimit bounds how many stale binaries are aged out per pass. The
+	// age-out was previously unbounded, which only worked while few binaries
+	// were stale: re-assembly (#196) left tens of millions incomplete, and the
+	// delete then timed out on every attempt, so nothing aged out at all. Zero
+	// means a sensible default.
+	StaleBatchLimit int
 }
 
 // Assembler folds parts into binaries.
@@ -118,7 +124,7 @@ func (a *Assembler) Assemble(ctx context.Context) (Result, error) {
 	}
 
 	if a.opts.StaleAfter > 0 {
-		removed, err := a.repo.AgeOutStaleBinaries(ctx, a.opts.StaleAfter)
+		removed, err := a.repo.AgeOutStaleBinaries(ctx, a.opts.StaleAfter, a.opts.StaleBatchLimit)
 		if err != nil {
 			return res, fmt.Errorf("age out stale binaries: %w", err)
 		}

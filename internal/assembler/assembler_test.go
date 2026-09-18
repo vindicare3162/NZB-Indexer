@@ -49,7 +49,7 @@ func (d *drainRepo) AssembleBinaries(_ context.Context, _ int) (int, error) {
 	}
 	return 0, nil
 }
-func (d *drainRepo) AgeOutStaleBinaries(_ context.Context, _ time.Duration) (int64, error) {
+func (d *drainRepo) AgeOutStaleBinaries(_ context.Context, _ time.Duration, _ int) (int64, error) {
 	return d.aged, nil
 }
 func (d *drainRepo) SettleQuietCollections(_ context.Context, _ time.Duration, _ int) (int64, error) {
@@ -367,7 +367,7 @@ func TestAgeOutStaleBinaries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	removed, err := st.AgeOutStaleBinaries(ctx, 7*24*time.Hour)
+	removed, err := st.AgeOutStaleBinaries(ctx, 7*24*time.Hour, 0)
 	if err != nil {
 		t.Fatalf("age out: %v", err)
 	}
@@ -539,4 +539,36 @@ type errAssembleRepo struct {
 func (e *errAssembleRepo) AssembleBinaries(context.Context, int) (int, error) {
 	e.attempts++
 	return 0, e.err
+}
+
+// TestAgeOutIsBounded covers the failure that showed up during #196: the
+// age-out deleted parts for every stale binary in one statement, which was
+// survivable only while few were stale. Re-assembly left tens of millions
+// incomplete, the delete hit the statement timeout on every attempt
+// (SQLSTATE 57014, ~1 per 8 minutes), and so nothing ever aged out — the
+// backlog compounded while each attempt burned a full timeout of database work.
+func TestAgeOutIsBounded(t *testing.T) {
+	d := &countingStaleRepo{}
+	a := New(d, nil, Options{
+		BatchLimit:      10,
+		StaleAfter:      time.Hour,
+		StaleBatchLimit: 250,
+	})
+	if _, err := a.Assemble(context.Background()); err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if d.limit != 250 {
+		t.Errorf("age-out limit = %d, want 250 — an unbounded delete is what timed out in production", d.limit)
+	}
+}
+
+type countingStaleRepo struct {
+	Repo
+	limit int
+}
+
+func (c *countingStaleRepo) AssembleBinaries(context.Context, int) (int, error) { return 0, nil }
+func (c *countingStaleRepo) AgeOutStaleBinaries(_ context.Context, _ time.Duration, limit int) (int64, error) {
+	c.limit = limit
+	return 0, nil
 }
